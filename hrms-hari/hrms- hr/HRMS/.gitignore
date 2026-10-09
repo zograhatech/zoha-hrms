@@ -1,0 +1,9 @@
+.vercel
+.env
+.env.local
+.env.*.local
+node_modules/
+dist/
+dist-ssr/
+*.local
+eslint_report.json
