@@ -9,6 +9,14 @@ const bcrypt = require('bcryptjs');
 // POST /api/auth/login
 const login = async (req, res) => {
     try {
+        if (!process.env.JWT_SECRET || !process.env.JWT_REFRESH_SECRET) {
+            console.error('FATAL: JWT_SECRET or JWT_REFRESH_SECRET is not configured on the server.');
+            return res.status(500).json({
+                success: false,
+                message: 'Server configuration error: Authentication secrets are not configured in environment variables.'
+            });
+        }
+
         const { email, password, rememberMe } = req.body;
         if (!email || !password) {
             return res.status(400).json({ success: false, message: 'Email and password are required.' });

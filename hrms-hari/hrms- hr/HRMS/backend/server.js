@@ -6,11 +6,23 @@ dns.setDefaultResultOrder('ipv4first');
 const connectDB = require('./config/db');
 
 dotenv.config();
-if (!process.env.JWT_SECRET) {
-    process.env.JWT_SECRET = 'hari_hrms_super_secret_key_2025';
-}
-if (!process.env.JWT_REFRESH_SECRET) {
-    process.env.JWT_REFRESH_SECRET = 'hari_hrms_refresh_secret_2025';
+
+// Ensure JWT secrets are strictly provided in production / Vercel
+if (process.env.NODE_ENV === 'production' || process.env.VERCEL) {
+    if (!process.env.JWT_SECRET) {
+        console.error('CRITICAL: JWT_SECRET environment variable is missing.');
+    }
+    if (!process.env.JWT_REFRESH_SECRET) {
+        console.error('CRITICAL: JWT_REFRESH_SECRET environment variable is missing.');
+    }
+} else {
+    // Development fallback only
+    if (!process.env.JWT_SECRET) {
+        process.env.JWT_SECRET = 'dev_jwt_secret_hrms_local_only';
+    }
+    if (!process.env.JWT_REFRESH_SECRET) {
+        process.env.JWT_REFRESH_SECRET = 'dev_jwt_refresh_secret_hrms_local_only';
+    }
 }
 
 const app = express();
@@ -43,11 +55,10 @@ try {
 }
 
 // ── Diagnostic Health Check (MUST BE FIRST) ──────────────────
-app.get('/api/health', (req, res) => {
+app.get(['/', '/health', '/api/health'], (req, res) => {
     const mongoose = require('mongoose');
     const dbStatus = { 0: 'disconnected', 1: 'connected', 2: 'connecting', 3: 'disconnecting', 4: 'uninitialized' };
-    const uri = process.env.MONGODB_URI || process.env.MONGO_URI || 'not_set';
-    const maskedUri = uri.replace(/\/\/(.*):(.*)@/, '//****:****@');
+    const hasMongoUri = !!(process.env.MONGODB_URI || process.env.MONGO_URI);
 
     res.json({
         success: true,
@@ -57,19 +68,17 @@ app.get('/api/health', (req, res) => {
             status: dbStatus[mongoose.connection.readyState] || 'unknown',
             name: mongoose.connection.name || 'none',
             readyState: mongoose.connection.readyState,
-            uri_configured: uri !== 'not_set',
-            uri_preview: maskedUri
+            configured: hasMongoUri
         },
         environment_audit: {
             JWT_SECRET: !!process.env.JWT_SECRET,
-            MONGO_URI: !!(process.env.MONGODB_URI || process.env.MONGO_URI),
+            MONGO_URI: hasMongoUri,
             VAPID_PUBLIC_KEY: !!process.env.VAPID_PUBLIC_KEY,
             VAPID_PRIVATE_KEY: !!process.env.VAPID_PRIVATE_KEY,
             ZOOM_ENCRYPTION_KEY: !!process.env.ZOOM_ENCRYPTION_KEY
         },
-        env: process.env.NODE_ENV,
-        runtime: process.env.VERCEL ? 'Vercel Serverless' : 'Standard Node',
-        memory: process.memoryUsage().rss
+        env: process.env.NODE_ENV || 'development',
+        runtime: process.env.VERCEL ? 'Vercel Serverless' : 'Standard Node'
     });
 });
 
@@ -77,6 +86,8 @@ app.get('/api/health', (req, res) => {
 let dbInitializationPromise = null;
 
 const initializeApp = async () => {
+    const mongoose = require('mongoose');
+    if (mongoose.connection.readyState === 1) return true;
     if (dbInitializationPromise) return dbInitializationPromise;
 
     dbInitializationPromise = (async () => {
@@ -84,13 +95,9 @@ const initializeApp = async () => {
             console.log('--- Initializing Database Connection ---');
             await connectDB();
             console.log('--- Database Initialized Successfully ---');
-
-            if (!process.env.VERCEL && process.env.NODE_ENV !== 'production') {
-                console.log('--- Starting Initial Seeding ---');
-            }
             return true;
         } catch (err) {
-            console.error('CRITICAL: Initial DB connection/seeding failed.');
+            console.error('CRITICAL: Initial DB connection failed:', err.message);
             dbInitializationPromise = null; // Reset to allow retry on next request
             throw err;
         }
@@ -100,16 +107,11 @@ const initializeApp = async () => {
 };
 
 app.use(async (req, res, next) => {
-    // Skip for health check
-    if (req.path === '/api/health') return next();
+    // Skip for health check and root endpoints
+    if (req.path === '/api/health' || req.path === '/health' || req.path === '/') return next();
 
     try {
         await initializeApp();
-        
-        const mongoose = require('mongoose');
-        if (mongoose.connection.readyState !== 1) {
-            console.warn(`--- DB State is ${mongoose.connection.readyState} after init. Mongoose buffering will handle queries.`);
-        }
         next();
     } catch (err) {
         res.status(503).json({
@@ -129,6 +131,13 @@ const allowedOrigins = [
     'http://10.130.39.16:5173', // Current Local IP
     'https://hrms-delta-eight.vercel.app',
 ];
+
+if (process.env.FRONTEND_URL) {
+    const cleanedFrontendUrl = process.env.FRONTEND_URL.replace(/\/$/, '');
+    if (!allowedOrigins.includes(cleanedFrontendUrl)) {
+        allowedOrigins.push(cleanedFrontendUrl);
+    }
+}
 
 app.use(cors({
     origin: (origin, callback) => {
@@ -224,26 +233,26 @@ app.use((req, res) => {
 const cron = require('node-cron');
 const FunSubmission = require('./models/FunSubmission');
 
-// Run every Sunday at midnight (00:00)
-cron.schedule('0 0 * * 0', async () => {
-    try {
-        console.log('--- Running Weekly Sunday Cleanup Job ---');
-        const deleted = await FunSubmission.deleteMany({});
-        console.log(`--- Automatically deleted ${deleted.deletedCount} items from FunChatbot ---`);
-    } catch (err) {
-        console.error('Failed to run Sunday cleanup job:', err);
-    }
-});
+// Run every Sunday at midnight (00:00) - skip on Vercel serverless
+if (!process.env.VERCEL) {
+    cron.schedule('0 0 * * 0', async () => {
+        try {
+            console.log('--- Running Weekly Sunday Cleanup Job ---');
+            const deleted = await FunSubmission.deleteMany({});
+            console.log(`--- Automatically deleted ${deleted.deletedCount} items from FunChatbot ---`);
+        } catch (err) {
+            console.error('Failed to run Sunday cleanup job:', err);
+        }
+    });
+}
 
 const PORT = process.env.PORT || 5000;
 // CRITICAL: Never call .listen() on Vercel as it crashes the Serverless Function
-if (!process.env.VERCEL && process.env.NODE_ENV !== 'production') {
+if (require.main === module && !process.env.VERCEL) {
     server.listen(PORT, '0.0.0.0', () => {
-        const networkIP = '10.130.39.16';
         console.log(`\n  ╔ ══════════════════════════════════════╗`);
         console.log(`  ║    🚀  Hari HRMS Enterprise API    ║`);
         console.log(`  ║    Backend URL: http://localhost:${PORT}      ║`);
-        console.log(`  ║    Network: http://${networkIP}:${PORT}   ║`);
         console.log(`  ╚══════════════════════════════════════╝\n`);
     });
 }

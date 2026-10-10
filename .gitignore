@@ -1,0 +1,8 @@
+.vercel
+.env
+.env.*
+node_modules/
+*.log
+dist/
+dist-ssr/
+
