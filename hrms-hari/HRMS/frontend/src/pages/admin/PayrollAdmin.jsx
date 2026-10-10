@@ -9,6 +9,7 @@ import {
 } from 'react-icons/fi';
 import { useToast } from '../../context/ToastContext';
 import { formatDate } from '../../utils/dateFormatter';
+import { isManagerRole } from '../../utils/roleHelper';
 
 const MONTHS = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -16,7 +17,7 @@ export default function PayrollAdmin() {
     const { user } = useAuth();
     const { showToast } = useToast();
     const permissions = user?.permissions || [];
-    const canManage = user?.role === 'hr_manager' || user?.role === 'admin' || permissions.includes('manage_payroll');
+    const canManage = isManagerRole(user) || permissions.includes('manage_payroll');
 
     const today = new Date();
 
@@ -32,7 +33,7 @@ export default function PayrollAdmin() {
     const emptyForm = { employee_id: '', days_worked: 0, basic: 0, da: 0, oa: 0, leave_wages: 0, esi_wages: 0, epf_wages: 0, provident_fund: 0, esi_deduction: 0, pt: 0, lwf: 0, tds: 0, leave_deduction: 0, other_deductions: 0, employer_pf: 0, employer_esi: 0, bank_ac_no: '' };
     const [form, setForm] = useState({ ...emptyForm });
     const [submitting, setSubmitting] = useState(false);
-    const [importing, setImporting] = useState(false);
+    const [, setImporting] = useState(false);
     const [importResult, setImportResult] = useState(null);
     const [settings, setSettings] = useState(null);
     const payrollFileRef = useRef(null);
@@ -250,6 +251,14 @@ export default function PayrollAdmin() {
                             style={{ display: 'inline-flex', alignItems: 'center', gap: 6, borderColor: 'rgba(16,185,129,0.4)', color: '#10b981' }}
                         >
                             <FiDownload size={14} /> <span>Export Excel</span>
+                        </button>
+
+                        <button
+                            className="btn btn-outline btn-sm"
+                            onClick={handlePayrollTemplate}
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                        >
+                            <FiFileText size={14} /> <span>Template</span>
                         </button>
 
                         {selected.length > 0 && (
@@ -609,7 +618,7 @@ export default function PayrollAdmin() {
                         {data.filter(p =>
                             p.employee_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
                             p.employee_id?.toLowerCase().includes(searchTerm.toLowerCase())
-                        ).map((p, idx) => (
+                        ).map((p) => (
                             <div key={p._id} className="card" style={{ padding: 0, overflow: 'hidden' }}>
                                 <div style={{ background: 'var(--bg-primary)', padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)' }}>
                                     <div>

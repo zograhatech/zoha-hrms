@@ -551,7 +551,7 @@ const processMessage = async (message, sessionId, currentUser = null) => {
         }
 
         const msg = intent === 'GREETING'
-            ? `Hello${greetingName}! 👋 Welcome to **Hari Hrms Copilot**!${helpContent}`
+            ? `Hello${greetingName}! 👋 Welcome to **HR Copilot**!${helpContent}`
             : `Here's what I can help you with:${helpContent}`;
 
         const suggestionsArr = currentUser?.role === 'hr_manager'
@@ -569,7 +569,7 @@ const processMessage = async (message, sessionId, currentUser = null) => {
     if (intent === 'GOODBYE') {
         return {
             intent,
-            message: '👋 Thank you for using **Hari Hrms Copilot**! Have a great day! 😊\n\nFeel free to return anytime you need HR assistance.',
+            message: '👋 Thank you for using **HR Copilot**! Have a great day! 😊\n\nFeel free to return anytime you need HR assistance.',
             suggestions: []
         };
     }
@@ -578,7 +578,7 @@ const processMessage = async (message, sessionId, currentUser = null) => {
     if (intent === 'POLICIES') {
         return {
             intent,
-            message: `📋 **Hari Hrms Policies:**\n\n🏢 **Office Hours:** 9:00 AM – 6:00 PM (Mon–Sat)\n🏠 **WFH Policy:** Up to 4 days/month (manager approval required)\n🏖️ **Leave Entitlement (Annual):**\n- Casual: 12 days | Sick: 12 days | Earned: 15 days\n🎉 **Holidays:** 14 public holidays/year\n💊 **Medical Benefits:** Group health insurance up to ₹3 lakhs\n📊 **Probation Period:** 6 months for new employees\n\nNeed more details on any specific policy?`,
+            message: `📋 **Company Policies:**\n\nFor questions regarding office hours, leave entitlements, remote work policies, or employee benefits, please refer to the official employee handbook or reach out directly to the HR department via the **Support Tickets** module.`,
             suggestions: ['Check leave balance', 'Apply leave', 'Raise HR ticket']
         };
     }

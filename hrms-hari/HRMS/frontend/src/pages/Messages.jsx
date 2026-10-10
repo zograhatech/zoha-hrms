@@ -457,7 +457,7 @@ export default function Messages() {
                         <div className="msgr-empty-card">
                             <div className="msgr-empty-icon"><FiMessageSquare /></div>
                             <h2>Your Private HRMS Messenger</h2>
-                            <p>Secure, real-time communication for Hari HRMS employees.</p>
+                            <p>Secure, real-time communication for organization employees.</p>
                             <button className="btn btn-primary btn-lg mt-24" onClick={() => setShowNewChat(true)}>
                                 Start a New Conversation
                             </button>

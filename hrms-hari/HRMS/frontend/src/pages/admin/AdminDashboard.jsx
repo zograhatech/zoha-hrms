@@ -1,7 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { useBranding } from '../../context/BrandingContext';
-import { useNavigate } from 'react-router-dom';
 
 import API from '../../api/axios';
 import AttendanceWidget from '../../components/AttendanceWidget';
@@ -14,6 +12,7 @@ import BirthdayCard from '../../components/BirthdayCard';
 import MonthCalendar from '../../components/MonthCalendar';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { formatDate } from '../../utils/dateFormatter';
+import { isManagerRole } from '../../utils/roleHelper';
 import WorkspaceOverview from '../../components/WorkspaceOverview';
 
 const StatCard = (props) => {
@@ -33,19 +32,15 @@ const StatCard = (props) => {
 
 export default function AdminDashboard() {
     const { user } = useAuth();
-    const { branding } = useBranding();
-    const navigate = useNavigate();
-    const permissions = user?.permissions || [];
-    const isHRM = user?.role === 'hr_manager';
+    const permissions = useMemo(() => user?.permissions || [], [user?.permissions]);
+    const isHRM = isManagerRole(user);
 
-    const hasAnalytics = isHRM || user?.role === 'admin' || permissions.includes('view_analytics');
-    const hasLeaves = isHRM || user?.role === 'admin' || permissions.includes('manage_leaves');
-    const hasTickets = isHRM || user?.role === 'admin' || permissions.includes('manage_tickets');
+    const hasAnalytics = isHRM || permissions.includes('view_analytics');
+    const hasLeaves = isHRM || permissions.includes('manage_leaves');
+    const hasTickets = isHRM || permissions.includes('manage_tickets');
 
     const [stats, setStats] = useState(null);
     const [pending, setPending] = useState([]);
-    const [openTickets, setOpenTickets] = useState(0);
-    const [payrollStats, setPayrollStats] = useState(null);
     const [upcomingEvents, setUpcomingEvents] = useState([]);
     const [attendanceTrends, setAttendanceTrends] = useState([]);
     const [zoomMeetings, setZoomMeetings] = useState([]);
@@ -89,15 +84,9 @@ export default function AdminDashboard() {
         else calls.push(Promise.resolve({ data: { resignations: [] } }));
 
         Promise.all(calls).then((responses) => {
-            const [s, l, t, p, u, a, z, r] = responses;
+            const [s, l, , , u, a, z, r] = responses;
             setStats(s.data.stats);
             setPending(l.data.leaves || []);
-            setOpenTickets((t.data.tickets || []).length);
-
-            const currentMonth = now.getMonth() + 1;
-            const monthAnalytics = (p.data.analytics || []).find(m => m.month === currentMonth);
-            setPayrollStats(monthAnalytics);
-
             setUpcomingEvents(u.data.events || []);
             setAttendanceTrends(a.data.trends || []);
             setResignations(r.data.resignations || []);
@@ -229,11 +218,11 @@ export default function AdminDashboard() {
                         <div key={r.role} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 0', borderBottom: '1px solid var(--border-color)' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                                 <span style={{ fontSize: '1.1rem', color: 'var(--text-muted)', display: 'flex' }}>
-                                    {r.role === 'hr_manager' ? <FiShield /> : r.role === 'hr' ? <FiBriefcase /> : <FiUser />}
+                                    {isManagerRole(r.role) ? <FiShield /> : r.role === 'hr' ? <FiBriefcase /> : <FiUser />}
                                 </span>
-                                <span style={{ fontWeight: 600, textTransform: 'capitalize' }}>{r.role === 'hr_manager' ? 'HR Manager' : r.role}</span>
+                                <span style={{ fontWeight: 600, textTransform: 'capitalize' }}>{isManagerRole(r.role) ? (r.role === 'admin' ? 'Admin' : 'HR Manager') : r.role}</span>
                             </div>
-                            <span className={`badge badge-${r.role === 'hr_manager' ? 'purple' : r.role === 'hr' ? 'info' : 'success'}`}>{r.count} member{r.count !== 1 ? 's' : ''}</span>
+                            <span className={`badge badge-${isManagerRole(r.role) ? 'purple' : r.role === 'hr' ? 'info' : 'success'}`}>{r.count} member{r.count !== 1 ? 's' : ''}</span>
                         </div>
                     ))}
 

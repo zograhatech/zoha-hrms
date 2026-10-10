@@ -11,13 +11,14 @@ import {
 } from 'react-icons/fi';
 import { useToast } from '../../context/ToastContext';
 import { formatDate } from '../../utils/dateFormatter';
+import { isManagerRole } from '../../utils/roleHelper';
 import DocumentManager from '../../components/DocumentManager';
 
 export default function EmployeeList() {
     const { user } = useAuth();
     const { showToast } = useToast();
     const permissions = user?.permissions || [];
-    const canManage = user?.role === 'hr_manager' || permissions.includes('manage_employees');
+    const canManage = isManagerRole(user) || permissions.includes('manage_employees');
 
     const [employees, setEmployees] = useState([]);
 
@@ -49,6 +50,7 @@ export default function EmployeeList() {
     const [pagination, setPagination] = useState({ page: 1, limit: 10, total: 0, pages: 1 });
     const [showDocManager, setShowDocManager] = useState(false);
     const [selectedEmployeeForDocs, setSelectedEmployeeForDocs] = useState(null);
+    const [formError, setFormError] = useState('');
     const fileInputRef = useRef(null);
 
     useEffect(() => {
@@ -97,27 +99,99 @@ export default function EmployeeList() {
 
     const saveEmployee = async (e) => {
         e.preventDefault();
+        setFormError('');
+
+        // 2a. Password mandatory on create
+        if (!editingEmployee && (!form.password || !form.password.trim())) {
+            setFormError('Password is required.');
+            return;
+        }
+
+        // 2e. Email format, trim & lowercase
+        const cleanEmail = String(form.email || '').trim().toLowerCase();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+            setFormError('Please enter a valid email address.');
+            return;
+        }
+
+        // 2e. Phone: digits only, 10 to 15 chars, optional
+        const cleanPhone = String(form.phone || '').trim();
+        if (cleanPhone && !/^\d{10,15}$/.test(cleanPhone)) {
+            setFormError('Phone number must be between 10 and 15 digits.');
+            return;
+        }
+
+        // 2e. PAN: 10 chars format AAAAA9999A, optional
+        const cleanPan = String(form.pan || '').trim().toUpperCase();
+        if (cleanPan && !/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(cleanPan)) {
+            setFormError('PAN must be 10 characters in format AAAAA9999A.');
+            return;
+        }
+
+        // 2e. UAN: 12 digits, optional
+        const cleanUan = String(form.uan || '').trim();
+        if (cleanUan && !/^\d{12}$/.test(cleanUan)) {
+            setFormError('UAN must be exactly 12 digits.');
+            return;
+        }
+
+        // 2f. Date fields: DOB must be strictly before Joining Date
+        if (form.date_of_birth && form.date_of_joining) {
+            const dob = new Date(form.date_of_birth);
+            const doj = new Date(form.date_of_joining);
+            if (dob >= doj) {
+                setFormError('Date of Birth must be before Joining Date.');
+                return;
+            }
+        }
+
+        // 2e. Salary fields: non-negative
+        if (form.salary_details) {
+            for (const [key, val] of Object.entries(form.salary_details)) {
+                if (['bank_ac_no', 'bank_ifsc_code', 'bank_name'].includes(key)) continue;
+                if (val !== undefined && val !== null && val !== '') {
+                    const num = Number(val);
+                    if (isNaN(num) || num < 0) {
+                        setFormError(`Salary field ${key.replace(/_/g, ' ')} cannot be negative.`);
+                        return;
+                    }
+                }
+            }
+        }
+
+        const payload = {
+            ...form,
+            email: cleanEmail,
+            phone: cleanPhone,
+            pan: cleanPan,
+            uan: cleanUan
+        };
+
         setSubmitting(true);
         try {
             if (editingEmployee) {
-                const { data } = await API.put(`/employees/${editingEmployee.id}`, form);
+                const { data } = await API.put(`/employees/${editingEmployee.id}`, payload);
                 showToast(data.message, 'success');
             } else {
-                const { data } = await API.post('/employees', form);
+                const { data } = await API.post('/employees', payload);
                 showToast(data.message, 'success');
             }
             setShowForm(false);
             setShowSalaryModal(false);
             setEditingEmployee(null);
+            setFormError('');
             load();
         } catch (err) {
-            showToast(err.response?.data?.message || 'Failed to save employee.', 'error');
+            const errMsg = err.response?.data?.message || 'Failed to save employee.';
+            setFormError(errMsg);
+            showToast(errMsg, 'error');
         } finally {
             setSubmitting(false);
         }
     };
 
     const handleEdit = (emp) => {
+        setFormError('');
         setEditingEmployee(emp);
         setForm({
             id: emp.id,
@@ -226,7 +300,7 @@ export default function EmployeeList() {
             const url = window.URL.createObjectURL(new Blob([res.data]));
             const a = document.createElement('a'); a.href = url; a.download = 'employee_import_template.xlsx'; a.click();
             window.URL.revokeObjectURL(url);
-        } catch { setMsg({ text: 'Template download failed.', type: 'error' }); }
+        } catch { showToast('Template download failed.', 'error'); }
     };
 
     const handleImport = async (e) => {
@@ -289,10 +363,13 @@ export default function EmployeeList() {
                             </button>
                             <button className="btn btn-primary" onClick={() => {
                                 setEditingEmployee(null);
+                                setFormError('');
                                 setForm({
-                                    id: '', name: '', email: '', password: 'emp123', role: 'employee',
-                                    department_id: '', shift_id: '', phone: '', designation: '', date_of_joining: '',
-                                    pan: '', uan: '', pf_account_no: '',
+                                    id: '', name: '', email: '', password: '', role: 'employee',
+                                    department_id: '', shift_id: '', phone: '', designation: '',
+                                    date_of_joining: new Date().toISOString().split('T')[0],
+                                    date_of_birth: '',
+                                    pan: '', uan: '', pf_account_no: '', gender: 'male', address: '', manager_id: '',
                                     salary_details: {
                                         basic: 0, da: 0, oa: 0, leave_wages: 0, esi_wages: 0, epf_wages: 0,
                                         provident_fund: 0, esi_deduction: 0, pt: 0, lwf: 0, tds: 0, leave_deduction: 0, other_deductions: 0, bank_ac_no: ''
@@ -328,15 +405,32 @@ export default function EmployeeList() {
             {/* Add Employee Modal */}
             {showForm && (
                 <div className="modal-overlay" onClick={() => setShowForm(false)}>
-                    <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 600 }}>
-                        <div className="modal-header">
+                    <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 680, maxHeight: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: 0 }}>
+                        <div className="modal-header" style={{ flexShrink: 0, padding: '20px 24px', borderBottom: '1px solid var(--border-color)' }}>
                             <h3 className="modal-title" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                                 {editingEmployee ? <><FiEdit2 /> Edit Employee</> : <><FiUserPlus /> Add New Employee</>}
                             </h3>
-                            <button className="modal-close" onClick={() => { setShowForm(false); setEditingEmployee(null); }}><FiX /></button>
+                            <button className="modal-close" onClick={() => { setShowForm(false); setEditingEmployee(null); setFormError(''); }}><FiX /></button>
                         </div>
-                        <form onSubmit={saveEmployee}>
-                            <div className="modal-body">
+                        <form onSubmit={saveEmployee} style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+                            <div className="modal-body" style={{ flex: 1, overflowY: 'auto', padding: '24px' }}>
+                                {formError && (
+                                    <div style={{
+                                        padding: '12px 16px',
+                                        marginBottom: 16,
+                                        borderRadius: '8px',
+                                        background: 'rgba(239, 68, 68, 0.1)',
+                                        border: '1px solid rgba(239, 68, 68, 0.3)',
+                                        color: '#ef4444',
+                                        fontSize: '0.875rem',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: 8
+                                    }}>
+                                        <FiAlertCircle size={18} style={{ flexShrink: 0 }} />
+                                        <span>{formError}</span>
+                                    </div>
+                                )}
                                 <div className="grid-2">
                                     <div className="form-group">
                                         <label className="form-label" style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -385,7 +479,13 @@ export default function EmployeeList() {
                                     </div>
                                     <div className="form-group">
                                         <label className="form-label">Phone</label>
-                                        <input className="form-input" placeholder="Phone Number" value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} />
+                                        <input
+                                            type="tel"
+                                            className="form-input"
+                                            placeholder="10 to 15 digits"
+                                            value={form.phone}
+                                            onChange={e => setForm({ ...form, phone: e.target.value.replace(/[^\d+]/g, '') })}
+                                        />
                                     </div>
                                     <div className="form-group">
                                         <label className="form-label">Gender</label>
@@ -401,11 +501,26 @@ export default function EmployeeList() {
                                     </div>
                                     <div className="form-group">
                                         <label className="form-label">PAN Number</label>
-                                        <input className="form-input" placeholder="ABCDE1234F" value={form.pan} onChange={e => setForm({ ...form, pan: e.target.value.toUpperCase() })} />
+                                        <input
+                                            className="form-input"
+                                            placeholder="ABCDE1234F"
+                                            maxLength={10}
+                                            value={form.pan}
+                                            onChange={e => setForm({ ...form, pan: e.target.value.toUpperCase() })}
+                                        />
+                                        <small style={{ color: 'var(--text-muted)', fontSize: '0.7rem', display: 'block', marginTop: 4 }}>
+                                            Format: 5 letters, 4 digits, 1 letter (e.g. ABCDE1234F)
+                                        </small>
                                     </div>
                                     <div className="form-group">
                                         <label className="form-label">UAN</label>
-                                        <input className="form-input" placeholder="100..." value={form.uan} onChange={e => setForm({ ...form, uan: e.target.value })} />
+                                        <input
+                                            className="form-input"
+                                            placeholder="12 digits"
+                                            maxLength={12}
+                                            value={form.uan}
+                                            onChange={e => setForm({ ...form, uan: e.target.value.replace(/[^\d]/g, '') })}
+                                        />
                                     </div>
                                     <div className="form-group">
                                         <label className="form-label">PF Account No</label>
@@ -415,12 +530,10 @@ export default function EmployeeList() {
                                         <label className="form-label">Role</label>
                                         <select className="form-select" value={form.role} onChange={e => setForm({ ...form, role: e.target.value })} required>
                                             <option value="">— Select Role —</option>
-                                            {Object.keys(settings?.roles_permissions || { employee: [], hr: [], hr_manager: [] }).map(r => (
-                                                <option key={r} value={r}>
-                                                    {r === 'hr_manager' ? 'HR Manager' : r === 'hr' ? 'HR' : r.charAt(0).toUpperCase() + r.slice(1).replace(/_/g, ' ')}
-                                                </option>
-                                            ))}
-
+                                            <option value="employee">Employee</option>
+                                            <option value="hr">HR</option>
+                                            <option value="hr_manager">HR Manager</option>
+                                            <option value="admin">Admin</option>
                                         </select>
                                     </div>
                                     <div className="form-group">
@@ -447,9 +560,18 @@ export default function EmployeeList() {
                                     <div className="form-group">
                                         <label className="form-label">Working Shift</label>
                                         <select className="form-select" value={form.shift_id} onChange={e => setForm({ ...form, shift_id: e.target.value })}>
-                                            <option value="">Select Shift</option>
-                                            {shifts.map(s => <option key={s._id} value={s._id}>{s.name} ({s.start_time} - {s.end_time})</option>)}
+                                            <option value="">Select Shift (Optional)</option>
+                                            {shifts.length === 0 ? (
+                                                <option value="" disabled>No shifts yet. Create one in Shift Management</option>
+                                            ) : (
+                                                shifts.map(s => <option key={s._id} value={s._id}>{s.name} ({s.start_time} - {s.end_time})</option>)
+                                            )}
                                         </select>
+                                        {shifts.length === 0 && (
+                                            <small style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: 4, display: 'block' }}>
+                                                No shifts yet. Create one in Shift Management
+                                            </small>
+                                        )}
                                     </div>
                                     {editingEmployee && (
                                         <>
@@ -484,7 +606,7 @@ export default function EmployeeList() {
                                     <div className="grid-2">
                                         <div className="form-group">
                                             <label className="form-label">Basic Salary</label>
-                                            <input type="number" className="form-input" value={form.salary_details.basic} onChange={e => setForm({ ...form, salary_details: { ...form.salary_details, basic: e.target.value } })} />
+                                            <input type="number" min="0" step="any" className="form-input" value={form.salary_details.basic} onChange={e => setForm({ ...form, salary_details: { ...form.salary_details, basic: Math.max(0, parseFloat(e.target.value) || 0) } })} />
                                         </div>
                                         <div className="form-group">
                                             <label className="form-label">Bank A/C No.</label>
@@ -492,53 +614,53 @@ export default function EmployeeList() {
                                         </div>
                                         <div className="form-group">
                                             <label className="form-label">DA (Dearness Allowance)</label>
-                                            <input type="number" className="form-input" value={form.salary_details.da} onChange={e => setForm({ ...form, salary_details: { ...form.salary_details, da: e.target.value } })} />
+                                            <input type="number" min="0" step="any" className="form-input" value={form.salary_details.da} onChange={e => setForm({ ...form, salary_details: { ...form.salary_details, da: Math.max(0, parseFloat(e.target.value) || 0) } })} />
                                         </div>
                                         <div className="form-group">
                                             <label className="form-label">OA (Other Allowance)</label>
-                                            <input type="number" className="form-input" value={form.salary_details.oa} onChange={e => setForm({ ...form, salary_details: { ...form.salary_details, oa: e.target.value } })} />
+                                            <input type="number" min="0" step="any" className="form-input" value={form.salary_details.oa} onChange={e => setForm({ ...form, salary_details: { ...form.salary_details, oa: Math.max(0, parseFloat(e.target.value) || 0) } })} />
                                         </div>
                                         <div className="form-group">
                                             <label className="form-label">ESI Wages (Applicable for ESI)</label>
-                                            <input type="number" className="form-input" value={form.salary_details.esi_wages} onChange={e => {
-                                                const val = parseFloat(e.target.value) || 0;
-                                                setForm({ ...form, salary_details: { ...form.salary_details, esi_wages: e.target.value, esi_deduction: Math.round(val * 0.0075) } });
+                                            <input type="number" min="0" step="any" className="form-input" value={form.salary_details.esi_wages} onChange={e => {
+                                                const val = Math.max(0, parseFloat(e.target.value) || 0);
+                                                setForm({ ...form, salary_details: { ...form.salary_details, esi_wages: val, esi_deduction: Math.round(val * 0.0075) } });
                                             }} />
                                         </div>
                                         <div className="form-group">
                                             <label className="form-label">EPF Wages (Applicable for PF)</label>
-                                            <input type="number" className="form-input" value={form.salary_details.epf_wages} onChange={e => {
-                                                const val = parseFloat(e.target.value) || 0;
-                                                setForm({ ...form, salary_details: { ...form.salary_details, epf_wages: e.target.value, provident_fund: Math.round(val * 0.12) } });
+                                            <input type="number" min="0" step="any" className="form-input" value={form.salary_details.epf_wages} onChange={e => {
+                                                const val = Math.max(0, parseFloat(e.target.value) || 0);
+                                                setForm({ ...form, salary_details: { ...form.salary_details, epf_wages: val, provident_fund: Math.round(val * 0.12) } });
                                             }} />
                                         </div>
                                         <div className="form-group">
                                             <label className="form-label">Provident Fund (PF)</label>
-                                            <input type="number" className="form-input" value={form.salary_details.provident_fund} onChange={e => setForm({ ...form, salary_details: { ...form.salary_details, provident_fund: e.target.value } })} />
+                                            <input type="number" min="0" step="any" className="form-input" value={form.salary_details.provident_fund} onChange={e => setForm({ ...form, salary_details: { ...form.salary_details, provident_fund: Math.max(0, parseFloat(e.target.value) || 0) } })} />
                                         </div>
                                         <div className="form-group">
                                             <label className="form-label">ESI Deduction</label>
-                                            <input type="number" className="form-input" value={form.salary_details.esi_deduction} onChange={e => setForm({ ...form, salary_details: { ...form.salary_details, esi_deduction: e.target.value } })} />
+                                            <input type="number" min="0" step="any" className="form-input" value={form.salary_details.esi_deduction} onChange={e => setForm({ ...form, salary_details: { ...form.salary_details, esi_deduction: Math.max(0, parseFloat(e.target.value) || 0) } })} />
                                         </div>
                                         <div className="form-group">
                                             <label className="form-label">Professional Tax (PT)</label>
-                                            <input type="number" className="form-input" value={form.salary_details.pt} onChange={e => setForm({ ...form, salary_details: { ...form.salary_details, pt: e.target.value } })} />
+                                            <input type="number" min="0" step="any" className="form-input" value={form.salary_details.pt} onChange={e => setForm({ ...form, salary_details: { ...form.salary_details, pt: Math.max(0, parseFloat(e.target.value) || 0) } })} />
                                         </div>
                                         <div className="form-group">
                                             <label className="form-label">LWF (Labour Welfare Fund)</label>
-                                            <input type="number" className="form-input" value={form.salary_details.lwf} onChange={e => setForm({ ...form, salary_details: { ...form.salary_details, lwf: e.target.value } })} />
+                                            <input type="number" min="0" step="any" className="form-input" value={form.salary_details.lwf} onChange={e => setForm({ ...form, salary_details: { ...form.salary_details, lwf: Math.max(0, parseFloat(e.target.value) || 0) } })} />
                                         </div>
                                         <div className="form-group">
                                             <label className="form-label">TDS</label>
-                                            <input type="number" className="form-input" value={form.salary_details.tds} onChange={e => setForm({ ...form, salary_details: { ...form.salary_details, tds: e.target.value } })} />
+                                            <input type="number" min="0" step="any" className="form-input" value={form.salary_details.tds} onChange={e => setForm({ ...form, salary_details: { ...form.salary_details, tds: Math.max(0, parseFloat(e.target.value) || 0) } })} />
                                         </div>
                                         <div className="form-group">
                                             <label className="form-label">Leave Deduction</label>
-                                            <input type="number" className="form-input" value={form.salary_details.leave_deduction} onChange={e => setForm({ ...form, salary_details: { ...form.salary_details, leave_deduction: e.target.value } })} />
+                                            <input type="number" min="0" step="any" className="form-input" value={form.salary_details.leave_deduction} onChange={e => setForm({ ...form, salary_details: { ...form.salary_details, leave_deduction: Math.max(0, parseFloat(e.target.value) || 0) } })} />
                                         </div>
                                         <div className="form-group">
                                             <label className="form-label">Other Deductions</label>
-                                            <input type="number" className="form-input" value={form.salary_details.other_deductions} onChange={e => setForm({ ...form, salary_details: { ...form.salary_details, other_deductions: e.target.value } })} />
+                                            <input type="number" min="0" step="any" className="form-input" value={form.salary_details.other_deductions} onChange={e => setForm({ ...form, salary_details: { ...form.salary_details, other_deductions: Math.max(0, parseFloat(e.target.value) || 0) } })} />
                                         </div>
                                     </div>
                                     <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: 8 }}>
@@ -547,8 +669,16 @@ export default function EmployeeList() {
                                     </p>
                                 </div>
                             </div>
-                            <div className="modal-footer">
-                                <button type="button" className="btn btn-outline" onClick={() => { setShowForm(false); setEditingEmployee(null); }}>Cancel</button>
+                            <div className="modal-footer" style={{
+                                flexShrink: 0,
+                                padding: '16px 24px',
+                                borderTop: '1px solid var(--border-color)',
+                                background: 'var(--bg-card)',
+                                display: 'flex',
+                                justifyContent: 'flex-end',
+                                gap: 12
+                            }}>
+                                <button type="button" className="btn btn-outline" onClick={() => { setShowForm(false); setEditingEmployee(null); setFormError(''); }}>Cancel</button>
                                 <button type="submit" className="btn btn-primary" disabled={submitting} style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
                                     {submitting ? 'Saving...' : (editingEmployee ? <><FiCheckCircle /> Save Changes</> : <><FiCheckCircle /> Add Employee</>)}
                                 </button>
@@ -621,7 +751,7 @@ export default function EmployeeList() {
                                     <td>{e.designation || '—'}</td>
                                     <td>{e.department_name || '—'}</td>
                                     <td style={{ fontSize: '0.8rem' }}>{formatDate(e.date_of_joining)}</td>
-                                    <td><span className={`badge badge-${e.role === 'hr_manager' ? 'purple' : e.role === 'hr' ? 'info' : 'success'}`}>{e.role === 'hr_manager' ? 'HR Manager' : e.role === 'hr' ? 'HR' : e.role.charAt(0).toUpperCase() + e.role.slice(1).replace(/_/g, ' ')}</span></td>
+                                    <td><span className={`badge badge-${isManagerRole(e.role) ? 'purple' : e.role === 'hr' ? 'info' : 'success'}`}>{isManagerRole(e.role) ? (e.role === 'admin' ? 'Admin' : 'HR Manager') : e.role === 'hr' ? 'HR' : e.role.charAt(0).toUpperCase() + e.role.slice(1).replace(/_/g, ' ')}</span></td>
                                     {canManage && (
                                         <td style={{ textAlign: 'center' }}>
                                             <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
@@ -630,7 +760,7 @@ export default function EmployeeList() {
                                                 {/* Payroll Action */}
                                                 {(() => {
                                                     if (user?.permissions && Array.isArray(user.permissions)) return user.permissions.includes('payroll');
-                                                    return user?.role === 'admin' || user?.role === 'hr_manager';
+                                                    return isManagerRole(user);
                                                 })() && (
                                                     <button className="btn btn-icon btn-sm" title="Salary Details" style={{ color: 'var(--accent-primary)' }} onClick={() => handleSalaryEdit(e)}><FiCreditCard size={14} /></button>
                                                 )}
@@ -638,7 +768,7 @@ export default function EmployeeList() {
                                                 {/* Document Action - Strict Individual Toggle */}
                                                 {(() => {
                                                     if (user?.permissions && Array.isArray(user.permissions)) return user.permissions.includes('manage_documents');
-                                                    return user?.role === 'admin' || user?.role === 'hr_manager';
+                                                    return isManagerRole(user);
                                                 })() && (
                                                     <button className="btn btn-icon btn-sm" title="Documents" style={{ color: 'var(--accent-info)' }} onClick={() => { setSelectedEmployeeForDocs(e); setShowDocManager(true); }}><FiFileText size={14} /></button>
                                                 )}

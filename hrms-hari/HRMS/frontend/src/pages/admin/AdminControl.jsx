@@ -6,7 +6,6 @@ import {
 } from 'react-icons/fi';
 import { useToast } from '../../context/ToastContext';
 import { useAuth } from '../../context/AuthContext';
-import { formatDate } from '../../utils/dateFormatter';
 
 export default function AdminControl() {
     const { showToast } = useToast();
@@ -19,7 +18,6 @@ export default function AdminControl() {
     const [searchQuery, setSearchQuery] = useState('');
 
     useEffect(() => {
-        setLoading(true);
         Promise.all([
             API.get('/employees'),
             API.get('/settings'),
@@ -467,7 +465,7 @@ export default function AdminControl() {
                 </div>
             </div>
             <div style={{ marginTop: 24, textAlign: 'center', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                System Version: 2.1.0-alpha · Organization: Hari Hrms
+                System Version: 2.1.0-alpha · Organization: {settings?.company_name || 'HRMS'}
             </div>
         </div>
     );

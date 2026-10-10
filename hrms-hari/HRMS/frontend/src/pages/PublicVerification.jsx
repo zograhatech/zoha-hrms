@@ -374,8 +374,15 @@ export default function PublicVerification() {
                                                             padding: '10px 24px', borderRadius: 14, fontWeight: 900, background: 'linear-gradient(45deg, #DD2476 0%, #FF512F 100%)', 
                                                             borderColor: 'transparent', display: 'flex', alignItems: 'center', gap: 8 
                                                         }}
-                                                        onClick={() => {
-                                                            window.open(`${API.defaults.baseURL}/resignations/${verifiedData.resignation_id}/documents/${doc._id}`, '_blank');
+                                                        onClick={async () => {
+                                                            try {
+                                                                const res = await API.get(`/resignations/${verifiedData.resignation_id}/documents/${doc._id}`, { responseType: 'blob' });
+                                                                const blob = new Blob([res.data], { type: res.headers['content-type'] || 'application/pdf' });
+                                                                const url = window.URL.createObjectURL(blob);
+                                                                window.open(url, '_blank');
+                                                            } catch {
+                                                                showToast('Login required to access this document.', 'error');
+                                                            }
                                                         }}
                                                     >
                                                         <FiDownload /> View

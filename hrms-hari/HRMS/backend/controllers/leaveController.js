@@ -154,10 +154,12 @@ const approveLeave = async (req, res) => {
 
         // Notify Employee
         const emp = await Employee.findOne({ id: leave.employee_id }).lean();
+        const settings = await Setting.findOne().lean();
+        const compName = settings?.company_name || process.env.COMPANY_NAME || 'HRMS';
         if (emp?.email) {
             sendEmail({
                 to: emp.email,
-                subject: 'Leave Request Approved - Hari Hrms',
+                subject: `Leave Request Approved - ${compName}`,
                 html: `
                     <h2 style="color: #10b981;">✅ Leave Approved</h2>
                     <p>Hi ${emp.name},</p>
@@ -188,10 +190,12 @@ const rejectLeave = async (req, res) => {
 
         // Notify Employee
         const emp = await Employee.findOne({ id: leave.employee_id }).lean();
+        const settings = await Setting.findOne().lean();
+        const compName = settings?.company_name || process.env.COMPANY_NAME || 'HRMS';
         if (emp?.email) {
             sendEmail({
                 to: emp.email,
-                subject: 'Leave Request Update - Hari Hrms',
+                subject: `Leave Request Update - ${compName}`,
                 html: `
                     <h2 style="color: #ef4444;">❌ Leave Rejected</h2>
                     <p>Hi ${emp.name},</p>

@@ -131,11 +131,26 @@ exports.getDocument = async (req, res) => {
         const resignation = await Resignation.findById(req.params.id);
         if (!resignation) return res.status(404).send('Not found');
         
+        // Ownership / permission check
+        const isOwner = resignation.employee && (
+            resignation.employee.toString() === req.user?.id ||
+            resignation.employee.toString() === req.user?._id?.toString()
+        );
+        const roleClean = (req.user?.role || '').toLowerCase().replace(/\s+/g, '');
+        const isManager = ['admin', 'hr', 'hr_manager', 'hrmanager', 'hrmanger'].includes(roleClean) ||
+                          req.user?.permissions?.includes('manage_resignations') ||
+                          req.user?.permissions?.includes('exit') ||
+                          req.user?.permissions?.includes('exit_approve');
+
+        if (!isOwner && !isManager) {
+            return res.status(403).send('Access denied');
+        }
+
         const doc = resignation.documents.id(req.params.docId);
         if (!doc) return res.status(404).send('Document not found');
         
-        // Safety: Only serve if approved
-        if (resignation.status !== 'approved') return res.status(403).send('Not approved');
+        // Safety: Only serve if approved or requester is manager
+        if (resignation.status !== 'approved' && !isManager) return res.status(403).send('Not approved');
 
         res.set('Content-Type', doc.contentType);
         res.set('Content-Disposition', `inline; filename="${doc.name}"`);

@@ -67,7 +67,7 @@ export default function DocumentManager({ employeeId, employeeName, isOpen, onCl
         }
     };
 
-    const handleView = async (id, fileName) => {
+    const handleView = async (id) => {
         try {
             const response = await API.get(`/documents/view/${id}`, {
                 responseType: 'blob'

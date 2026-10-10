@@ -99,26 +99,104 @@ const createEmployee = async (req, res) => {
         const settings = await Setting.findOne();
 
         const {
-            id, name, email, password, role, department_id, phone, designation,
+            id, name, email, password, role, department_id, shift_id, manager_id, phone, designation,
             date_of_joining, date_of_birth, gender, address, pan, uan, pf_account_no, salary_details
         } = req.body;
+
+        if (!id || !String(id).trim()) {
+            return res.status(400).json({ success: false, message: 'Employee ID is required.' });
+        }
+        if (!name || !String(name).trim()) {
+            return res.status(400).json({ success: false, message: 'Full name is required.' });
+        }
+        if (!email || !String(email).trim()) {
+            return res.status(400).json({ success: false, message: 'Email is required.' });
+        }
+
         const emailLower = String(email).toLowerCase().trim();
-        const existing = await Employee.findOne({ $or: [{ id }, { email: emailLower }] });
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(emailLower)) {
+            return res.status(400).json({ success: false, message: 'Invalid email format.' });
+        }
+
+        if (!password || !String(password).trim()) {
+            return res.status(400).json({ success: false, message: 'Password is required' });
+        }
+
+        // Phone: digits only, 10 to 15 characters, optional
+        if (phone && String(phone).trim()) {
+            const phoneClean = String(phone).trim();
+            if (!/^\d{10,15}$/.test(phoneClean)) {
+                return res.status(400).json({ success: false, message: 'Phone must be between 10 and 15 digits.' });
+            }
+        }
+
+        // PAN: 10 chars AAAAA9999A, optional
+        if (pan && String(pan).trim()) {
+            const panClean = String(pan).trim().toUpperCase();
+            if (!/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(panClean)) {
+                return res.status(400).json({ success: false, message: 'PAN must be in format AAAAA9999A.' });
+            }
+        }
+
+        // UAN: 12 digits, optional
+        if (uan && String(uan).trim()) {
+            const uanClean = String(uan).trim();
+            if (!/^\d{12}$/.test(uanClean)) {
+                return res.status(400).json({ success: false, message: 'UAN must be exactly 12 digits.' });
+            }
+        }
+
+        // Date fields: DOB must be strictly before Joining Date
+        if (date_of_birth && date_of_joining) {
+            const dob = new Date(date_of_birth);
+            const doj = new Date(date_of_joining);
+            if (dob >= doj) {
+                return res.status(400).json({ success: false, message: 'Date of birth must be before joining date.' });
+            }
+        }
+
+        // Salary fields: numbers only, default 0, never negative
+        if (salary_details && typeof salary_details === 'object') {
+            for (const [key, val] of Object.entries(salary_details)) {
+                if (['bank_ac_no', 'bank_ifsc_code', 'bank_name'].includes(key)) continue;
+                if (val !== undefined && val !== null && val !== '') {
+                    const numVal = Number(val);
+                    if (isNaN(numVal) || numVal < 0) {
+                        return res.status(400).json({ success: false, message: `Salary field ${key} cannot be negative.` });
+                    }
+                }
+            }
+        }
+
+        // Role: supported roles
+        const allowedRoles = ['employee', 'hr', 'hr_manager', 'admin'];
+        if (role && !allowedRoles.includes(String(role).toLowerCase())) {
+            return res.status(400).json({ success: false, message: 'Invalid role specified.' });
+        }
+
+        const existing = await Employee.findOne({ $or: [{ id: String(id).trim().toUpperCase() }, { email: emailLower }] });
         if (existing) return res.status(400).json({ success: false, message: 'Employee ID or email already exists.' });
 
-        const password_hash = await bcrypt.hash(password || 'emp123', 10);
+        const password_hash = await bcrypt.hash(password, 10);
         const employee = await Employee.create({
-            id, name, email: emailLower, password_hash, role,
+            id: String(id).trim().toUpperCase(),
+            name: String(name).trim(),
+            email: emailLower,
+            password_hash,
+            role: role || 'employee',
             department_id: department_id || null,
-            phone: phone || undefined,
-            designation: designation || undefined,
+            shift_id: shift_id || null,
+            manager_id: manager_id || null,
+            phone: phone ? String(phone).trim() : undefined,
+            designation: designation ? String(designation).trim() : undefined,
             date_of_joining: date_of_joining || undefined,
             date_of_birth: date_of_birth || undefined,
             gender: gender || undefined,
-            address: address || undefined,
-            pan: pan || undefined,
-            uan: uan || undefined,
-            pf_account_no: pf_account_no || undefined,
+            address: address ? String(address).trim() : undefined,
+            pan: pan ? String(pan).trim().toUpperCase() : undefined,
+            uan: uan ? String(uan).trim() : undefined,
+            pf_account_no: pf_account_no ? String(pf_account_no).trim() : undefined,
             salary_details: salary_details || undefined
         });
 
@@ -133,7 +211,7 @@ const createEmployee = async (req, res) => {
             };
 
             await LeaveBalance.create({
-                employee_id: id,
+                employee_id: employee.id,
                 year: new Date().getFullYear(),
                 ...policies
             });
@@ -142,18 +220,19 @@ const createEmployee = async (req, res) => {
         }
 
         const { password_hash: _, ...rest } = employee.toObject();
+        const companyName = settings?.company_name || process.env.COMPANY_NAME || 'HRMS';
 
         // Send Welcome Email
         sendEmail({
-            to: email,
-            subject: 'Welcome to Hari Hrms - Your Login Credentials',
+            to: emailLower,
+            subject: `Welcome to ${companyName} - Your Login Credentials`,
             html: `
                 <h2 style="color: #6366f1;">Welcome to the Team, ${name}!</h2>
-                <p>An account has been created for you on the <b>Hari Hrms Portal</b>.</p>
+                <p>An account has been created for you on the <b>${companyName} Portal</b>.</p>
                 <div style="background: #f8fafc; padding: 20px; border-radius: 8px; border-left: 4px solid #6366f1; margin: 20px 0;">
-                    <p style="margin: 0;"><b>Login URL:</b> <a href="${process.env.FRONTEND_URL || 'https://hrms-delta-eight.vercel.app'}/login">Click here to Sign In</a></p>
+                    <p style="margin: 0;"><b>Login URL:</b> <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/login">Click here to Sign In</a></p>
                     <p style="margin: 10px 0 0;"><b>Employee ID:</b> ${id}</p>
-                    <p style="margin: 5px 0 0;"><b>Password:</b> ${password || 'emp123'}</p>
+                    <p style="margin: 5px 0 0;"><b>Password:</b> ${password}</p>
                 </div>
                 <p>Please log in and update your profile and password immediately.</p>
             `
@@ -200,6 +279,44 @@ const updateEmployee = async (req, res) => {
             
             if (permissions !== undefined && !isManagerRole) {
                 return res.status(403).json({ success: false, message: 'Only HR Managers can grant individual module access.' });
+            }
+
+            // Validations
+            if (phone && String(phone).trim()) {
+                const phoneClean = String(phone).trim();
+                if (!/^\d{10,15}$/.test(phoneClean)) {
+                    return res.status(400).json({ success: false, message: 'Phone must be between 10 and 15 digits.' });
+                }
+            }
+            if (pan && String(pan).trim()) {
+                const panClean = String(pan).trim().toUpperCase();
+                if (!/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(panClean)) {
+                    return res.status(400).json({ success: false, message: 'PAN must be in format AAAAA9999A.' });
+                }
+            }
+            if (uan && String(uan).trim()) {
+                const uanClean = String(uan).trim();
+                if (!/^\d{12}$/.test(uanClean)) {
+                    return res.status(400).json({ success: false, message: 'UAN must be exactly 12 digits.' });
+                }
+            }
+            if (date_of_birth && date_of_joining) {
+                const dob = new Date(date_of_birth);
+                const doj = new Date(date_of_joining);
+                if (dob >= doj) {
+                    return res.status(400).json({ success: false, message: 'Date of birth must be before joining date.' });
+                }
+            }
+            if (salary_details && typeof salary_details === 'object') {
+                for (const [key, val] of Object.entries(salary_details)) {
+                    if (['bank_ac_no', 'bank_ifsc_code', 'bank_name'].includes(key)) continue;
+                    if (val !== undefined && val !== null && val !== '') {
+                        const numVal = Number(val);
+                        if (isNaN(numVal) || numVal < 0) {
+                            return res.status(400).json({ success: false, message: `Salary field ${key} cannot be negative.` });
+                        }
+                    }
+                }
             }
 
             updateFields = {
@@ -501,6 +618,7 @@ const importEmployees = async (req, res) => {
         const employeeCount = await Employee.countDocuments({ status: 'active' });
         const settings = await Setting.findOne();
         const maxEmployees = settings?.subscription?.max_employees || 5;
+        const companyName = settings?.company_name || process.env.COMPANY_NAME || 'HRMS';
 
         if (employeeCount >= maxEmployees) {
             return res.status(403).json({ 
@@ -620,12 +738,12 @@ const importEmployees = async (req, res) => {
             // Send Welcome Email
             sendEmail({
                 to: empEmail,
-                subject: 'Welcome to Hari Hrms - Your Login Credentials',
+                subject: `Welcome to ${companyName} - Your Login Credentials`,
                 html: `
                     <h2 style="color: #6366f1;">Welcome to the Team, ${empName}!</h2>
-                    <p>An account has been created for you on the <b>Hari Hrms Portal</b>.</p>
+                    <p>An account has been created for you on the <b>${companyName} Portal</b>.</p>
                     <div style="background: #f8fafc; padding: 20px; border-radius: 8px; border-left: 4px solid #6366f1; margin: 20px 0;">
-                        <p style="margin: 0;"><b>Login URL:</b> <a href="${process.env.FRONTEND_URL || 'https://hrms-delta-eight.vercel.app'}/login">Click here to Sign In</a></p>
+                        <p style="margin: 0;"><b>Login URL:</b> <a href="${process.env.CLIENT_URL || process.env.FRONTEND_URL || 'http://localhost:5173'}/login">Click here to Sign In</a></p>
                         <p style="margin: 10px 0 0;"><b>Employee ID:</b> ${finalEmpId}</p>
                         <p style="margin: 5px 0 0;"><b>Password:</b> ${plainPassword}</p>
                     </div>

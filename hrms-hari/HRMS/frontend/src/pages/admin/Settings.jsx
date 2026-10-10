@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import API from '../../api/axios';
 import { useBranding } from '../../context/BrandingContext';
 import { useAuth } from '../../context/AuthContext';
+import { isManagerRole } from '../../utils/roleHelper';
 
 import {
     FiSettings, FiBriefcase, FiMail, FiClock,
@@ -75,9 +76,9 @@ export default function Settings() {
 
     useEffect(() => {
         if (!user) return;
-        const canManageGen = user.role === 'hr_manager' || permissions.includes('manage_settings');
+        const canManageGen = isManagerRole(user) || permissions.includes('manage_settings');
         const canManageZoom = permissions.includes('zoom_settings');
-        const canManageShifts = user.role === 'hr_manager' || permissions.includes('manage_shifts');
+        const canManageShifts = isManagerRole(user) || permissions.includes('manage_shifts');
 
         if (!canManageGen) {
             if (canManageZoom && activeTab === 'company') setActiveTab('integrations');
@@ -112,7 +113,7 @@ export default function Settings() {
 
     useEffect(() => {
         setLoading(true);
-        const canManageShifts = user?.role === 'hr_manager' || permissions.includes('manage_shifts') || permissions.includes('manage_employees');
+        const canManageShifts = isManagerRole(user) || permissions.includes('manage_shifts') || permissions.includes('manage_employees');
         
         const promises = [API.get('/settings')];
         if (canManageShifts) {
@@ -266,21 +267,21 @@ export default function Settings() {
             </div>
 
             <div className="tabs" style={{ marginBottom: 24 }}>
-                {(user?.role === 'hr_manager' || permissions.includes('manage_settings')) && (
+                {(isManagerRole(user) || permissions.includes('manage_settings')) && (
                     <>
                         <button className={`tab-link ${activeTab === 'company' ? 'active' : ''}`} onClick={() => setActiveTab('company')}><FiBriefcase /> Company &amp; Leaves</button>
                         <button className={`tab-link ${activeTab === 'email' ? 'active' : ''}`} onClick={() => setActiveTab('email')}><FiMail /> Email Settings</button>
                         <button className={`tab-link ${activeTab === 'payroll' ? 'active' : ''}`} onClick={() => setActiveTab('payroll')}><FiPercent /> Payroll Formulas</button>
                     </>
                 )}
-                {(user?.role === 'hr_manager' || permissions.includes('manage_shifts')) && (
+                {(isManagerRole(user) || permissions.includes('manage_shifts')) && (
                     <button className={`tab-link ${activeTab === 'shifts' ? 'active' : ''}`} onClick={() => setActiveTab('shifts')}><FiClock /> Shift Management</button>
                 )}
 
-                {(user?.role === 'hr_manager' || permissions.includes('manage_settings') || permissions.includes('zoom_settings')) && (
+                {(isManagerRole(user) || permissions.includes('manage_settings') || permissions.includes('zoom_settings')) && (
                     <button className={`tab-link ${activeTab === 'integrations' ? 'active' : ''}`} onClick={() => setActiveTab('integrations')}><FiVideo /> Integrations</button>
                 )}
-                {(user?.role === 'hr_manager' || permissions.includes('manage_settings')) && (
+                {(isManagerRole(user) || permissions.includes('manage_settings')) && (
                     <button className={`tab-link ${activeTab === 'users' ? 'active' : ''}`} onClick={() => setActiveTab('users')}><FiUserCheck /> User Management</button>
                 )}
 

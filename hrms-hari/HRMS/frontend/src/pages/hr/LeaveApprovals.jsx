@@ -8,12 +8,13 @@ import {
 } from 'react-icons/fi';
 import { useToast } from '../../context/ToastContext';
 import { formatDate } from '../../utils/dateFormatter';
+import { isManagerRole } from '../../utils/roleHelper';
 
 export default function LeaveApprovals() {
     const { user } = useAuth();
     const { showToast } = useToast();
     const permissions = user?.permissions || [];
-    const canManage = user?.role === 'hr_manager' || user?.role === 'admin' || permissions.includes('manage_leaves');
+    const canManage = isManagerRole(user) || permissions.includes('manage_leaves');
 
     const [leaves, setLeaves] = useState([]);
 

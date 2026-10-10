@@ -90,8 +90,15 @@ export default function ExitManagement() {
         }
     };
 
-    const viewDoc = (resignationId, docId) => {
-        window.open(`${API.defaults.baseURL}/resignations/${resignationId}/documents/${docId}`, '_blank');
+    const viewDoc = async (resignationId, docId) => {
+        try {
+            const res = await API.get(`/resignations/${resignationId}/documents/${docId}`, { responseType: 'blob' });
+            const blob = new Blob([res.data], { type: res.headers['content-type'] || 'application/pdf' });
+            const url = window.URL.createObjectURL(blob);
+            window.open(url, '_blank');
+        } catch {
+            showToast('Failed to view document.', 'error');
+        }
     };
 
     if (loading) return <div className="page-loader"><div className="loading-spinner" /></div>;

@@ -9,6 +9,7 @@ import {
 import { useToast } from '../../context/ToastContext';
 import ResignationModal from '../../components/ResignationModal';
 import { formatDate } from '../../utils/dateFormatter';
+import { isManagerRole } from '../../utils/roleHelper';
 import DocumentManager from '../../components/DocumentManager';
 
 export default function Profile() {
@@ -255,8 +256,7 @@ export default function Profile() {
                     </div>
                     <div style={{ width: '100%', padding: '16px 0', borderTop: '1px solid var(--border-color)' }}>
                         {(() => {
-                            const roleLower = (user?.role || '').toLowerCase().replace(/\s+/g, '');
-                            const isPowerful = ['admin', 'hrmanager', 'hrmanger', 'hr_manager', 'hr_manger'].includes(roleLower);
+                            const isPowerful = isManagerRole(user);
                             
                             // Check Permissions strictly: Override > Role Defaults
                             const userPerms = user?.permissions;

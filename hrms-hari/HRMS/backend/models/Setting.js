@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 const settingSchema = new mongoose.Schema({
-    company_name: { type: String, default: 'Hari HRMS' },
+    company_name: { type: String, default: () => process.env.COMPANY_NAME || 'HRMS' },
     company_subtext: { type: String, default: 'HR Management System' },
     company_logo: { type: String, default: '' },
     company_address: { type: String, default: '' },

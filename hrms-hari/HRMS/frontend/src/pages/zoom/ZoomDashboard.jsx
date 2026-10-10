@@ -4,6 +4,7 @@ import API from '../../api/axios'; // Assuming your axios instance
 import { useAuth } from '../../context/AuthContext'; // Assuming AuthContext
 import { useToast } from '../../context/ToastContext';
 import { formatDate } from '../../utils/dateFormatter';
+import { isManagerRole } from '../../utils/roleHelper';
 import DateInput from '../../components/DateInput';
 import './Zoom.css';
 
@@ -30,7 +31,7 @@ export default function ZoomDashboard() {
     const [actionLoading, setActionLoading] = useState(null); // stores meeting_id being processed
     
     // Permission Check: 'zoom' allows viewing, 'zoom_create' allows creating.
-    const canManageZoom = user?.role === 'hr_manager' || user?.role === 'admin' || user?.permissions?.includes('zoom');
+    const canManageZoom = isManagerRole(user) || user?.permissions?.includes('zoom');
     const canCreateZoom = canManageZoom || user?.permissions?.includes('zoom_create');
 
     useEffect(() => {
@@ -158,7 +159,7 @@ export default function ZoomDashboard() {
                 </div>
                 {canCreateZoom && (
                     <div className="zoom-flex-row zoom-gap-4" style={{marginTop: '16px'}}>
-                        <button onClick={() => setShowCreateForm(true)} className="zoom-btn zoom-btn-danger zoom-pulse-red">
+                        <button onClick={handleInstantMeeting} className="zoom-btn zoom-btn-danger zoom-pulse-red">
                             <FiPlus size={18} />
                             <span>New Meeting</span>
                         </button>

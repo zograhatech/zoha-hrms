@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react';
-import { useAuth } from '../../context/AuthContext';
 import API from '../../api/axios';
 import {
     FiBookOpen, FiPlus, FiX, FiLoader,
@@ -14,10 +13,6 @@ import {
 } from 'recharts';
 
 export default function LMSAdmin() {
-    const { user } = useAuth();
-    const permissions = user?.permissions || [];
-    const canManage = user?.role === 'hr_manager' || user?.role === 'admin' || permissions.includes('manage_lms');
-
     const [activeTab, setActiveTab] = useState('courses');
     const [courses, setCourses] = useState([]);
     const [categories, setCategories] = useState([]);

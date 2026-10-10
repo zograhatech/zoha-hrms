@@ -42,11 +42,14 @@ const convertToEmployee = async (onboarding) => {
     const newEmployee = await Employee.create(employeePayload);
 
     // Send Welcome Email
-    await sendEmail({
-        to: onboarding.email,
-        subject: 'Welcome to the Team! - Your Account Credentials',
-        html: `
-            <h3>Welcome to Hari Hrms, ${onboarding.name}!</h3>
+        const Setting = require('../models/Setting');
+        const settings = await Setting.findOne().lean();
+        const compName = settings?.company_name || process.env.COMPANY_NAME || 'HRMS';
+        await sendEmail({
+            to: onboarding.email,
+            subject: `Welcome to ${compName}! - Your Account Credentials`,
+            html: `
+                <h3>Welcome to ${compName}, ${onboarding.name}!</h3>
             <p>Your onboarding process has reached the <strong>Orientation</strong> stage, and your employee account has been created.</p>
             <p>You can now log in to the HRMS portal using the following credentials:</p>
             <div style="background: #f4f4f4; padding: 15px; border-radius: 8px; margin: 20px 0;">

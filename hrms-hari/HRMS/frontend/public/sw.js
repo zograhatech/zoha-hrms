@@ -1,5 +1,3 @@
-/* eslint-disable no-restricted-globals */
-
 // Listen for push events
 self.addEventListener('push', (event) => {
     let data = { title: 'New Notification', body: 'You have a new message.' };

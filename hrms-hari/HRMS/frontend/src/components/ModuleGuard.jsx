@@ -1,4 +1,5 @@
 import { useAuth } from '../context/AuthContext';
+import { isManagerRole } from '../utils/roleHelper';
 import { FiShield, FiLock, FiArrowLeft } from 'react-icons/fi';
 import { useNavigate } from 'react-router-dom';
 
@@ -40,9 +41,7 @@ export default function ModuleGuard({ children, module }) {
     const { user } = useAuth();
     
     // 1. Management Role Bypass - Keep full control for the manager role
-    const roleLower = (user?.role || '').toLowerCase().replace(/\s+/g, '');
-    const isPowerfulRole = ['admin', 'hrmanager', 'hrmanger', 'hr_manager', 'hr_manger'].includes(roleLower);
-    if (isPowerfulRole) return children;
+    if (isManagerRole(user)) return children;
 
     // 2. Permission Check Logic
     // In this unified system, an empty permissions array on the user profile indicates 

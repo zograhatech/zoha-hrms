@@ -4,7 +4,7 @@ const Employee = require('../models/Employee');
 // Initialize web-push with VAPID keys
 if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
     webpush.setVapidDetails(
-        process.env.VAPID_EMAIL || 'mailto:admin@harihrms.com',
+        process.env.VAPID_EMAIL || 'mailto:admin@example.com',
         process.env.VAPID_PUBLIC_KEY,
         process.env.VAPID_PRIVATE_KEY
     );

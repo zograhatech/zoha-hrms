@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import API from '../../api/axios';
 import { useAuth } from '../../context/AuthContext';
 import { useBranding } from '../../context/BrandingContext';
@@ -69,9 +69,22 @@ export default function InactiveDashboard() {
         fetchPayslipDetails(pr.month, pr.year);
     };
 
-    const downloadDocument = (docId) => {
+    const downloadDocument = async (docId, docName = 'document') => {
         if (!resignation) return;
-        window.open(`${API.defaults.baseURL}/resignations/${resignation._id}/documents/${docId}`, '_blank');
+        try {
+            const res = await API.get(`/resignations/${resignation._id}/documents/${docId}`, { responseType: 'blob' });
+            const blob = new Blob([res.data], { type: res.headers['content-type'] || 'application/pdf' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = docName;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            window.URL.revokeObjectURL(url);
+        } catch {
+            alert('Failed to download document.');
+        }
     };
 
     const fmt = (v) => v ? `₹${parseFloat(v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '₹0.00';

@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react';
-import { useAuth } from '../../context/AuthContext';
 import API from '../../api/axios';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -10,7 +9,6 @@ import {
 } from 'react-icons/fi';
 
 export default function MyLearning() {
-    const { user } = useAuth();
     const navigate = useNavigate();
 
     const [myCourses, setMyCourses] = useState([]);

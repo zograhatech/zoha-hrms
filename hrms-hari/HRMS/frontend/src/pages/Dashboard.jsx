@@ -1,11 +1,12 @@
 import { useState, lazy, Suspense, useEffect } from 'react';
-import { Routes, Route, useLocation } from 'react-router-dom';
+import { Routes, Route } from 'react-router-dom';
 import Sidebar from '../components/Sidebar';
 import Navbar from '../components/Navbar';
 import ChatWidget from '../components/ChatWidget';
 import FunChatbot from '../components/FunChatbot';
 import AnnouncementBanner from '../components/AnnouncementBanner';
 import { useAuth } from '../context/AuthContext';
+import { isManagerRole } from '../utils/roleHelper';
 import { FiFileText } from 'react-icons/fi';
 import ModuleGuard from '../components/ModuleGuard';
 
@@ -71,21 +72,14 @@ const SubLoader = () => (
 export default function Dashboard() {
     const [sidebarOpen, setSidebarOpen] = useState(false);
     const { user, refreshUser } = useAuth();
-    const location = useLocation();
 
     const role = user?.role || 'employee';
 
     // Auto-refresh user data on mount to catch permission updates
     useEffect(() => {
         refreshUser();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
-
-    // Show DashboardHome if on /dashboard exactly
-    const DashboardHome = () => {
-        if (user?.status === 'inactive') return <InactiveDashboard />;
-        return <EmployeeDashboard />;
-    };
-
 
     return (
         <div className="app-layout">
@@ -100,7 +94,7 @@ export default function Dashboard() {
                 <AnnouncementBanner />
                 <Suspense fallback={<SubLoader />}>
                     <Routes>
-                        <Route index element={<DashboardHome />} />
+                        <Route index element={user?.status === 'inactive' ? <InactiveDashboard /> : <EmployeeDashboard />} />
                         <Route path="profile" element={<ModuleGuard module="profile"><Profile /></ModuleGuard>} />
                         <Route path="attendance" element={<ModuleGuard module="attendance"><Attendance /></ModuleGuard>} />
                         <Route path="leave" element={<ModuleGuard module="leave"><Leave /></ModuleGuard>} />
@@ -120,7 +114,7 @@ export default function Dashboard() {
                         <Route path="fun-summary" element={<ModuleGuard module="fun"><FunSummary /></ModuleGuard>} />
                         <Route path="exit-management" element={
                             <ModuleGuard module={['exit', 'exit_user']}>
-                                {(user?.role === 'hr_manager' || user?.role === 'hr' || user?.permissions?.includes('exit')) 
+                                {(isManagerRole(user) || user?.role === 'hr' || user?.permissions?.includes('exit'))
                                     ? <ExitManagement /> 
                                     : <EmployeeExitManagement />}
                             </ModuleGuard>
@@ -158,7 +152,7 @@ export default function Dashboard() {
                 </Suspense>
 
             </main>
-            {(role === 'hr_manager' || user?.permissions?.includes('fun')) && <FunChatbot />}
+            {(isManagerRole(role) || user?.permissions?.includes('fun')) && <FunChatbot />}
             <ChatWidget />
         </div>
     );

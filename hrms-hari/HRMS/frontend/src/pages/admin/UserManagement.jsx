@@ -3,6 +3,7 @@ import API from '../../api/axios';
 import { FiSearch, FiRefreshCcw, FiShield, FiTrash2, FiUser, FiMail, FiKey, FiX, FiCheck } from 'react-icons/fi';
 import { useToast } from '../../context/ToastContext';
 import { useAuth } from '../../context/AuthContext';
+import { isManagerRole } from '../../utils/roleHelper';
 
 const BASIC_PERMISSIONS = ['dashboard', 'profile', 'attendance_user', 'leave_apply', 'payroll_user', 'tickets_user', 'events', 'exit_user'];
 
@@ -130,8 +131,7 @@ export default function UserManagement() {
     // Open modal with effective permissions (Role Defaults + Overrides if any)
     const openPermsModal = (u) => {
         setSelectedUser(u);
-        const roleKey = (u.role || '').toLowerCase().replace(/\s+/g, '');
-        const isManager = ['admin', 'hrmanager', 'hrmanger', 'hr_manager', 'hr_manger'].includes(roleKey);
+        const isManager = isManagerRole(u);
         
         if (u.permissions && Array.isArray(u.permissions)) {
             // If individual permissions exist, use them precisely
@@ -251,7 +251,7 @@ export default function UserManagement() {
                                         style={{ width: 'auto', fontSize: '0.85rem' }}
                                         value={u.role}
                                         onChange={e => handleRoleChange(u.id, e.target.value)}
-                                        disabled={u.role === 'hr_manager' && users.filter(usr => usr.role === 'hr_manager').length <= 1}
+                                        disabled={isManagerRole(u.role) && users.filter(usr => isManagerRole(usr.role)).length <= 1}
                                     >
                                         {roles.map(r => (
                                             <option key={r} value={r}>
@@ -263,27 +263,20 @@ export default function UserManagement() {
                                 <td><span className={`badge badge-${u.status === 'active' ? 'success' : 'danger'}`}>{u.status}</span></td>
                                 <td>
                                     <div style={{ display: 'flex', gap: 8 }}>
-                                        {(() => {
-                                            const roleLower = (user?.role || '').toLowerCase().replace(/\s+/g, '');
-                                            const isHRManager = ['admin', 'hrmanager', 'hrmanger', 'hr_manager', 'hr_manger'].includes(roleLower);
-                                            if (isHRManager) {
-                                                return (
-                                                    <button 
-                                                        className="btn btn-sm btn-outline" 
-                                                        title="Individual Module Access"
-                                                        onClick={() => openPermsModal(u)}
-                                                        style={{ color: 'var(--accent-primary)', border: '1px solid rgba(99,102,241,0.2)' }}
-                                                    >
-                                                        <FiShield size={14} />
-                                                    </button>
-                                                );
-                                            }
-                                            return null;
-                                        })()}
+                                        {isManagerRole(user) && (
+                                            <button
+                                                className="btn btn-sm btn-outline"
+                                                title="Individual Module Access"
+                                                onClick={() => openPermsModal(u)}
+                                                style={{ color: 'var(--accent-primary)', border: '1px solid rgba(99,102,241,0.2)' }}
+                                            >
+                                                <FiShield size={14} />
+                                            </button>
+                                        )}
                                         <button className="btn btn-sm btn-outline" title="Reset Password" onClick={() => handleResetPassword(u)}>
                                             <FiKey size={14} />
                                         </button>
-                                        <button className="btn btn-sm btn-danger-outline" title="Delete Account" disabled={u.role === 'hr_manager'} onClick={() => deleteUser(u.id)}>
+                                        <button className="btn btn-sm btn-danger-outline" title="Delete Account" disabled={isManagerRole(u.role)} onClick={() => deleteUser(u.id)}>
                                             <FiTrash2 size={14} />
                                         </button>
                                     </div>

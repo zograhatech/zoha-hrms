@@ -33,10 +33,10 @@ const getBranding = async (req, res) => {
     try {
         let settings = await Setting.findOne({}, 'company_name company_logo company_subtext');
         if (!settings) {
-            settings = { 
-                company_name: 'Hari Hrms', 
-                company_logo: '', 
-                company_subtext: 'HR Management System' 
+            settings = {
+                company_name: process.env.COMPANY_NAME || 'HRMS',
+                company_logo: '',
+                company_subtext: 'HR Management System'
             };
         }
         res.json({ success: true, settings });
@@ -197,18 +197,19 @@ const sendTestEmail = async (req, res) => {
             }
         };
 
-        const transporter = nodemailer.createTransport(transportConfig);
+        const currentSetting = await Setting.findOne();
+        const companyName = currentSetting?.company_name || process.env.COMPANY_NAME || 'HRMS';
 
         const info = await transporter.sendMail({
             from: `"${mail_from_name}" <${mail_from_email}>`,
             to: mail_from_email, // Send to self for testing
-            subject: 'Hari Hrms - Test SMTP Connection',
+            subject: `${companyName} - Test SMTP Connection`,
             text: 'Success! Your HRMS email configuration is working correctly.',
             html: `
                 <div style="font-family: sans-serif; padding: 20px; border: 1px solid #ddd; border-radius: 10px; max-width: 600px; margin: 0 auto;">
                     <h2 style="color: #6366f1; margin-top: 0;">🚀 Connection Success!</h2>
                     <p>Hello,</p>
-                    <p>This is a test email from your <b>Hari Hrms</b> enterprise platform.</p>
+                    <p>This is a test email from your <b>${companyName}</b> enterprise platform.</p>
                     <p>Your SMTP settings have been verified and are ready for use. You can now use this configuration for system notifications and alerts.</p>
                     <div style="background-color: #f9fafb; padding: 15px; border-radius: 8px; margin: 20px 0; font-size: 0.9em;">
                         <strong>Configuration Verified:</strong><br/>
@@ -217,7 +218,7 @@ const sendTestEmail = async (req, res) => {
                         Encryption: ${mail_encryption}
                     </div>
                     <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;" />
-                    <small style="color: #999;">This is an automated system message from Hari Hrms. Please do not reply.</small>
+                    <small style="color: #999;">This is an automated system message from ${companyName}. Please do not reply.</small>
                 </div>
             `
         });

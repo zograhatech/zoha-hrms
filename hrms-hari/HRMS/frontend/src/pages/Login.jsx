@@ -92,12 +92,6 @@ export default function Login() {
         }
     };
 
-    const fillDemo = (account) => {
-        setEmail(account.email);
-        setPassword(account.password);
-        setError('');
-    };
-
     const features = [
         { label: 'AI HR Copilot', desc: 'Ask questions and get instant insights', icon: <FiCpu /> },
         { label: 'Real-time Analytics', desc: 'Track performance and trends globally', icon: <FiPieChart /> },

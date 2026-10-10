@@ -34,6 +34,10 @@ const connectDB = async () => {
       heartbeatFrequencyMS: 2000,
     };
 
+    if (process.env.DNS_SERVERS && !process.env.VERCEL) {
+        require('dns').setServers(process.env.DNS_SERVERS.split(',').map(s => s.trim()));
+    }
+
     console.log('Connecting to MongoDB Atlas (hrms_db)...');
     cachedConnectionPromise = mongoose.connect(uri, options);
     await cachedConnectionPromise;

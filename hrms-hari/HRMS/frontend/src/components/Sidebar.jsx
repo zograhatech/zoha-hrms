@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useBranding } from '../context/BrandingContext';
+import { isManagerRole } from '../utils/roleHelper';
 import {
     FiGrid, FiUser, FiCalendar, FiBriefcase, FiCreditCard,
     FiMessageSquare, FiUsers, FiCheckCircle, FiTrendingUp,
@@ -99,8 +100,7 @@ export default function Sidebar({ open, onClose }) {
         }
 
         // 1. HR Manager / Admin has full system access automatically
-        const roleLower = (role || '').toLowerCase().replace(/\s+/g, '');
-        const isManager = ['admin', 'hrmanager', 'hrmanger', 'hr_manager', 'hr_manger'].includes(roleLower);
+        const isManager = isManagerRole(role);
         if (isManager) return true;
 
         // 2. Individual Module Access Check — ONLY items given by HR Manager are visible

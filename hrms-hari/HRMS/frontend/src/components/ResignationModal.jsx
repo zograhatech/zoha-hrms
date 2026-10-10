@@ -4,7 +4,7 @@ import DateInput from './DateInput';
 import API from '../api/axios';
 import { useToast } from '../context/ToastContext';
 
-export default function ResignationModal({ isOpen, onClose, employee, existingRequest, onResubmit }) {
+export default function ResignationModal({ isOpen, onClose, employee, existingRequest }) {
     const { showToast } = useToast();
     const [loading, setLoading] = useState(false);
     const [confirmed, setConfirmed] = useState(false);

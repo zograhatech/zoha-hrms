@@ -30,8 +30,6 @@ export default function EmployeeDashboard() {
     const { user } = useAuth();
     const navigate = useNavigate();
     const [leave, setLeave] = useState(null);
-    const [attendance, setAttendance] = useState(null);
-    const [payroll, setPayroll] = useState(null);
     const [tickets, setTickets] = useState([]);
     const [upcomingEvents, setUpcomingEvents] = useState([]);
     const [zoomMeetings, setZoomMeetings] = useState([]);
@@ -47,7 +45,6 @@ export default function EmployeeDashboard() {
             if (r.data.success) {
                 const { dashboard } = r.data;
                 setLeave(dashboard.leave);
-                setAttendance(dashboard.attendance);
                 setTickets(dashboard.tickets);
                 setUpcomingEvents(dashboard.upcomingEvents);
                 setCompanyEvents(dashboard.companyEvents);
@@ -66,18 +63,9 @@ export default function EmployeeDashboard() {
 
         API.get('/resignations/my').then(r => setResignation(r.data.resignation || null)).catch(() => { });
 
-        // Optional: Keep specific payroll fetch if needed for previous month logic
-        const prevMonthDate = new Date();
-        prevMonthDate.setMonth(prevMonthDate.getMonth() - 1);
-        const pm = prevMonthDate.getMonth() + 1;
-        const py = prevMonthDate.getFullYear();
-        API.get(`/payroll/${user.id}?month=${pm}&year=${py}`).then(r => {
-            if (r.data.payroll) setPayroll({ ...r.data, isPrevious: true });
-        }).catch(() => { });
     }, [user]);
 
     const bal = leave?.balance;
-    const att = attendance?.summary;
 
     const quickActions = [
         { icon: <FiSun />, label: 'Apply Leave', color: '#10b981', action: () => navigate('/dashboard/leave') },

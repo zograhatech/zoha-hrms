@@ -5,7 +5,7 @@ import API from '../api/axios';
 const BrandingContext = createContext(null);
 
 const DEFAULT_BRANDING = {
-    company_name: 'Hari Hrms',
+    company_name: 'HRMS',
     company_subtext: 'HR Management System',
     company_logo: '/company_logo.png',
     company_address: '',

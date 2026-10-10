@@ -6,12 +6,13 @@ import {
     FiRefreshCw, FiPlus, FiX, FiEdit2, FiTrash2,
     FiCheckCircle, FiLoader, FiAlertCircle, FiArrowLeft, FiUsers
 } from 'react-icons/fi';
+import { isManagerRole } from '../../utils/roleHelper';
 
 export default function RotationShift() {
     const { user } = useAuth();
     const navigate = useNavigate();
     const permissions = user?.permissions || [];
-    const canManage = user?.role === 'hr_manager' || user?.role === 'admin' || permissions.includes('manage_shifts');
+    const canManage = isManagerRole(user) || permissions.includes('manage_shifts');
 
     const [rotations, setRotations] = useState([]);
     const [loading, setLoading] = useState(false); // Make it fake load for now since no backend

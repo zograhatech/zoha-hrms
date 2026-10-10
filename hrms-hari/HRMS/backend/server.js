@@ -1,11 +1,17 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const path = require('path');
 const dns = require('node:dns');
 dns.setDefaultResultOrder('ipv4first');
 const connectDB = require('./config/db');
 
 dotenv.config();
+
+// Load local DNS override if present and not on Vercel
+if (!process.env.VERCEL) {
+    dotenv.config({ path: path.join(__dirname, '.env.local-dns') });
+}
 
 // Ensure JWT secrets are strictly provided in production / Vercel
 if (process.env.NODE_ENV === 'production' || process.env.VERCEL) {
@@ -54,6 +60,10 @@ try {
     console.warn('⚠️ Cron jobs failed to initialize (non-fatal):', e.message);
 }
 
+// ── Middleware: CORS ──────────────────────────────────
+const { corsOptions } = require('./config/cors');
+app.use(cors(corsOptions));
+
 // ── Diagnostic Health Check (MUST BE FIRST) ──────────────────
 app.get(['/', '/health', '/api/health'], (req, res) => {
     const mongoose = require('mongoose');
@@ -62,7 +72,7 @@ app.get(['/', '/health', '/api/health'], (req, res) => {
 
     res.json({
         success: true,
-        message: '🚀 Hari HRMS API is running!',
+        message: `🚀 ${process.env.COMPANY_NAME || 'HRMS'} API is running!`,
         timestamp: new Date().toISOString(),
         database: {
             status: dbStatus[mongoose.connection.readyState] || 'unknown',
@@ -123,39 +133,10 @@ app.use(async (req, res, next) => {
 });
 
 // ── Middleware ─────────────────────────────────────────
-const allowedOrigins = [
-    'http://localhost:5173',
-    'http://localhost:5174',
-    'http://localhost:3000',
-    'http://127.0.0.1:5173',
-    'http://10.130.39.16:5173', // Current Local IP
-    'https://hrms-delta-eight.vercel.app',
-];
-
-if (process.env.FRONTEND_URL) {
-    const cleanedFrontendUrl = process.env.FRONTEND_URL.replace(/\/$/, '');
-    if (!allowedOrigins.includes(cleanedFrontendUrl)) {
-        allowedOrigins.push(cleanedFrontendUrl);
-    }
-}
-
-app.use(cors({
-    origin: (origin, callback) => {
-        if (!origin || allowedOrigins.includes(origin) || origin.endsWith('.vercel.app')) {
-            callback(null, true);
-        } else {
-            // Log rejection but don't crash
-            console.log('CORS blocked origin:', origin);
-            callback(null, false);
-        }
-    },
-    credentials: true
-}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Serve static files for uploads
-const path = require('path');
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // ── Routes ─────────────────────────────────────────────
@@ -251,7 +232,7 @@ const PORT = process.env.PORT || 5000;
 if (require.main === module && !process.env.VERCEL) {
     server.listen(PORT, '0.0.0.0', () => {
         console.log(`\n  ╔ ══════════════════════════════════════╗`);
-        console.log(`  ║    🚀  Hari HRMS Enterprise API    ║`);
+        console.log(`  ║    🚀  ${(process.env.COMPANY_NAME || 'HRMS').padEnd(20)} API    ║`);
         console.log(`  ║    Backend URL: http://localhost:${PORT}      ║`);
         console.log(`  ╚══════════════════════════════════════╝\n`);
     });

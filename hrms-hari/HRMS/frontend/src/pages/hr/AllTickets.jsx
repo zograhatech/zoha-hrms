@@ -4,11 +4,12 @@ import { useAuth } from '../../context/AuthContext';
 import API from '../../api/axios';
 import { FiMessageSquare } from 'react-icons/fi';
 import { formatDate } from '../../utils/dateFormatter';
+import { isManagerRole } from '../../utils/roleHelper';
 
 export default function AllTickets() {
     const { user } = useAuth();
     const permissions = user?.permissions || [];
-    const canManage = user?.role === 'hr_manager' || user?.role === 'admin' || permissions.includes('manage_tickets');
+    const canManage = isManagerRole(user) || permissions.includes('manage_tickets');
 
     const [tickets, setTickets] = useState([]);
 

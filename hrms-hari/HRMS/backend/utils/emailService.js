@@ -2,7 +2,7 @@ const nodemailer = require('nodemailer');
 const Setting = require('../models/Setting');
 
 /**
- * Robust Email Service for Hari Hrms
+ * Robust Email Service for HRMS
  * Fetches latest SMTP settings from database and sends formatted emails.
  */
 const sendEmail = async ({ to, subject, text, html }) => {
@@ -21,9 +21,7 @@ const {
         const companyName = settings.company_name || 'HRMS';
         
         const port = process.env.PORT || 5001;
-        const baseUrl = process.env.VERCEL || process.env.NODE_ENV === 'production' 
-            ? 'https://hrms-delta-eight.vercel.app' 
-            : `http://localhost:${port}`;
+        const baseUrl = process.env.FRONTEND_URL || `http://localhost:${port}`;
             
         let companyLogo = settings.company_logo || null;
         if (companyLogo && !companyLogo.startsWith('http') && !companyLogo.startsWith('data:')) {

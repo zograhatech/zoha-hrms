@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
 import API from '../../api/axios';
-import { useAuth } from '../../context/AuthContext';
 import {
     FiTrendingUp, FiUsers, FiUserPlus, FiBriefcase,
     FiShield, FiCreditCard, FiAward, FiLayers, FiDollarSign, FiCalendar,
@@ -28,12 +27,7 @@ export default function Analytics() {
 
     const currentYear = new Date().getFullYear();
 
-    const { user } = useAuth();
-    const permissions = user?.permissions || [];
-
     useEffect(() => {
-        setLoading(true);
-        
         // Analytics is now Universal for all authenticated users
         const hasAnalytics = true; 
         const hasPayroll = true; 
@@ -62,7 +56,7 @@ export default function Analytics() {
             console.error('Analytics load error:', err);
             setLoading(false);
         });
-    }, [currentYear, user, permissions]);
+    }, [currentYear]);
 
     if (loading) return <div className="page-loader"><div className="loading-spinner" /></div>;
 

@@ -9,12 +9,13 @@ import {
 
 import CustomDatePicker from '../../components/CustomDatePicker';
 import { formatDate } from '../../utils/dateFormatter';
+import { isManagerRole } from '../../utils/roleHelper';
 
 export default function Events() {
     const { user } = useAuth();
     const { showToast } = useToast();
     const permissions = user?.permissions || [];
-    const isHRM = user?.role === 'hr_manager' || permissions.includes('manage_events') || user?.role === 'admin';
+    const isHRM = isManagerRole(user) || permissions.includes('manage_events');
 
     const [events, setEvents] = useState([]);
     const [loading, setLoading] = useState(true);

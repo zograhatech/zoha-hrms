@@ -1,7 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { useBranding } from '../../context/BrandingContext';
-import { useNavigate } from 'react-router-dom';
 
 import API from '../../api/axios';
 import AttendanceWidget from '../../components/AttendanceWidget';
@@ -13,6 +11,7 @@ import {
 import BirthdayCard from '../../components/BirthdayCard';
 import MonthCalendar from '../../components/MonthCalendar';
 import { formatDate } from '../../utils/dateFormatter';
+import { isManagerRole } from '../../utils/roleHelper';
 import WorkspaceOverview from '../../components/WorkspaceOverview';
 
 const StatCard = ({ icon, label, value, color }) => (
@@ -30,19 +29,15 @@ const StatCard = ({ icon, label, value, color }) => (
 
 export default function HRDashboard() {
     const { user } = useAuth();
-    const { branding } = useBranding();
-    const navigate = useNavigate();
-    const permissions = user?.permissions || [];
-    const isHRM = user?.role === 'hr_manager';
+    const permissions = useMemo(() => user?.permissions || [], [user?.permissions]);
+    const isHRM = isManagerRole(user);
 
-    const hasAnalytics = isHRM || user?.role === 'admin' || permissions.includes('view_analytics');
-    const hasLeaves = isHRM || user?.role === 'admin' || permissions.includes('manage_leaves');
-    const hasTickets = isHRM || user?.role === 'admin' || permissions.includes('manage_tickets');
+    const hasAnalytics = isHRM || permissions.includes('view_analytics');
+    const hasLeaves = isHRM || permissions.includes('manage_leaves');
 
     const [stats, setStats] = useState(null);
 
     const [pending, setPending] = useState([]);
-    const [tickets, setTickets] = useState([]);
     const [upcomingEvents, setUpcomingEvents] = useState([]);
     const [zoomMeetings, setZoomMeetings] = useState([]);
     const [companyEvents, setCompanyEvents] = useState([]);
@@ -57,19 +52,15 @@ export default function HRDashboard() {
         if (hasLeaves) calls.push(API.get('/leaves/pending'));
         else calls.push(Promise.resolve({ data: { leaves: [] } }));
 
-        if (hasTickets) calls.push(API.get('/tickets/all?status=open'));
-        else calls.push(Promise.resolve({ data: { tickets: [] } }));
-
         calls.push(API.get('/employees/upcoming-events'));
         calls.push(API.get('/zoom/meetings'));
         calls.push(API.get('/events'));
         calls.push(API.get('/resignations'));
 
         Promise.all(calls).then((responses) => {
-            const [s, l, t, u, z, e, r] = responses;
+            const [s, l, u, z, e, r] = responses;
             setStats(s.data.stats);
             setPending(l.data.leaves || []);
-            setTickets(t.data.tickets || []);
             setUpcomingEvents(u.data.events || []);
             setCompanyEvents(e.data.events || []);
             setResignations(r.data.resignations || []);
@@ -82,7 +73,7 @@ export default function HRDashboard() {
             
             setLoading(false);
         }).catch(() => setLoading(false));
-    }, [hasAnalytics, hasLeaves, hasTickets]);
+    }, [hasAnalytics, hasLeaves]);
 
 
     if (loading) return <div className="page-loader"><div className="loading-spinner" /></div>;

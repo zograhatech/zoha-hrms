@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import API from '../../api/axios';
 import { useAuth } from '../../context/AuthContext';
+import { isManagerRole } from '../../utils/roleHelper';
 import {
     FiClock, FiPlus, FiX, FiEdit2, FiTrash2,
     FiCheckCircle, FiLoader, FiAlertCircle, FiRefreshCw
@@ -14,7 +15,7 @@ export default function ShiftRoster() {
     const { user } = useAuth();
     const navigate = useNavigate();
     const permissions = user?.permissions || [];
-    const canManage = user?.role === 'hr_manager' || user?.role === 'admin' || permissions.includes('manage_shifts');
+    const canManage = isManagerRole(user) || permissions.includes('manage_shifts');
 
 
     const [shifts, setShifts] = useState([]);

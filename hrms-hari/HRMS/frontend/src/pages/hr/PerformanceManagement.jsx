@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import API from '../../api/axios';
 import { useToast } from '../../context/ToastContext';
 import { useAuth } from '../../context/AuthContext';
+import { isManagerRole } from '../../utils/roleHelper';
 import { 
     FiPlus, FiStar, FiX, FiCheckCircle, FiTrash2, FiEdit2, 
     FiTarget, FiTrendingUp, FiActivity, FiLayers, FiCalendar, FiSearch, FiFlag, FiInfo
@@ -10,7 +11,7 @@ import {
 export default function PerformanceManagement() {
     const { user } = useAuth();
     const { showToast } = useToast();
-    const canManage = user?.role === 'hr_manager' || user?.role === 'admin' || user?.permissions?.includes('manage_employees');
+    const canManage = isManagerRole(user) || user?.permissions?.includes('manage_employees');
 
     const [goals, setGoals] = useState([]);
     const [loading, setLoading] = useState(true);

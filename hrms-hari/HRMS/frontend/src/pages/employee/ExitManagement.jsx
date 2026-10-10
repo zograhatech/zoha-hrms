@@ -14,20 +14,17 @@ export default function ExitManagement() {
     const { showToast } = useToast();
     const [resignation, setResignation] = useState(null);
     const [payslips, setPayslips] = useState([]);
-    const [leaves, setLeaves] = useState([]);
     const [loading, setLoading] = useState(true);
     const [showModal, setShowModal] = useState(false);
 
     const fetchData = async () => {
         try {
-            const [resRes, payRes, leaveRes] = await Promise.all([
+            const [resRes, payRes] = await Promise.all([
                 API.get('/resignations/my'),
-                API.get('/payroll/my'),
-                API.get('/leaves/my')
+                API.get('/payroll/my')
             ]);
             setResignation(resRes.data.resignation);
             setPayslips(payRes.data.payrolls || []);
-            setLeaves(leaveRes.data.leaves || []);
         } catch (error) {
             console.error('Error fetching data:', error);
         } finally {

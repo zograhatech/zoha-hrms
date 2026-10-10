@@ -63,7 +63,7 @@ const AppRoutes = () => {
 
 function App() {
   useEffect(() => {
-    const handleWheel = (e) => {
+    const handleWheel = () => {
       if (document.activeElement.type === 'number') {
         document.activeElement.blur();
       }

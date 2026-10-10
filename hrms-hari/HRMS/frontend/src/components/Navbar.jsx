@@ -6,9 +6,10 @@ import {
     FiShield, FiUserCheck, FiUser, FiBriefcase, FiMenu, FiBell, FiMail, FiCheckCircle, FiVideo
 } from 'react-icons/fi';
 import API from '../api/axios';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useSocket } from '../context/SocketContext';
 import { formatDate } from '../utils/dateFormatter';
+import { isManagerRole } from '../utils/roleHelper';
 
 export default function Navbar({ onToggleSidebar }) {
     const { user } = useAuth();
@@ -17,7 +18,7 @@ export default function Navbar({ onToggleSidebar }) {
     const now = new Date();
 
     const permissions = user?.permissions || [];
-    const hasManagementAccess = user?.role === 'hr_manager' || permissions.some(p => p.startsWith('manage_') || p === 'view_analytics');
+    const hasManagementAccess = isManagerRole(user) || permissions.some(p => p.startsWith('manage_') || p === 'view_analytics');
 
     const [notifications, setNotifications] = useState([]);
     const [unreadCount, setUnreadCount] = useState(0);
@@ -36,6 +37,21 @@ export default function Navbar({ onToggleSidebar }) {
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, [showNotifs]);
 
+    const fetchNotifications = useCallback(async () => {
+        try {
+            const res = await API.get('/notifications');
+            if (res.data.success) {
+                setNotifications(res.data.notifications);
+                setUnreadCount(res.data.notifications.filter(n => !n.is_read).length);
+            }
+        } catch (error) {
+            console.error('Error fetching notifications:', error);
+            if (error.response?.status === 401) {
+                // Token invalid/expired
+            }
+        }
+    }, []);
+
     useEffect(() => {
         fetchNotifications();
         
@@ -49,23 +65,7 @@ export default function Navbar({ onToggleSidebar }) {
         return () => {
             if (socket) socket.off('notification');
         };
-    }, [socket]);
-
-    const fetchNotifications = async () => {
-        try {
-            const res = await API.get('/notifications');
-            if (res.data.success) {
-                setNotifications(res.data.notifications);
-                setUnreadCount(res.data.notifications.filter(n => !n.is_read).length);
-            }
-        } catch (error) {
-            console.error('Error fetching notifications:', error);
-            if (error.response?.status === 401) {
-                // Token invalid/expired. The AuthContext should handle redirection eventually,
-                // but we can at least stop the spam here if we wanted.
-            }
-        }
-    };
+    }, [socket, fetchNotifications]);
 
     const markAsRead = async (id) => {
         try {
@@ -215,8 +215,8 @@ export default function Navbar({ onToggleSidebar }) {
                 </div>
 
                 {/* Role badge */}
-                <span className={`badge navbar-role-badge ${user?.role === 'hr_manager' ? 'badge-purple' : user?.role === 'hr' ? 'badge-info' : hasManagementAccess ? 'badge-info' : 'badge-success'}`}>
-                    {user?.role === 'hr_manager' ? <><FiShield /> HR Manager</> : user?.role === 'hr' ? <><FiUserCheck /> hr</> : <><FiUser /> Employee</>}
+                <span className={`badge navbar-role-badge ${isManagerRole(user) ? 'badge-purple' : user?.role === 'hr' ? 'badge-info' : hasManagementAccess ? 'badge-info' : 'badge-success'}`}>
+                    {isManagerRole(user) ? <><FiShield /> {user?.role === 'admin' ? 'Admin' : 'HR Manager'}</> : user?.role === 'hr' ? <><FiUserCheck /> HR</> : <><FiUser /> Employee</>}
                 </span>
 
                 {/* Department — hide on small screens */}

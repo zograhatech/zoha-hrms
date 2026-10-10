@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useAuth } from '../../context/AuthContext';
 import API from '../../api/axios';
 import {
     FiPlus, FiFileText, FiTrendingUp, FiTrendingDown, 
@@ -13,7 +12,6 @@ import { formatDate } from '../../utils/dateFormatter';
 import DateInput from '../../components/DateInput';
 
 export default function AccountingManagement() {
-    const { user } = useAuth();
     const { showToast } = useToast();
     const [loading, setLoading] = useState(true);
     const [ledgers, setLedgers] = useState([]);

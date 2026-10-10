@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
+import { isManagerRole } from '../../utils/roleHelper';
 
 import API from '../../api/axios';
 import {
@@ -10,7 +11,7 @@ import {
 export default function Departments() {
     const { user } = useAuth();
     const permissions = user?.permissions || [];
-    const canManage = user?.role === 'hr_manager' || user?.role === 'admin' || permissions.includes('manage_departments');
+    const canManage = isManagerRole(user) || permissions.includes('manage_departments');
 
     const [depts, setDepts] = useState([]);
 
