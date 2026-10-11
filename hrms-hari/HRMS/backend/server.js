@@ -29,6 +29,47 @@ const app = express();
 const http = require('http');
 const server = http.createServer(app);
 
+// ── Fix double slashes in URL (e.g. //api/auth -> /api/auth) ──
+app.use((req, res, next) => {
+    req.url = req.url.replace(/\/{2,}/g, '/');
+    next();
+});
+
+// ── CORS (MUST BE BEFORE EVERYTHING ELSE) ─────────────────────
+const allowedOrigins = [
+    'http://localhost:5173',
+    'http://localhost:5174',
+    'http://localhost:3000',
+    'http://127.0.0.1:5173',
+    'http://10.130.39.16:5173', // Current Local IP
+    'https://hrms-delta-eight.vercel.app',
+];
+
+if (process.env.FRONTEND_URL) {
+    const cleanedFrontendUrl = process.env.FRONTEND_URL.replace(/\/$/, '');
+    if (!allowedOrigins.includes(cleanedFrontendUrl)) {
+        allowedOrigins.push(cleanedFrontendUrl);
+    }
+}
+
+const corsOptions = {
+    origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin) || origin.endsWith('.vercel.app')) {
+            callback(null, true);
+        } else {
+            console.log('CORS blocked origin:', origin);
+            callback(null, false);
+        }
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    optionsSuccessStatus: 204,
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
+
 // Socket.io: only meaningful in long-running Node; gracefully skip on Vercel
 let io = null;
 try {
@@ -54,7 +95,7 @@ try {
     console.warn('⚠️ Cron jobs failed to initialize (non-fatal):', e.message);
 }
 
-// ── Diagnostic Health Check (MUST BE FIRST) ──────────────────
+// ── Diagnostic Health Check ──────────────────────────────────
 app.get(['/', '/health', '/api/health'], (req, res) => {
     const mongoose = require('mongoose');
     const dbStatus = { 0: 'disconnected', 1: 'connected', 2: 'connecting', 3: 'disconnecting', 4: 'uninitialized' };
@@ -107,7 +148,8 @@ const initializeApp = async () => {
 };
 
 app.use(async (req, res, next) => {
-    // Skip for health check and root endpoints
+    // Skip for preflight, health check and root endpoints
+    if (req.method === 'OPTIONS') return next();
     if (req.path === '/api/health' || req.path === '/health' || req.path === '/') return next();
 
     try {
@@ -122,35 +164,7 @@ app.use(async (req, res, next) => {
     }
 });
 
-// ── Middleware ─────────────────────────────────────────
-const allowedOrigins = [
-    'http://localhost:5173',
-    'http://localhost:5174',
-    'http://localhost:3000',
-    'http://127.0.0.1:5173',
-    'http://10.130.39.16:5173', // Current Local IP
-    'https://hrms-delta-eight.vercel.app',
-];
-
-if (process.env.FRONTEND_URL) {
-    const cleanedFrontendUrl = process.env.FRONTEND_URL.replace(/\/$/, '');
-    if (!allowedOrigins.includes(cleanedFrontendUrl)) {
-        allowedOrigins.push(cleanedFrontendUrl);
-    }
-}
-
-app.use(cors({
-    origin: (origin, callback) => {
-        if (!origin || allowedOrigins.includes(origin) || origin.endsWith('.vercel.app')) {
-            callback(null, true);
-        } else {
-            // Log rejection but don't crash
-            console.log('CORS blocked origin:', origin);
-            callback(null, false);
-        }
-    },
-    credentials: true
-}));
+// ── Body parsers ───────────────────────────────────────
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -197,24 +211,20 @@ app.use('/api/banking', require('./routes/bankingRoutes'));
 app.use('/api/verification', require('./routes/verificationRoutes'));
 app.use('/api/reports', require('./routes/reportsRoutes'));
 
-
-// ── Routes ─────────────────────────────────────────────
-
 // ── Global error handler ────────────────────────────────
 app.use((err, req, res, next) => {
     console.error('Unhandled error:', err);
-    
-    // Specifically handle Mongoose/MongoDB connection errors for clearer frontend feedback
-    if (err.name === 'MongooseServerSelectionError' || err.message.includes('buffering timed out')) {
-        return res.status(503).json({ 
-            success: false, 
+
+    if (err.name === 'MongooseServerSelectionError' || (err.message && err.message.includes('buffering timed out'))) {
+        return res.status(503).json({
+            success: false,
             message: 'Database connection failed. Please check if your IP is whitelisted in MongoDB Atlas.',
             error: 'DB_CONNECTION_ERROR'
         });
     }
 
-    res.status(500).json({ 
-        success: false, 
+    res.status(500).json({
+        success: false,
         message: err.message || 'Internal server error.',
         error: err.name || 'SERVER_ERROR'
     });
