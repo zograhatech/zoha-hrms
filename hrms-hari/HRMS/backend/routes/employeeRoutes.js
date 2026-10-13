@@ -22,6 +22,7 @@ router.post('/import', auth(['manage_employees', 'manager', 'team_lead']), uploa
 
 router.get('/', auth(), getEmployees);
 router.get('/all', auth(), getEmployees);
+router.get('/directory', auth(), require('../controllers/conversationController').getContactDirectory);
 router.get('/:id', auth(), getEmployee);
 router.post('/', auth(['manage_employees', 'manager', 'team_lead', 'admin']), createEmployee);
 router.put('/:id', auth(), upload.single('profile_image'), updateEmployee);

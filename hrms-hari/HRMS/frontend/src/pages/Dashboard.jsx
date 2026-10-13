@@ -100,7 +100,7 @@ export default function Dashboard() {
                         <Route path="leave" element={<ModuleGuard module="leave"><Leave /></ModuleGuard>} />
                         <Route path="payroll" element={<ModuleGuard module="payroll"><Payroll /></ModuleGuard>} />
                         <Route path="tickets" element={<ModuleGuard module="tickets"><Tickets /></ModuleGuard>} />
-                        <Route path="messages" element={<ModuleGuard module="chat"><Messages /></ModuleGuard>} />
+                        <Route path="messages" element={<Messages />} />
                         
                         {/* HR */}
                         <Route path="employees" element={<ModuleGuard module="employees"><EmployeeList /></ModuleGuard>} />

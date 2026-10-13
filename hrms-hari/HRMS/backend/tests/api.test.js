@@ -2529,6 +2529,635 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(inDb).toBeNull();
         });
     });
+
+    // ─────────────────────────────────────────────────────────────
+    // 13. PHASE 3: Live Chat, Oversight & File Upload Tests
+    // ─────────────────────────────────────────────────────────────
+    describe('13. Phase 3 Live Chat, Oversight & File Upload Tests', () => {
+        const Conversation = require('../models/Conversation');
+        const Message = require('../models/Message');
+        const AuditLog = require('../models/AuditLog');
+        const Employee = require('../models/Employee');
+        const Department = require('../models/Department');
+
+        let adminP3, mgrP3, tlP3, empA, empB, empC, empWithChatPerm;
+        let adminTokenP3, mgrTokenP3, tlTokenP3, empAToken, empBToken, empCToken, empWithChatPermToken;
+        let deptP3;
+
+        beforeAll(async () => {
+            const pwd = await bcrypt.hash('ChatSecret123!', 10);
+            deptP3 = await Department.create({ name: 'TEST_CHAT_DEPT' });
+
+            adminP3 = await Employee.create({
+                id: 'TEST_P3_ADMIN',
+                name: 'P3 Admin',
+                email: 'p3_admin@zograhatechnologies.test',
+                password_hash: pwd,
+                role: 'admin',
+                department_id: deptP3._id,
+                status: 'active'
+            });
+
+            mgrP3 = await Employee.create({
+                id: 'TEST_P3_MGR',
+                name: 'P3 Manager',
+                email: 'p3_mgr@zograhatechnologies.test',
+                password_hash: pwd,
+                role: 'manager',
+                department_id: deptP3._id,
+                status: 'active'
+            });
+
+            tlP3 = await Employee.create({
+                id: 'TEST_P3_TL',
+                name: 'P3 Team Lead',
+                email: 'p3_tl@zograhatechnologies.test',
+                password_hash: pwd,
+                role: 'team_lead',
+                department_id: deptP3._id,
+                status: 'active'
+            });
+
+            empA = await Employee.create({
+                id: 'TEST_P3_EMPA',
+                name: 'P3 Employee A',
+                email: 'p3_empa@zograhatechnologies.test',
+                password_hash: pwd,
+                role: 'employee',
+                department_id: deptP3._id,
+                status: 'active'
+            });
+
+            empB = await Employee.create({
+                id: 'TEST_P3_EMPB',
+                name: 'P3 Employee B',
+                email: 'p3_empb@zograhatechnologies.test',
+                password_hash: pwd,
+                role: 'employee',
+                department_id: deptP3._id,
+                status: 'active'
+            });
+
+            empC = await Employee.create({
+                id: 'TEST_P3_EMPC',
+                name: 'P3 Employee C',
+                email: 'p3_empc@zograhatechnologies.test',
+                password_hash: pwd,
+                role: 'employee',
+                department_id: deptP3._id,
+                status: 'active'
+            });
+
+            empWithChatPerm = await Employee.create({
+                id: 'TEST_P3_EMP_PERM',
+                name: 'P3 Emp With Chat Perm',
+                email: 'p3_empperm@zograhatechnologies.test',
+                password_hash: pwd,
+                role: 'employee',
+                permissions: ['live_chat'],
+                department_id: deptP3._id,
+                status: 'active'
+            });
+
+            adminTokenP3 = jwt.sign({ id: adminP3.id, _id: adminP3._id, role: adminP3.role }, process.env.JWT_SECRET);
+            mgrTokenP3 = jwt.sign({ id: mgrP3.id, _id: mgrP3._id, role: mgrP3.role }, process.env.JWT_SECRET);
+            tlTokenP3 = jwt.sign({ id: tlP3.id, _id: tlP3._id, role: tlP3.role }, process.env.JWT_SECRET);
+            empAToken = jwt.sign({ id: empA.id, _id: empA._id, role: empA.role }, process.env.JWT_SECRET);
+            empBToken = jwt.sign({ id: empB.id, _id: empB._id, role: empB.role }, process.env.JWT_SECRET);
+            empCToken = jwt.sign({ id: empC.id, _id: empC._id, role: empC.role }, process.env.JWT_SECRET);
+            empWithChatPermToken = jwt.sign({ id: empWithChatPerm.id, _id: empWithChatPerm._id, role: empWithChatPerm.role, permissions: ['live_chat'] }, process.env.JWT_SECRET);
+        });
+
+        afterAll(async () => {
+            await Employee.deleteMany({ id: { $in: ['TEST_P3_ADMIN', 'TEST_P3_MGR', 'TEST_P3_TL', 'TEST_P3_EMPA', 'TEST_P3_EMPB', 'TEST_P3_EMPC', 'TEST_P3_EMP_PERM'] } });
+            if (deptP3) await Department.deleteOne({ _id: deptP3._id });
+        });
+
+        // 1. Employee A reads a conversation between B and C: 403, exact message, no message content in body
+        it('1. Part 0(a): Employee A reads a conversation between B and C: 403 with exact message', async () => {
+            const convBC = await Conversation.create({ participants: [empB._id, empC._id] });
+            try {
+                await Message.create({ conversationId: convBC._id, sender: empB._id, text: 'Secret message between B and C' });
+
+                const res = await request(app)
+                    .get(`/api/messages/${convBC._id}`)
+                    .set('Authorization', `Bearer ${empAToken}`);
+
+                expect(res.status).toBe(403);
+                expect(res.body.message).toBe('Access denied for this conversation.');
+                expect(res.body.messages).toBeUndefined();
+            } finally {
+                await Message.deleteMany({ conversationId: convBC._id });
+                await Conversation.deleteOne({ _id: convBC._id });
+            }
+        });
+
+        // 2. Employee A posts into B and C's conversation: 403
+        it('2. Part 0(b): Employee A posts into B and C conversation: 403 with exact message', async () => {
+            const convBC = await Conversation.create({ participants: [empB._id, empC._id] });
+            try {
+                const res = await request(app)
+                    .post('/api/messages')
+                    .set('Authorization', `Bearer ${empAToken}`)
+                    .send({ conversationId: convBC._id.toString(), text: 'Intruder message' });
+
+                expect(res.status).toBe(403);
+                expect(res.body.message).toBe('Access denied for this conversation.');
+
+                const inDb = await Message.findOne({ text: 'Intruder message' });
+                expect(inDb).toBeNull();
+            } finally {
+                await Conversation.deleteOne({ _id: convBC._id });
+            }
+        });
+
+        // 3. Participant reads their own conversation: 200
+        it('3. Part 0(c): Participant reads their own conversation: 200', async () => {
+            const convBC = await Conversation.create({ participants: [empB._id, empC._id] });
+            try {
+                await Message.create({ conversationId: convBC._id, sender: empB._id, text: 'Hello C' });
+
+                const res = await request(app)
+                    .get(`/api/messages/${convBC._id}`)
+                    .set('Authorization', `Bearer ${empBToken}`);
+
+                expect(res.status).toBe(200);
+                expect(res.body.success).toBe(true);
+                expect(res.body.messages.length).toBe(1);
+                expect(res.body.messages[0].text).toBe('Hello C');
+            } finally {
+                await Message.deleteMany({ conversationId: convBC._id });
+                await Conversation.deleteOne({ _id: convBC._id });
+            }
+        });
+
+        // 4. Employee A's conversation list does not include B-C conversations
+        it('4. Part 0(d): Employee A conversation list does not include B-C conversations', async () => {
+            let convBC, convAB;
+            try {
+                convBC = await Conversation.create({ participants: [empB._id, empC._id] });
+                convAB = await Conversation.create({ participants: [empA._id, empB._id] });
+
+                const res = await request(app)
+                    .get('/api/conversations')
+                    .set('Authorization', `Bearer ${empAToken}`);
+
+                expect(res.status).toBe(200);
+                expect(res.body.success).toBe(true);
+                const convIds = res.body.conversations.map(c => c._id.toString());
+                expect(convIds).toContain(convAB._id.toString());
+                expect(convIds).not.toContain(convBC._id.toString());
+            } finally {
+                const toDelete = [];
+                if (convBC) toDelete.push(convBC._id);
+                if (convAB) toDelete.push(convAB._id);
+                if (toDelete.length > 0) {
+                    await Conversation.deleteMany({ _id: { $in: toDelete } });
+                }
+            }
+        });
+
+        // 5. Part 1: Team Lead sees all active employees in the directory
+        it('5. Part 1: Team Lead sees all active employees in the directory', async () => {
+            const res = await request(app)
+                .get('/api/conversations/directory')
+                .set('Authorization', `Bearer ${tlTokenP3}`);
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+            const empIds = res.body.employees.map(e => e.id);
+            expect(empIds).toContain('TEST_P3_EMPA');
+            expect(empIds).toContain('TEST_P3_EMPB');
+            expect(empIds).toContain('TEST_P3_ADMIN');
+        });
+
+        // 6. Part 2: Super Admin read of non-participant conversation creates READ AuditLog entry
+        it('6. Part 2: Super Admin read of non-participant conversation creates READ AuditLog entry', async () => {
+            const convBC = await Conversation.create({ participants: [empB._id, empC._id] });
+            try {
+                await Message.create({ conversationId: convBC._id, sender: empB._id, text: 'Admin watching this' });
+
+                const res = await request(app)
+                    .get(`/api/messages/${convBC._id}`)
+                    .set('Authorization', `Bearer ${adminTokenP3}`);
+
+                expect(res.status).toBe(200);
+                expect(res.body.success).toBe(true);
+
+                const audit = await AuditLog.findOne({
+                    user_id: adminP3._id,
+                    action: 'READ',
+                    resource: 'conversation',
+                    resource_id: convBC._id
+                });
+                expect(audit).not.toBeNull();
+            } finally {
+                await Message.deleteMany({ conversationId: convBC._id });
+                await Conversation.deleteOne({ _id: convBC._id });
+                await AuditLog.deleteMany({ resource_id: convBC._id });
+            }
+        });
+
+        // 7. Part 2: Super Admin export of conversation creates EXPORT AuditLog entry and returns PDF
+        it('7. Part 2: Super Admin export of conversation creates EXPORT AuditLog entry and returns PDF', async () => {
+            const convBC = await Conversation.create({ participants: [empB._id, empC._id] });
+            try {
+                await Message.create({ conversationId: convBC._id, sender: empB._id, text: 'Export this chat' });
+
+                const res = await request(app)
+                    .get(`/api/messages/${convBC._id}/export`)
+                    .set('Authorization', `Bearer ${adminTokenP3}`);
+
+                expect(res.status).toBe(200);
+                expect(res.headers['content-type']).toContain('application/pdf');
+
+                const audit = await AuditLog.findOne({
+                    user_id: adminP3._id,
+                    action: 'EXPORT',
+                    resource: 'conversation',
+                    resource_id: convBC._id
+                });
+                expect(audit).not.toBeNull();
+            } finally {
+                await Message.deleteMany({ conversationId: convBC._id });
+                await Conversation.deleteOne({ _id: convBC._id });
+                await AuditLog.deleteMany({ resource_id: convBC._id });
+            }
+        });
+
+        // 8. Part 3: PDF file upload under 10MB: 200 and file fields saved
+        it('8. Part 3: PDF file upload under 10MB: 200 and file fields saved', async () => {
+            const convAB = await Conversation.create({ participants: [empA._id, empB._id] });
+            try {
+                const pdfBuffer = Buffer.from('%PDF-1.4 test file content');
+                const res = await request(app)
+                    .post('/api/messages')
+                    .set('Authorization', `Bearer ${empAToken}`)
+                    .field('conversationId', convAB._id.toString())
+                    .field('text', 'Here is the pdf')
+                    .attach('file', pdfBuffer, { filename: 'test.pdf', contentType: 'application/pdf' });
+
+                expect(res.status).toBe(200);
+                expect(res.body.success).toBe(true);
+                expect(res.body.message.fileName).toBe('test.pdf');
+                expect(res.body.message.mimeType).toBe('application/pdf');
+
+                const inDb = await Message.findOne({ conversationId: convAB._id, fileName: 'test.pdf' });
+                expect(inDb).not.toBeNull();
+                expect(inDb.mimeType).toBe('application/pdf');
+            } finally {
+                await Message.deleteMany({ conversationId: convAB._id });
+                await Conversation.deleteOne({ _id: convAB._id });
+            }
+        });
+
+        // 9. Part 3: EXE file upload rejected: 400 with "File type not allowed."
+        it('9. Part 3: EXE file upload rejected: 400 with "File type not allowed."', async () => {
+            const convAB = await Conversation.create({ participants: [empA._id, empB._id] });
+            try {
+                const exeBuffer = Buffer.from('MZ executable test content');
+                const res = await request(app)
+                    .post('/api/messages')
+                    .set('Authorization', `Bearer ${empAToken}`)
+                    .field('conversationId', convAB._id.toString())
+                    .field('text', 'Check this app')
+                    .attach('file', exeBuffer, { filename: 'malware.exe', contentType: 'application/x-msdownload' });
+
+                expect(res.status).toBe(400);
+                expect(res.body.message).toBe('File type not allowed.');
+            } finally {
+                await Conversation.deleteOne({ _id: convAB._id });
+            }
+        });
+
+        // 10. Part 3: Over 10 MB file upload rejected: 400 with "File must be 10 MB or smaller."
+        it('10. Part 3: Over 10 MB file upload rejected: 400 with "File must be 10 MB or smaller."', async () => {
+            const convAB = await Conversation.create({ participants: [empA._id, empB._id] });
+            try {
+                // 11 MB buffer
+                const largeBuffer = Buffer.alloc(11 * 1024 * 1024, 0);
+                const res = await request(app)
+                    .post('/api/messages')
+                    .set('Authorization', `Bearer ${empAToken}`)
+                    .field('conversationId', convAB._id.toString())
+                    .attach('file', largeBuffer, { filename: 'large.pdf', contentType: 'application/pdf' });
+
+                expect(res.status).toBe(400);
+                expect(res.body.message).toBe('File must be 10 MB or smaller.');
+            } finally {
+                await Conversation.deleteOne({ _id: convAB._id });
+            }
+        });
+
+        // 11. Part 4: Two employees of different roles exchange messages; both can read
+        it('11. Part 4: Two employees of different roles exchange messages; both can read', async () => {
+            const conv = await Conversation.create({ participants: [empA._id, mgrP3._id] });
+            try {
+                const res1 = await request(app)
+                    .post('/api/messages')
+                    .set('Authorization', `Bearer ${empAToken}`)
+                    .send({ conversationId: conv._id.toString(), text: 'Hello Manager' });
+                expect(res1.status).toBe(200);
+
+                const res2 = await request(app)
+                    .post('/api/messages')
+                    .set('Authorization', `Bearer ${mgrTokenP3}`)
+                    .send({ conversationId: conv._id.toString(), text: 'Hello Employee' });
+                expect(res2.status).toBe(200);
+
+                const readEmp = await request(app)
+                    .get(`/api/messages/${conv._id}`)
+                    .set('Authorization', `Bearer ${empAToken}`);
+                expect(readEmp.status).toBe(200);
+                expect(readEmp.body.messages.length).toBe(2);
+
+                const readMgr = await request(app)
+                    .get(`/api/messages/${conv._id}`)
+                    .set('Authorization', `Bearer ${mgrTokenP3}`);
+                expect(readMgr.status).toBe(200);
+                expect(readMgr.body.messages.length).toBe(2);
+            } finally {
+                await Message.deleteMany({ conversationId: conv._id });
+                await Conversation.deleteOne({ _id: conv._id });
+            }
+        });
+
+        // 12. Part 4: Poll with "since" returns only newer messages
+        it('12. Part 4: Poll with "since" returns only newer messages', async () => {
+            const conv = await Conversation.create({ participants: [empA._id, empB._id] });
+            try {
+                const m1 = await Message.create({ conversationId: conv._id, sender: empA._id, text: 'Msg 1', createdAt: new Date(Date.now() - 5000) });
+                const m2 = await Message.create({ conversationId: conv._id, sender: empB._id, text: 'Msg 2', createdAt: new Date() });
+
+                const res = await request(app)
+                    .get(`/api/messages/${conv._id}?since=${m1.createdAt.toISOString()}`)
+                    .set('Authorization', `Bearer ${empAToken}`);
+
+                expect(res.status).toBe(200);
+                expect(res.body.messages.length).toBe(1);
+                expect(res.body.messages[0].text).toBe('Msg 2');
+            } finally {
+                await Message.deleteMany({ conversationId: conv._id });
+                await Conversation.deleteOne({ _id: conv._id });
+            }
+        });
+
+        // 13. Part 4: Manager export 403 with exact message
+        it('13. Part 4: Manager export 403 with exact message', async () => {
+            const conv = await Conversation.create({ participants: [mgrP3._id, empA._id] });
+            try {
+                const res = await request(app)
+                    .get(`/api/messages/${conv._id}/export`)
+                    .set('Authorization', `Bearer ${mgrTokenP3}`);
+
+                expect(res.status).toBe(403);
+                expect(res.body.message).toBe('Only Super Admins can export chats.');
+            } finally {
+                await Conversation.deleteOne({ _id: conv._id });
+            }
+        });
+
+        // 14. Part 4: Employee with live_chat permission flag tries to export: 403
+        it('14. Part 4: Employee with live_chat permission flag tries to export: 403', async () => {
+            const conv = await Conversation.create({ participants: [empWithChatPerm._id, empA._id] });
+            try {
+                const res = await request(app)
+                    .get(`/api/messages/${conv._id}/export`)
+                    .set('Authorization', `Bearer ${empWithChatPermToken}`);
+
+                expect(res.status).toBe(403);
+                expect(res.body.message).toBe('Only Super Admins can export chats.');
+            } finally {
+                await Conversation.deleteOne({ _id: conv._id });
+            }
+        });
+
+        // 15. Part 5: Team Lead DELETE on an employee returns 403 with exact message
+        it('15. Part 5: Team Lead DELETE on an employee returns 403 with exact message', async () => {
+            const targetEmp = await Employee.create({
+                id: 'TEST_P3_TARGET_EMP',
+                name: 'Target Employee',
+                email: 'target_emp@zograhatechnologies.test',
+                password_hash: await bcrypt.hash('Secret123!', 10),
+                role: 'employee',
+                status: 'active'
+            });
+
+            try {
+                const res = await request(app)
+                    .delete(`/api/employees/${targetEmp.id}`)
+                    .set('Authorization', `Bearer ${tlTokenP3}`);
+
+                expect(res.status).toBe(403);
+                expect(res.body.message).toBe('Forbidden. Team Leads cannot delete employees.');
+
+                const inDb = await Employee.findOne({ id: targetEmp.id });
+                expect(inDb.status).toBe('active');
+            } finally {
+                await Employee.deleteOne({ _id: targetEmp._id });
+            }
+        });
+
+        // 16. team_lead GET /api/attendance/team: 200
+        it('16. team_lead GET /api/attendance/team returns 200', async () => {
+            const res = await request(app)
+                .get('/api/attendance/team')
+                .set('Authorization', `Bearer ${tlTokenP3}`);
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+        });
+
+        // 17. team_lead GET /api/employees: 200, results limited to the team lead scope
+        it('17. team_lead GET /api/employees: 200, results limited to the team lead scope', async () => {
+            let otherDept, outsideEmp;
+            try {
+                otherDept = await Department.create({ name: 'TEST_OTHER_DEPT_TL_SCOPE' });
+                outsideEmp = await Employee.create({
+                    id: 'TEST_OUTSIDE_EMP_TL',
+                    name: 'Outside Employee',
+                    email: 'outside_emp_tl@zograhatechnologies.test',
+                    password_hash: await bcrypt.hash('Secret123!', 10),
+                    role: 'employee',
+                    department_id: otherDept._id,
+                    status: 'active'
+                });
+
+                await Employee.updateOne({ _id: empA._id }, { team_lead_id: tlP3.id });
+
+                const res = await request(app)
+                    .get('/api/employees')
+                    .set('Authorization', `Bearer ${tlTokenP3}`);
+
+                expect(res.status).toBe(200);
+                expect(res.body.success).toBe(true);
+                const returnedIds = (res.body.employees || []).map(e => e.id);
+                expect(returnedIds).toContain(empA.id);
+                expect(returnedIds).not.toContain(outsideEmp.id);
+            } finally {
+                if (outsideEmp) await Employee.deleteOne({ _id: outsideEmp._id });
+                if (otherDept) await Department.deleteOne({ _id: otherDept._id });
+                await Employee.updateOne({ _id: empA._id }, { team_lead_id: null });
+            }
+        });
+
+        // 18. team_lead GET /api/conversations/directory: 200, includes active employees from other departments
+        it('18. team_lead GET /api/conversations/directory: 200, includes active employees from other departments', async () => {
+            let otherDept, outsideEmp;
+            try {
+                otherDept = await Department.create({ name: 'TEST_OTHER_DEPT_DIR' });
+                outsideEmp = await Employee.create({
+                    id: 'TEST_OUTSIDE_EMP_DIR',
+                    name: 'Outside Employee Dir',
+                    email: 'outside_emp_dir@zograhatechnologies.test',
+                    password_hash: await bcrypt.hash('Secret123!', 10),
+                    role: 'employee',
+                    department_id: otherDept._id,
+                    status: 'active'
+                });
+
+                const res = await request(app)
+                    .get('/api/conversations/directory')
+                    .set('Authorization', `Bearer ${tlTokenP3}`);
+
+                expect(res.status).toBe(200);
+                expect(res.body.success).toBe(true);
+                const empIds = res.body.employees.map(e => e.id);
+                expect(empIds).toContain(outsideEmp.id);
+                expect(empIds).toContain(empA.id);
+            } finally {
+                if (outsideEmp) await Employee.deleteOne({ _id: outsideEmp._id });
+                if (otherDept) await Department.deleteOne({ _id: otherDept._id });
+            }
+        });
+
+        // 19. employee POST /api/conversations to another employee returns 201
+        it('19. employee POST /api/conversations to another employee returns 201', async () => {
+            let target, convId;
+            try {
+                target = await Employee.create({
+                    id: 'TEST_FRESH_TARGET_CONV',
+                    name: 'Fresh Target',
+                    email: 'fresh_target@zograhatechnologies.test',
+                    password_hash: await bcrypt.hash('Secret123!', 10),
+                    role: 'employee',
+                    status: 'active'
+                });
+
+                const res = await request(app)
+                    .post('/api/conversations')
+                    .set('Authorization', `Bearer ${empAToken}`)
+                    .send({ recipientId: target._id.toString() });
+
+                expect(res.status).toBe(201);
+                expect(res.body.success).toBe(true);
+                expect(res.body.conversation).toBeDefined();
+                convId = res.body.conversation._id;
+            } finally {
+                if (convId) await Conversation.deleteOne({ _id: convId });
+                if (target) await Employee.deleteOne({ _id: target._id });
+            }
+        });
+
+        // 20. team_lead GET performance list excludes an employee outside their team
+        it('20. team_lead GET performance list excludes an employee outside their team', async () => {
+            const Goal = require('../models/Goal');
+            let otherDept, outsideEmp, teamGoal, outsideGoal, orgGoal, teamTypeGoal;
+            try {
+                otherDept = await Department.create({ name: 'TEST_OTHER_DEPT_PERF' });
+                outsideEmp = await Employee.create({
+                    id: 'TEST_OUTSIDE_EMP_PERF',
+                    name: 'Outside Employee Perf',
+                    email: 'outside_emp_perf@zograhatechnologies.test',
+                    password_hash: await bcrypt.hash('Secret123!', 10),
+                    role: 'employee',
+                    department_id: otherDept._id,
+                    status: 'active'
+                });
+
+                // Put empA in team lead tlP3's team
+                await Employee.updateOne({ _id: empA._id }, { team_lead_id: tlP3.id });
+
+                teamGoal = await Goal.create({
+                    employee_id: empA.id,
+                    creator_id: tlP3.id,
+                    title: 'Team Member Goal In Team',
+                    type: 'individual',
+                    due_date: new Date(Date.now() + 86400000)
+                });
+
+                outsideGoal = await Goal.create({
+                    employee_id: outsideEmp.id,
+                    creator_id: outsideEmp.id,
+                    title: 'Outside Team Goal Out Of Scope',
+                    type: 'individual',
+                    due_date: new Date(Date.now() + 86400000)
+                });
+
+                orgGoal = await Goal.create({
+                    employee_id: null,
+                    creator_id: adminP3.id,
+                    title: 'Org Wide Goal',
+                    type: 'organization',
+                    due_date: new Date(Date.now() + 86400000)
+                });
+
+                teamTypeGoal = await Goal.create({
+                    employee_id: null,
+                    creator_id: tlP3.id,
+                    title: 'Team Wide Goal',
+                    type: 'team',
+                    due_date: new Date(Date.now() + 86400000)
+                });
+
+                const res = await request(app)
+                    .get('/api/performance')
+                    .set('Authorization', `Bearer ${tlTokenP3}`);
+
+                expect(res.status).toBe(200);
+                expect(res.body.success).toBe(true);
+                const returnedGoalIds = (res.body.goals || []).map(g => g._id.toString());
+                const returnedEmpIds = (res.body.goals || []).map(g => g.employee_id);
+
+                // a) team_lead sees an organization-type goal (employee_id null): included
+                expect(returnedGoalIds).toContain(orgGoal._id.toString());
+
+                // b) team_lead sees a team-type goal: included
+                expect(returnedGoalIds).toContain(teamTypeGoal._id.toString());
+
+                // Member of team: included
+                expect(returnedGoalIds).toContain(teamGoal._id.toString());
+                expect(returnedEmpIds).toContain(empA.id);
+
+                // c) team_lead does not see an individual goal for an outside employee: excluded
+                expect(returnedGoalIds).not.toContain(outsideGoal._id.toString());
+                expect(returnedEmpIds).not.toContain(outsideEmp.id);
+            } finally {
+                const goalIds = [];
+                if (teamGoal) goalIds.push(teamGoal._id);
+                if (outsideGoal) goalIds.push(outsideGoal._id);
+                if (orgGoal) goalIds.push(orgGoal._id);
+                if (teamTypeGoal) goalIds.push(teamTypeGoal._id);
+                if (goalIds.length > 0) {
+                    await Goal.deleteMany({ _id: { $in: goalIds } });
+                }
+                if (outsideEmp) await Employee.deleteOne({ _id: outsideEmp._id });
+                if (otherDept) await Department.deleteOne({ _id: otherDept._id });
+                await Employee.updateOne({ _id: empA._id }, { team_lead_id: null });
+            }
+        });
+
+        // 21. employee GET performance for another employee returns 403
+        it('21. employee GET performance for another employee returns 403', async () => {
+            const res = await request(app)
+                .get(`/api/performance?employee_id=${empB.id}`)
+                .set('Authorization', `Bearer ${empAToken}`);
+
+            expect(res.status).toBe(403);
+            expect(res.body.success).toBe(false);
+            expect(res.body.message).toBe('Forbidden. You can only view your own performance records.');
+        });
+    });
 });
 
 

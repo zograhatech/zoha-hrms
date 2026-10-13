@@ -8,6 +8,7 @@ router.use(auth());
 router.post('/', conversationController.createConversation);
 router.post('/group', conversationController.createGroup);
 router.get('/', conversationController.getConversations);
+router.get('/directory', conversationController.getContactDirectory);
 router.delete('/:id', conversationController.deleteConversation);
 
 module.exports = router;

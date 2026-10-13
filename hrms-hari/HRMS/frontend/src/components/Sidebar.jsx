@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useBranding } from '../context/BrandingContext';
-import { isManagerRole, getRoleDisplayLabel } from '../utils/roleHelper';
+import { isManagerRole, getRoleDisplayLabel, normalizeRole } from '../utils/roleHelper';
 import {
     FiGrid, FiUser, FiCalendar, FiBriefcase, FiCreditCard,
     FiMessageSquare, FiUsers, FiCheckCircle, FiTrendingUp,
@@ -122,6 +122,12 @@ export default function Sidebar({ open, onClose }) {
         // 3. Departments menu item is strictly hidden for employee, even with permission flag
         if (item.to === '/dashboard/departments') {
             return false;
+        }
+
+        // 4. Live Chat is visible to all active roles based on role (permission flag may augment, never remove)
+        if (item.to === '/dashboard/messages') {
+            const normalized = normalizeRole(role);
+            if (['admin', 'manager', 'team_lead', 'employee'].includes(normalized)) return true;
         }
 
         // 4. Individual Module Access Check — Permission flags augment access, never remove what role grants

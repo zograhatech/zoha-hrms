@@ -29,6 +29,9 @@ const messageSchema = new mongoose.Schema({
         enum: ['image', 'video', 'audio', 'file', null],
         default: null
     },
+    mimeType: {
+        type: String
+    },
     isRead: [{
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Employee'

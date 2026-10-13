@@ -46,9 +46,11 @@ async function getVisibleEmployeeScope(user) {
 
     // 3. Team Lead: employees whose team_lead_id is caller.id (plus self)
     if (role === 'team_lead') {
+        const tlIds = [user.id];
+        if (user._id) tlIds.push(user._id.toString());
         const emps = await Employee.find({
             $or: [
-                { team_lead_id: user.id },
+                { team_lead_id: { $in: tlIds } },
                 { id: user.id } // Team Lead can always see self
             ]
         }).select('id').lean();

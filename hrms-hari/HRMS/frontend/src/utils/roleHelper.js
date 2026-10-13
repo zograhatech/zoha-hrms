@@ -58,4 +58,49 @@ export const normalizeRole = (role) => {
     return roleLower;
 };
 
+/**
+ * Check if a user can access a specific module based on role grants or individual permissions.
+ */
+export const canAccessModule = (user, module) => {
+    // 1. Manager and Admin bypass: keep existing full access
+    if (isManagerRole(user)) return true;
+
+    const role = typeof user === 'string' ? user : user?.role;
+    const userRole = normalizeRole(role || '');
+    const modulesToCheck = Array.isArray(module) ? module : [module];
+
+    // 2. Role grants for team_lead: attendance_report, leave, employees, performance
+    if (userRole === 'team_lead') {
+        const tlGranted = ['attendance_report', 'leave', 'employees', 'performance'];
+        if (modulesToCheck.some(m => tlGranted.includes(m))) {
+            return true;
+        }
+    }
+
+    // 3. Fallback to existing permission logic
+    const userPermissions = (typeof user === 'object' && user?.permissions) ? user.permissions : [];
+    if (userPermissions.length === 0) {
+        return true; // Empty permissions fallback to role defaults
+    }
+
+    return modulesToCheck.some(m => {
+        if (userPermissions.includes(m)) return true;
+        if (m === 'attendance' && userPermissions.includes('attendance_user')) return true;
+        if (m === 'leave' && userPermissions.includes('leave_apply')) return true;
+        if (m === 'payroll' && userPermissions.includes('payroll_user')) return true;
+        if (m === 'tickets' && userPermissions.includes('tickets_user')) return true;
+        if (m === 'chat' && (userPermissions.includes('chat') || userPermissions.includes('live_chat'))) return true;
+        if (m === 'employees' && userPermissions.includes('manage_employees')) return true;
+        if (m === 'payroll_admin' && userPermissions.includes('payroll')) return true;
+        if (m === 'attendance_report' && userPermissions.includes('manage_attendance')) return true;
+        if (m === 'tickets_all' && userPermissions.includes('all_tickets')) return true;
+        if (m === 'fun' && userPermissions.includes('fun_summary')) return true;
+        if (m === 'shifts' && userPermissions.includes('manage_shifts')) return true;
+        if (m === 'lms' && userPermissions.includes('lms')) return true;
+        if (m === 'exit' && (userPermissions.includes('exit') || userPermissions.includes('exit_approve'))) return true;
+        return false;
+    });
+};
+
+
 

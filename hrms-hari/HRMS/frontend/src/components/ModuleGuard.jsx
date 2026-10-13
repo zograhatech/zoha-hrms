@@ -1,7 +1,9 @@
 import { useAuth } from '../context/AuthContext';
-import { isManagerRole } from '../utils/roleHelper';
+import { isManagerRole, canAccessModule } from '../utils/roleHelper';
 import { FiShield, FiLock, FiArrowLeft } from 'react-icons/fi';
 import { useNavigate } from 'react-router-dom';
+
+export { canAccessModule } from '../utils/roleHelper';
 
 /**
  * Component for Restricted Access Page
@@ -43,14 +45,28 @@ export default function ModuleGuard({ children, module }) {
     // 1. Management Role Bypass - Keep full control for the manager role
     if (isManagerRole(user)) return children;
 
+    const modulesToCheck = Array.isArray(module) ? module : [module];
+
+    // For these module names only: attendance_report, leave (leave-approvals), employees, performance
+    const isTeamLeadTargetModule = modulesToCheck.some(m => 
+        ['attendance_report', 'leave', 'employees', 'performance'].includes(m)
+    );
+
+    if (isTeamLeadTargetModule) {
+        if (!canAccessModule(user, module)) {
+            const moduleName = Array.isArray(module) ? module[0] : module;
+            const displayLabel = moduleName.charAt(0).toUpperCase() + moduleName.slice(1).replace(/_/g, ' ');
+            return <NoPermissionAccess moduleName={displayLabel} />;
+        }
+        return children;
+    }
+
     // 2. Permission Check Logic
     // In this unified system, an empty permissions array on the user profile indicates 
     // fallback to role defaults. Once any item is toggled, it becomes the source of truth.
     const userPermissions = user?.permissions || [];
     
     // Basic items mapping (Dashboard, Profile, etc. must now be present in individual check)
-    const modulesToCheck = Array.isArray(module) ? module : [module];
-    
     const hasAccess = modulesToCheck.some(m => {
         // Direct match
         if (userPermissions.includes(m)) return true;

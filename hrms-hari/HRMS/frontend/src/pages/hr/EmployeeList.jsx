@@ -11,7 +11,7 @@ import {
 } from 'react-icons/fi';
 import { useToast } from '../../context/ToastContext';
 import { formatDate } from '../../utils/dateFormatter';
-import { isManagerRole, getRoleDisplayLabel } from '../../utils/roleHelper';
+import { isManagerRole, getRoleDisplayLabel, normalizeRole } from '../../utils/roleHelper';
 import DocumentManager from '../../components/DocumentManager';
 
 export default function EmployeeList() {
@@ -19,6 +19,16 @@ export default function EmployeeList() {
     const { showToast } = useToast();
     const permissions = user?.permissions || [];
     const canManage = isManagerRole(user) || permissions.includes('manage_employees');
+
+    const canDeleteEmployee = (target) => {
+        const callerRole = normalizeRole(user?.role || '');
+        const targetRole = normalizeRole(target?.role || 'employee');
+        if (callerRole === 'admin') return true;
+        if (callerRole === 'manager') {
+            return ['employee', 'team_lead'].includes(targetRole);
+        }
+        return false;
+    };
 
     const [employees, setEmployees] = useState([]);
 
@@ -784,7 +794,9 @@ export default function EmployeeList() {
                                                     <button className="btn btn-icon btn-sm" title="Documents" style={{ color: 'var(--accent-info)' }} onClick={() => { setSelectedEmployeeForDocs(e); setShowDocManager(true); }}><FiFileText size={14} /></button>
                                                 )}
 
-                                                <button className="btn btn-icon btn-sm text-error" title="Deactivate" onClick={() => handleDelete(e.id)}><FiTrash2 size={14} /></button>
+                                                {canDeleteEmployee(e) && (
+                                                    <button className="btn btn-icon btn-sm text-error" title="Deactivate" onClick={() => handleDelete(e.id)}><FiTrash2 size={14} /></button>
+                                                )}
                                             </div>
                                         </td>
                                     )}
