@@ -3,7 +3,7 @@ import API from '../../api/axios';
 import { FiSearch, FiRefreshCcw, FiShield, FiTrash2, FiUser, FiMail, FiKey, FiX, FiCheck } from 'react-icons/fi';
 import { useToast } from '../../context/ToastContext';
 import { useAuth } from '../../context/AuthContext';
-import { isManagerRole } from '../../utils/roleHelper';
+import { isManagerRole, getRoleDisplayLabel } from '../../utils/roleHelper';
 
 const BASIC_PERMISSIONS = ['dashboard', 'profile', 'attendance_user', 'leave_apply', 'payroll_user', 'tickets_user', 'events', 'exit_user'];
 
@@ -75,7 +75,7 @@ export default function UserManagement() {
     const [search, setSearch] = useState('');
     const { showToast } = useToast();
     const { user } = useAuth();
-    const [roles, setRoles] = useState(['hr_manager', 'hr', 'employee']);
+    const roles = ['admin', 'manager', 'team_lead', 'employee'];
     
     // Permission Modal State
     const [selectedUser, setSelectedUser] = useState(null);
@@ -87,11 +87,6 @@ export default function UserManagement() {
         try {
             const { data } = await API.get('/employees');
             setUsers(data.employees || []);
-            
-            const settingsRes = await API.get('/settings');
-            if (settingsRes.data.settings?.roles_permissions) {
-                setRoles(Object.keys(settingsRes.data.settings.roles_permissions));
-            }
         } catch (err) {
             console.error(err);
             showToast('Failed to load users', 'error');
@@ -246,16 +241,16 @@ export default function UserManagement() {
                                     </div>
                                 </td>
                                 <td>
-                                    <select 
-                                        className="form-select" 
+                                    <select
+                                        className="form-select"
                                         style={{ width: 'auto', fontSize: '0.85rem' }}
                                         value={u.role}
                                         onChange={e => handleRoleChange(u.id, e.target.value)}
                                         disabled={isManagerRole(u.role) && users.filter(usr => isManagerRole(usr.role)).length <= 1}
                                     >
-                                        {roles.map(r => (
+                                        {(roles.includes(u.role) ? roles : [u.role, ...roles]).map(r => (
                                             <option key={r} value={r}>
-                                                {r === 'hr_manager' ? 'HR Manager' : r === 'hr' ? 'HR' : r.charAt(0).toUpperCase() + r.slice(1).replace(/_/g, ' ')}
+                                                {getRoleDisplayLabel(r)}
                                             </option>
                                         ))}
                                     </select>

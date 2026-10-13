@@ -139,15 +139,16 @@ export default function Attendance() {
                         <FiList className="text-primary" /> Attendance Log
                     </h3>
                     <table className="data-table">
-                        <thead><tr><th>Date</th><th>Status</th><th>Check In</th><th>Check Out</th><th>Hours</th></tr></thead>
+                        <thead><tr><th>Date</th><th>Status</th><th>Check In</th><th>Check Out</th><th>Worked Hours</th><th>Open Session</th></tr></thead>
                         <tbody>
                             {data.attendance.map(a => (
                                 <tr key={a._id || a.id}>
                                     <td>{formatDate(a.date)}</td>
                                     <td><span className={`badge badge-${a.status === 'present' ? 'success' : a.status === 'absent' ? 'danger' : a.status === 'late' ? 'warning' : 'info'}`}>{a.status}</span></td>
-                                    <td>{a.check_in || '—'}</td>
-                                    <td>{a.check_out || '—'}</td>
-                                    <td>{a.work_hours || '—'}</td>
+                                    <td>{a.check_in ? new Date(a.check_in).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
+                                    <td>{a.check_out ? new Date(a.check_out).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
+                                    <td>{a.work_hours !== undefined && a.work_hours !== null ? `${a.work_hours}h` : '—'}</td>
+                                    <td>{a.is_open_session ? <span className="badge badge-warning">Yes</span> : '—'}</td>
                                 </tr>
                             ))}
                         </tbody>

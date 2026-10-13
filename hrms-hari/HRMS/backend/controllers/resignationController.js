@@ -36,7 +36,7 @@ exports.submitResignation = async (req, res) => {
         if (existing && existing.status === 'pending') return res.status(400).json({ success: false, message: 'Already have a pending request.' });
 
         const resignation = await Resignation.create({ employee: req.user._id, notice_start_date, last_working_day, reason });
-        const hrManagers = await Employee.find({ role: 'hr_manager' });
+        const hrManagers = await Employee.find({ role: { $in: ['manager', 'admin', 'hr_manager'] } });
         for (const hr of hrManagers) {
             await Notification.create({ recipient: hr._id, sender: req.user._id, type: 'resignation', title: 'New Resignation Request', message: `${req.user.name} has submitted a resignation request.`, data: { link: '/dashboard/exit-management', status: 'pending' } });
         }
@@ -137,7 +137,7 @@ exports.getDocument = async (req, res) => {
             resignation.employee.toString() === req.user?._id?.toString()
         );
         const roleClean = (req.user?.role || '').toLowerCase().replace(/\s+/g, '');
-        const isManager = ['admin', 'hr', 'hr_manager', 'hrmanager', 'hrmanger'].includes(roleClean) ||
+        const isManager = ['admin', 'manager', 'team_lead', 'hr', 'hr_manager', 'hrmanager', 'hrmanger'].includes(roleClean) ||
                           req.user?.permissions?.includes('manage_resignations') ||
                           req.user?.permissions?.includes('exit') ||
                           req.user?.permissions?.includes('exit_approve');

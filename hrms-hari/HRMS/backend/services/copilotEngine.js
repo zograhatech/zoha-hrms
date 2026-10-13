@@ -595,10 +595,11 @@ const processMessage = async (message, sessionId, currentUser = null) => {
             const endOfDay = new Date();
             endOfDay.setHours(23, 59, 59, 999);
 
-            const presentToday = await Attendance.countDocuments({
+            const todayRecords = await Attendance.find({
                 date: { $gte: startOfDay, $lte: endOfDay },
                 status: 'present'
-            });
+            }).select('employee_id').lean();
+            const presentToday = new Set(todayRecords.map(r => r.employee_id)).size;
 
             return {
                 intent,

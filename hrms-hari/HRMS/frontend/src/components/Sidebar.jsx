@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useBranding } from '../context/BrandingContext';
-import { isManagerRole } from '../utils/roleHelper';
+import { isManagerRole, getRoleDisplayLabel } from '../utils/roleHelper';
 import {
     FiGrid, FiUser, FiCalendar, FiBriefcase, FiCreditCard,
     FiMessageSquare, FiUsers, FiCheckCircle, FiTrendingUp,
@@ -189,7 +189,7 @@ export default function Sidebar({ open, onClose }) {
                             {user?.name || 'User'}
                         </div>
                         <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'capitalize' }}>
-                            {user?.id} · {role}
+                            {user?.id} · {getRoleDisplayLabel(role)}
                         </div>
                     </div>
                 </div>

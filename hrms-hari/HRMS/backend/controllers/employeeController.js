@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Employee = require('../models/Employee');
 const Department = require('../models/Department');
 const bcrypt = require('bcryptjs');
@@ -78,8 +79,20 @@ const getEmployees = async (req, res) => {
 // GET /api/employee/:id
 const getEmployee = async (req, res) => {
     try {
-        const emp = await Employee.findOne({ id: req.params.id }).lean();
+        const emp = await Employee.findOne({
+            $or: [
+                { id: req.params.id },
+                ...(mongoose.Types.ObjectId.isValid(req.params.id) ? [{ _id: req.params.id }] : [])
+            ]
+        }).lean();
         if (!emp) return res.status(404).json({ success: false, message: 'Employee not found.' });
+
+        // Group 4: Managers cannot view a Super Admin. Attempts return HTTP 403.
+        const requesterRole = (req.user?.role || '').toLowerCase().replace(/\s+/g, '');
+        const isSelf = req.user?.id === emp.id || req.user?._id?.toString() === emp._id?.toString();
+        if (emp.role === 'admin' && requesterRole !== 'admin' && !isSelf) {
+            return res.status(403).json({ success: false, message: 'Forbidden. Managers cannot view a Super Admin.' });
+        }
 
         let department_name = null;
         if (emp.department_id) {
@@ -169,10 +182,31 @@ const createEmployee = async (req, res) => {
             }
         }
 
-        // Role: supported roles
-        const allowedRoles = ['employee', 'hr', 'hr_manager', 'admin'];
-        if (role && !allowedRoles.includes(String(role).toLowerCase())) {
-            return res.status(400).json({ success: false, message: 'Invalid role specified.' });
+        // Role: strictly supported 4 roles (mapping legacy roles before validation)
+        const allowedRoles = ['admin', 'manager', 'team_lead', 'employee'];
+        let targetRole = role !== undefined ? String(role).toLowerCase().trim() : undefined;
+        if (targetRole) {
+            if (['hr_manager', 'hrmanager', 'hrmanger', 'hr_manger'].includes(targetRole)) {
+                targetRole = 'manager';
+            } else if (targetRole === 'hr') {
+                targetRole = 'team_lead';
+            }
+            if (!allowedRoles.includes(targetRole)) {
+                return res.status(400).json({ success: false, message: 'Invalid role specified. Allowed roles: admin, manager, team_lead, employee.' });
+            }
+        } else {
+            targetRole = 'employee';
+        }
+
+        // Role hierarchy creation checks
+        const reqRole = (req.user?.role || '').toLowerCase().replace(/\s+/g, '');
+        const normReqRole = (['hr_manager', 'hrmanager', 'hrmanger', 'hr_manger'].includes(reqRole)) ? 'manager' : (reqRole === 'hr' ? 'team_lead' : reqRole);
+
+        if (normReqRole === 'team_lead' && targetRole !== 'employee') {
+            return res.status(403).json({ success: false, message: 'Forbidden. Team Leads can create employees only.' });
+        }
+        if (normReqRole !== 'admin' && targetRole === 'admin') {
+            return res.status(403).json({ success: false, message: 'Forbidden. Only Super Admins can create a Super Admin.' });
         }
 
         const existing = await Employee.findOne({ $or: [{ id: String(id).trim().toUpperCase() }, { email: emailLower }] });
@@ -184,7 +218,7 @@ const createEmployee = async (req, res) => {
             name: String(name).trim(),
             email: emailLower,
             password_hash,
-            role: role || 'employee',
+            role: targetRole,
             department_id: department_id || null,
             shift_id: shift_id || null,
             manager_id: manager_id || null,
@@ -253,15 +287,99 @@ const updateEmployee = async (req, res) => {
 
         // Fetch settings for dynamic permissions
         const settings = await Setting.findOne();
-        const userPerms = settings?.roles_permissions?.[loggedInUser.role] || [];
+        const roleClean = (loggedInUser.role || '').toLowerCase().replace(/\s+/g, '');
+        const normalizeRole = (role) => {
+            const r = (role || '').toLowerCase().replace(/\s+/g, '');
+            if (['hr_manager', 'hrmanager', 'hrmanger', 'hr_manger'].includes(r)) return 'manager';
+            if (r === 'hr') return 'team_lead';
+            return r;
+        };
+        const normalizedUserRole = normalizeRole(roleClean);
+        const userPerms = settings?.roles_permissions?.[normalizedUserRole] || settings?.roles_permissions?.[loggedInUser.role] || [];
 
-        // HR default if MISSING in DB
-        const isHR = loggedInUser.role === 'hr';
-        const canManage = loggedInUser.role === 'hr_manager' || userPerms.includes('manage_employees') || (isHR && userPerms.length === 0);
-        const isSelf = loggedInUser.id === id;
+        const isManager = ['admin', 'manager'].includes(normalizedUserRole);
+        const isTeamLead = normalizedUserRole === 'team_lead';
+        const canManage = isManager || isTeamLead || userPerms.includes('manage_employees');
+        const isSelf = loggedInUser.id === id || loggedInUser._id?.toString() === id;
 
         if (!canManage && !isSelf) {
             return res.status(403).json({ success: false, message: 'Access denied. You can only update your own profile.' });
+        }
+
+        const targetEmp = await Employee.findOne({
+            $or: [{ id: id }, ...(mongoose.Types.ObjectId.isValid(id) ? [{ _id: id }] : [])]
+        });
+        if (!targetEmp) return res.status(404).json({ success: false, message: 'Employee not found.' });
+
+        const targetNormRole = normalizeRole(targetEmp.role);
+
+        // 1. Role Whitelist check: map legacy values before validation
+        if (req.body.role !== undefined) {
+            let requestedRole = String(req.body.role).toLowerCase().trim();
+            if (['hr_manager', 'hrmanager', 'hrmanger', 'hr_manger'].includes(requestedRole)) {
+                requestedRole = 'manager';
+            } else if (requestedRole === 'hr') {
+                requestedRole = 'team_lead';
+            }
+            req.body.role = requestedRole;
+
+            const allowedRoles = ['admin', 'manager', 'team_lead', 'employee'];
+            if (!allowedRoles.includes(requestedRole)) {
+                return res.status(400).json({ success: false, message: 'Invalid role specified. Allowed roles: admin, manager, team_lead, employee.' });
+            }
+            // 2. Manager cannot grant admin: only Super Admins can set role admin
+            if (requestedRole === 'admin' && normalizedUserRole !== 'admin') {
+                return res.status(403).json({ success: false, message: 'Forbidden. Only Super Admins can assign the Super Admin role.' });
+            }
+        }
+
+        // 4 & 6. Hierarchy checks apply regardless of permissions:
+        // Non-Super-Admins cannot edit a Super Admin
+        if (targetNormRole === 'admin' && normalizedUserRole !== 'admin') {
+            return res.status(403).json({ success: false, message: 'Forbidden. Managers cannot edit Super Admins.' });
+        }
+
+        // 3. Team Leads can edit employees only (self-edit excluded so TL can update their own profile)
+        if (normalizedUserRole === 'team_lead' && !isSelf) {
+            if (targetNormRole !== 'employee') {
+                return res.status(403).json({ success: false, message: 'Forbidden. Team Leads can edit employees only.' });
+            }
+        }
+
+        // Deactivation / Termination rules (same as delete)
+        const requestedStatus = req.body.status !== undefined ? String(req.body.status).toLowerCase().trim() : undefined;
+        const isDeactivating = requestedStatus !== undefined && ['inactive', 'terminated'].includes(requestedStatus);
+
+        if (isDeactivating) {
+            // Team Lead cannot deactivate anyone
+            if (normalizedUserRole === 'team_lead') {
+                return res.status(403).json({ success: false, message: 'Forbidden. Team Leads cannot deactivate employees.' });
+            }
+            // Manager cannot deactivate another manager
+            if (normalizedUserRole === 'manager' && targetNormRole === 'manager') {
+                return res.status(403).json({ success: false, message: 'Forbidden. Managers cannot deactivate other managers.' });
+            }
+            // Manager cannot deactivate a Super Admin
+            if (normalizedUserRole === 'manager' && targetNormRole === 'admin') {
+                return res.status(403).json({ success: false, message: 'Forbidden. Managers cannot edit Super Admins.' });
+            }
+            // Non-admin, non-manager callers cannot deactivate
+            if (!['admin', 'manager'].includes(normalizedUserRole)) {
+                return res.status(403).json({ success: false, message: 'Forbidden. You do not have permission to deactivate employees.' });
+            }
+        }
+
+        // 5. Always keep at least one active Super Admin.
+        // Triggers when status changes away from active or role changes away from admin on an active admin
+        if (targetNormRole === 'admin' && targetEmp.status === 'active') {
+            const requestedRole = req.body.role !== undefined ? String(req.body.role).toLowerCase().trim() : undefined;
+            const isDemoting = requestedRole !== undefined && requestedRole !== 'admin';
+            if (isDemoting || isDeactivating) {
+                const otherActiveAdmins = await Employee.countDocuments({ role: 'admin', status: 'active', _id: { $ne: targetEmp._id } });
+                if (otherActiveAdmins === 0) {
+                    return res.status(400).json({ success: false, message: 'At least one Super Admin must exist.' });
+                }
+            }
         }
 
         let updateFields = {};
@@ -275,7 +393,7 @@ const updateEmployee = async (req, res) => {
             } = req.body;
 
             // Security: Only high-level managers can set Individual Module Access overrides
-            const isManagerRole = ['admin', 'hrmanager', 'hrmanger', 'hr_manager', 'hr_manger'].includes((loggedInUser.role || '').toLowerCase().replace(/\s+/g, ''));
+            const isManagerRole = ['admin', 'manager', 'hrmanager', 'hrmanger', 'hr_manager', 'hr_manger'].includes(roleClean);
             
             if (permissions !== undefined && !isManagerRole) {
                 return res.status(403).json({ success: false, message: 'Only HR Managers can grant individual module access.' });
@@ -324,7 +442,8 @@ const updateEmployee = async (req, res) => {
                 department_id: department_id || null,
                 shift_id: shift_id || null,
                 manager_id: manager_id || null,
-                role, status, gender, address,
+                role: role !== undefined ? String(role).toLowerCase().trim() : undefined,
+                status, gender, address,
                 pan, uan, pf_account_no,
                 date_of_joining: date_of_joining || undefined,
                 date_of_birth: date_of_birth || undefined,
@@ -357,7 +476,7 @@ const updateEmployee = async (req, res) => {
         }
 
         const emp = await Employee.findOneAndUpdate(
-            { id: id },
+            { _id: targetEmp._id },
             updateFields,
             { returnDocument: 'after', runValidators: true }
         ).select('-password_hash');
@@ -373,11 +492,110 @@ const updateEmployee = async (req, res) => {
 // DELETE /api/employee/:id
 const deleteEmployee = async (req, res) => {
     try {
-        const emp = await Employee.findOneAndUpdate({ id: req.params.id }, { status: 'terminated' }, { returnDocument: 'after' });
+        const emp = await Employee.findOne({
+            $or: [{ id: req.params.id }, ...(mongoose.Types.ObjectId.isValid(req.params.id) ? [{ _id: req.params.id }] : [])]
+        });
         if (!emp) return res.status(404).json({ success: false, message: 'Employee not found.' });
+
+        const requesterRole = (req.user?.role || '').toLowerCase().replace(/\s+/g, '');
+        const normalizeRole = (role) => {
+            const r = (role || '').toLowerCase().replace(/\s+/g, '');
+            if (['hr_manager', 'hrmanager', 'hrmanger', 'hr_manger'].includes(r)) return 'manager';
+            if (r === 'hr') return 'team_lead';
+            return r;
+        };
+        const normalizedRequester = normalizeRole(requesterRole);
+        const targetNormalized = normalizeRole(emp.role);
+
+        // 1. Team Leads cannot delete anyone
+        if (normalizedRequester === 'team_lead') {
+            return res.status(403).json({ success: false, message: 'Forbidden. Team Leads cannot delete employees.' });
+        }
+
+        // 2. Non-admin, non-manager callers have no delete rights
+        if (!['admin', 'manager'].includes(normalizedRequester)) {
+            return res.status(403).json({ success: false, message: 'Forbidden. You do not have permission to delete employees.' });
+        }
+
+        // 3. Managers cannot delete Super Admins
+        if (targetNormalized === 'admin' && normalizedRequester !== 'admin') {
+            return res.status(403).json({ success: false, message: 'Forbidden. Managers cannot delete Super Admins.' });
+        }
+
+        // 4. Managers cannot delete other managers
+        if (normalizedRequester === 'manager' && targetNormalized === 'manager') {
+            return res.status(403).json({ success: false, message: 'Forbidden. Managers cannot delete other managers.' });
+        }
+
+        // Group 3: Always keep at least one active Super Admin.
+        if (targetNormalized === 'admin' && emp.status === 'active') {
+            const otherActiveAdmins = await Employee.countDocuments({ role: 'admin', status: 'active', _id: { $ne: emp._id } });
+            if (otherActiveAdmins === 0) {
+                return res.status(400).json({ success: false, message: 'At least one Super Admin must exist.' });
+            }
+        }
+
+        emp.status = 'terminated';
+        await emp.save();
         res.json({ success: true, message: 'Employee deactivated.' });
     } catch (err) {
         res.status(500).json({ success: false, message: 'Server error.' });
+    }
+};
+
+// PATCH /api/employees/:id/super-admin
+const setSuperAdminStatus = async (req, res) => {
+    try {
+        const requesterRole = (req.user?.role || '').toLowerCase().replace(/\s+/g, '');
+        if (requesterRole !== 'admin') {
+            return res.status(403).json({ success: false, message: 'Forbidden. Only Super Admins can manage Super Admin status.' });
+        }
+
+        const { id } = req.params;
+        const { isSuperAdmin } = req.body;
+
+        if (typeof isSuperAdmin !== 'boolean') {
+            return res.status(400).json({ success: false, message: 'isSuperAdmin must be a boolean (true or false).' });
+        }
+
+        const emp = await Employee.findOne({
+            $or: [
+                { id: id },
+                ...(mongoose.Types.ObjectId.isValid(id) ? [{ _id: id }] : [])
+            ]
+        });
+
+        if (!emp) {
+            return res.status(404).json({ success: false, message: 'Employee not found.' });
+        }
+
+        if (isSuperAdmin) {
+            // Granting Super Admin status sets the role to "admin"
+            if (emp.role !== 'admin') {
+                emp.previous_role = emp.role;
+                emp.role = 'admin';
+            }
+        } else {
+            // Removing Super Admin status
+            if (emp.role === 'admin') {
+                if (emp.status === 'active') {
+                    const activeSuperAdmins = await Employee.countDocuments({ role: 'admin', status: 'active', _id: { $ne: emp._id } });
+                    if (activeSuperAdmins === 0) {
+                        return res.status(400).json({ success: false, message: 'At least one Super Admin must exist.' });
+                    }
+                }
+                const prev = (emp.previous_role || '').toLowerCase().replace(/\s+/g, '');
+                const wasManager = ['manager', 'hr_manager', 'hrmanager'].includes(prev);
+                emp.role = wasManager ? 'manager' : 'employee';
+            }
+        }
+
+        await emp.save();
+        const { password_hash, ...rest } = emp.toObject();
+        return res.json({ success: true, message: 'Super Admin status updated successfully.', employee: rest });
+    } catch (err) {
+        console.error('[setSuperAdminStatus]', err);
+        return res.status(500).json({ success: false, message: 'Server error.' });
     }
 };
 
@@ -497,14 +715,26 @@ const getDashboardOverview = async (req, res) => {
             Setting.findOne().lean()
         ]);
 
-        // Process attendance for summary
-        const statuses = attendanceData.map(a => a.status);
+        // Process attendance for summary: group by calendar day first to avoid double counting
+        const groupedByDay = {};
+        attendanceData.forEach(rec => {
+            const d = new Date(rec.date).toISOString().split('T')[0];
+            if (!groupedByDay[d]) {
+                groupedByDay[d] = rec.status;
+            } else {
+                const priority = { present: 4, late: 3, 'half-day': 2, holiday: 1, absent: 0 };
+                if ((priority[rec.status] || 0) > (priority[groupedByDay[d]] || 0)) {
+                    groupedByDay[d] = rec.status;
+                }
+            }
+        });
+        const dayStatuses = Object.values(groupedByDay);
         const attendanceSummary = {
-            present: statuses.filter(s => s === 'present').length,
-            absent: statuses.filter(s => s === 'absent').length,
-            late: statuses.filter(s => s === 'late').length,
-            halfDay: statuses.filter(s => s === 'half-day').length,
-            total: statuses.length
+            present: dayStatuses.filter(s => s === 'present').length,
+            absent: dayStatuses.filter(s => s === 'absent').length,
+            late: dayStatuses.filter(s => s === 'late').length,
+            halfDay: dayStatuses.filter(s => s === 'half-day').length,
+            total: dayStatuses.length
         };
 
         res.json({
@@ -633,6 +863,20 @@ const importEmployees = async (req, res) => {
         const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
 
         if (rows.length === 0) return res.status(400).json({ success: false, message: 'The uploaded file is empty.' });
+
+        const allowedRoles = ['admin', 'manager', 'team_lead', 'employee'];
+        const requesterRole = (req.user?.role || '').toLowerCase().replace(/\s+/g, '');
+        const isRequesterAdmin = requesterRole === 'admin';
+
+        for (let i = 0; i < rows.length; i++) {
+            const rowRole = String(rows[i].role || 'employee').toLowerCase().trim();
+            if (!allowedRoles.includes(rowRole)) {
+                return res.status(400).json({ success: false, message: `Invalid role "${rows[i].role}" in row ${i + 2}. Allowed roles: admin, manager, team_lead, employee.` });
+            }
+            if (rowRole === 'admin' && !isRequesterAdmin) {
+                return res.status(403).json({ success: false, message: 'Forbidden. Only Super Admins can import employees with the Super Admin role.' });
+            }
+        }
 
         // All fields required per user's requirement
         const REQUIRED = ['name', 'email', 'password', 'phone', 'gender', 'date_of_birth', 'address', 'role', 'designation', 'department_name', 'date_of_joining', 'basic_salary', 'bank_account_no', 'bank_ifsc_code', 'bank_name'];
@@ -765,8 +1009,115 @@ const importEmployees = async (req, res) => {
     }
 };
 
-module.exports = { 
-    getEmployees, getEmployee, createEmployee, updateEmployee, deleteEmployee, 
+// PATCH /api/employees/:id/assignments - Set manager_id and team_lead_id
+const updateAssignments = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { manager_id, team_lead_id } = req.body;
+        const loggedInUser = req.user;
+
+        const normalizeRole = (role) => {
+            const r = (role || '').toLowerCase().replace(/\s+/g, '');
+            if (['hr_manager', 'hrmanager', 'hrmanger', 'hr_manger'].includes(r)) return 'manager';
+            if (r === 'hr') return 'team_lead';
+            return r;
+        };
+
+        const requesterRole = normalizeRole(loggedInUser?.role || '');
+
+        // Fetch target employee
+        const targetEmp = await Employee.findOne({
+            $or: [{ id: id }, ...(mongoose.Types.ObjectId.isValid(id) ? [{ _id: id }] : [])]
+        });
+        if (!targetEmp) return res.status(404).json({ success: false, message: 'Employee not found.' });
+
+        // Super Admin can set both manager_id and team_lead_id
+        if (requesterRole === 'admin') {
+            if (manager_id !== undefined) {
+                if (manager_id !== null) {
+                    const mgr = await Employee.findOne({ id: manager_id }).lean();
+                    if (!mgr) return res.status(400).json({ success: false, message: 'Manager not found.' });
+                    const mgrRole = normalizeRole(mgr.role);
+                    if (mgrRole !== 'manager') {
+                        return res.status(400).json({ success: false, message: 'Referenced employee must have role "manager".' });
+                    }
+                }
+                targetEmp.manager_id = manager_id;
+            }
+            if (team_lead_id !== undefined) {
+                if (team_lead_id !== null) {
+                    const tl = await Employee.findOne({ id: team_lead_id }).lean();
+                    if (!tl) return res.status(400).json({ success: false, message: 'Team Lead not found.' });
+                    const tlRole = normalizeRole(tl.role);
+                    if (tlRole !== 'team_lead') {
+                        return res.status(400).json({ success: false, message: 'Referenced employee must have role "team_lead".' });
+                    }
+                }
+                targetEmp.team_lead_id = team_lead_id;
+            }
+            await targetEmp.save();
+            const { password_hash, ...rest } = targetEmp.toObject();
+            return res.json({ success: true, message: 'Assignments updated successfully.', employee: rest });
+        }
+
+        // Manager can only set team_lead_id for employees in departments they manage
+        if (requesterRole === 'manager') {
+            if (manager_id !== undefined) {
+                return res.status(403).json({ success: false, message: 'Forbidden. Managers cannot set manager_id.' });
+            }
+            if (team_lead_id === undefined) {
+                return res.status(400).json({ success: false, message: 'team_lead_id is required.' });
+            }
+
+            // Get departments managed by this manager (support string id and ObjectId)
+            const mgrEmp = await Employee.findOne({
+                $or: [
+                    { id: loggedInUser.id },
+                    ...(mongoose.Types.ObjectId.isValid(loggedInUser.id) ? [{ _id: loggedInUser.id }] : []),
+                    ...(loggedInUser._id && mongoose.Types.ObjectId.isValid(loggedInUser._id) ? [{ _id: loggedInUser._id }] : [])
+                ]
+            }).select('id _id').lean();
+
+            const validManagerIds = [loggedInUser.id];
+            if (loggedInUser._id) validManagerIds.push(loggedInUser._id.toString());
+            if (mgrEmp) {
+                if (mgrEmp.id) validManagerIds.push(mgrEmp.id);
+                if (mgrEmp._id) validManagerIds.push(mgrEmp._id.toString());
+            }
+
+            const managedDepts = await Department.find({ manager_id: { $in: validManagerIds } }).select('_id').lean();
+            const managedDeptIds = new Set(managedDepts.map(d => d._id.toString()));
+
+            // Check if target employee is in a managed department
+            if (!targetEmp.department_id || !managedDeptIds.has(targetEmp.department_id.toString())) {
+                return res.status(403).json({ success: false, message: 'Forbidden. You can only assign team leads to employees in your departments.' });
+            }
+
+            if (team_lead_id !== null) {
+                const tl = await Employee.findOne({ id: team_lead_id }).lean();
+                if (!tl) return res.status(400).json({ success: false, message: 'Team Lead not found.' });
+                const tlRole = normalizeRole(tl.role);
+                if (tlRole !== 'team_lead') {
+                    return res.status(400).json({ success: false, message: 'Referenced employee must have role "team_lead".' });
+                }
+            }
+            targetEmp.team_lead_id = team_lead_id;
+            await targetEmp.save();
+            const { password_hash, ...rest } = targetEmp.toObject();
+            return res.json({ success: true, message: 'Team lead assigned successfully.', employee: rest });
+        }
+
+        return res.status(403).json({ success: false, message: 'Forbidden. Only Super Admins and Managers can update assignments.' });
+    } catch (err) {
+        console.error('[updateAssignments]', err);
+        res.status(500).json({ success: false, message: err.message || 'Server error.' });
+    }
+};
+
+module.exports = {
+    getEmployees, getEmployee, createEmployee, updateEmployee, deleteEmployee,
+    setSuperAdminStatus,
+    updateAssignments,
     getStats, getUpcomingEvents, getDashboardOverview,
-    exportEmployees, importEmployees, downloadEmployeeTemplate 
+    exportEmployees, importEmployees, downloadEmployeeTemplate
 };

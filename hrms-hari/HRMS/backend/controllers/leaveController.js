@@ -1,9 +1,69 @@
+const mongoose = require('mongoose');
 const Leave = require('../models/Leave');
 const LeaveBalance = require('../models/LeaveBalance');
 const Employee = require('../models/Employee');
 const Department = require('../models/Department');
+const Notification = require('../models/Notification');
 const { sendEmail } = require('../utils/emailService');
 const Setting = require('../models/Setting');
+
+const normalizeRole = (role) => {
+    const r = (role || '').toLowerCase().replace(/\s+/g, '');
+    if (['hr_manager', 'hrmanager', 'hrmanger', 'hr_manger'].includes(r)) return 'manager';
+    if (r === 'hr') return 'team_lead';
+    return r;
+};
+
+const checkLeaveApprovalAuth = async (applicantId, approverUser) => {
+    const [applicant, approver] = await Promise.all([
+        Employee.findOne({ id: applicantId }).lean(),
+        Employee.findOne({ id: approverUser.id }).lean()
+    ]);
+
+    const applicantRole = normalizeRole(applicant?.role || 'employee');
+    const approverRole = normalizeRole(approver?.role || approverUser.role || 'employee');
+    const approverEmpId = approver?.id || approverUser.id;
+
+    if (applicantRole === 'admin') {
+        const otherAdmins = await Employee.countDocuments({
+            role: 'admin',
+            status: 'active',
+            id: { $ne: applicantId }
+        });
+        if (otherAdmins === 0) {
+            return { allowed: false, status: 400, message: 'No other Super Admin is available to approve this leave.' };
+        }
+        if (approverRole !== 'admin' || approverEmpId === applicantId) {
+            return { allowed: false, status: 403, message: 'Only another Super Admin can approve this leave.' };
+        }
+        return { allowed: true };
+    }
+
+    if (approverEmpId === applicantId) {
+        return { allowed: false, status: 403, message: 'You cannot approve your own leave.' };
+    }
+
+    if (applicantRole === 'manager') {
+        if (approverRole !== 'admin') {
+            return { allowed: false, status: 403, message: 'Only a Super Admin can approve a Manager\'s leave.' };
+        }
+        return { allowed: true };
+    }
+
+    if (applicantRole === 'team_lead') {
+        if (['manager', 'admin'].includes(approverRole)) {
+            return { allowed: true };
+        }
+        return { allowed: false, status: 403, message: 'A Team Lead cannot approve a Team Lead\'s leave.' };
+    }
+
+    // applicantRole === 'employee'
+    if (['team_lead', 'manager', 'admin'].includes(approverRole)) {
+        return { allowed: true };
+    }
+
+    return { allowed: false, status: 403, message: 'You are not authorized to approve this leave.' };
+};
 
 // GET /api/leaves/:employeeId
 const getEmployeeLeaves = async (req, res) => {
@@ -70,6 +130,25 @@ const getPendingLeaves = async (req, res) => {
 const applyLeave = async (req, res) => {
     try {
         const { employee_id, leave_type, start_date, end_date, reason } = req.body;
+        const applicantId = employee_id || req.user?.id;
+
+        // Only allow "sick" leave type
+        if (leave_type !== 'sick') {
+            return res.status(400).json({ success: false, message: 'Only sick leave applications are allowed.' });
+        }
+
+        const applicantEmp = await Employee.findOne({ id: applicantId }).lean();
+        const applicantRole = normalizeRole(applicantEmp?.role || 'employee');
+        if (applicantRole === 'admin') {
+            const otherAdmins = await Employee.countDocuments({
+                role: 'admin',
+                status: 'active',
+                id: { $ne: applicantId }
+            });
+            if (otherAdmins === 0) {
+                return res.status(400).json({ success: false, message: 'No other Super Admin is available to approve this leave.' });
+            }
+        }
 
         const start = new Date(start_date);
         const end = new Date(end_date);
@@ -83,9 +162,9 @@ const applyLeave = async (req, res) => {
         }
         if (days === 0) return res.status(400).json({ success: false, message: 'No working days in the selected range.' });
 
-        // Check overlap
+        // Check overlap - only count pending and approved
         const overlap = await Leave.findOne({
-            employee_id,
+            employee_id: applicantId,
             status: { $ne: 'rejected' },
             $or: [
                 { start_date: { $lte: end }, end_date: { $gte: start } },
@@ -93,30 +172,86 @@ const applyLeave = async (req, res) => {
         });
         if (overlap) return res.status(400).json({ success: false, message: 'You already have a leave request for overlapping dates.' });
 
-        // Check balance for tracked leave types
-        const TRACKED = { casual: 'casual_leave', sick: 'sick_leave', earned: 'earned_leave', maternity: 'maternity_leave', paternity: 'paternity_leave' };
-        if (TRACKED[leave_type]) {
-            const bal = await LeaveBalance.findOne({ employee_id, year: new Date().getFullYear() });
-            if (!bal || bal[TRACKED[leave_type]] < days) {
-                return res.status(400).json({ success: false, message: `Insufficient ${leave_type} leave balance. Available: ${bal?.[TRACKED[leave_type]] ?? 0} day(s).` });
+        // Check monthly sick leave limit - one per calendar month
+        // Count pending and approved sick leaves in the same month as start_date
+        const monthStart = new Date(start.getFullYear(), start.getMonth(), 1);
+        const monthEnd = new Date(start.getFullYear(), start.getMonth() + 1, 0, 23, 59, 59);
+        const monthlyCount = await Leave.countDocuments({
+            employee_id: applicantId,
+            leave_type: 'sick',
+            status: { $in: ['pending', 'approved'] },
+            start_date: { $gte: monthStart, $lte: monthEnd }
+        });
+        if (monthlyCount > 0) {
+            return res.status(400).json({ success: false, message: 'Monthly sick leave limit reached.' });
+        }
+
+        const leave = await Leave.create({ employee_id: applicantId, leave_type, start_date: start, end_date: end, total_days: days, reason });
+
+        // Create notifications for manager, team lead, and Super Admins
+        const applicant = await Employee.findOne({ id: applicantId }).lean();
+        const recipientMap = new Map();
+
+        // Get manager's ObjectId (resolves string id or ObjectId)
+        if (applicant?.manager_id) {
+            const mgr = await Employee.findOne({
+                $or: [
+                    { id: applicant.manager_id },
+                    ...(mongoose.Types.ObjectId.isValid(applicant.manager_id) ? [{ _id: applicant.manager_id }] : [])
+                ]
+            }).select('_id status').lean();
+            if (mgr && mgr.status !== 'inactive' && mgr.status !== 'terminated') {
+                recipientMap.set(mgr._id.toString(), mgr._id);
+            }
+        }
+        // Get team lead's ObjectId (resolves string id or ObjectId)
+        if (applicant?.team_lead_id) {
+            const tl = await Employee.findOne({
+                $or: [
+                    { id: applicant.team_lead_id },
+                    ...(mongoose.Types.ObjectId.isValid(applicant.team_lead_id) ? [{ _id: applicant.team_lead_id }] : [])
+                ]
+            }).select('_id status').lean();
+            if (tl && tl.status !== 'inactive' && tl.status !== 'terminated') {
+                recipientMap.set(tl._id.toString(), tl._id);
             }
         }
 
-        const leave = await Leave.create({ employee_id, leave_type, start_date: start, end_date: end, total_days: days, reason });
+        // Add all active Super Admins' ObjectIds
+        const superAdmins = await Employee.find({ role: 'admin', status: 'active' }).select('_id').lean();
+        superAdmins.forEach(a => recipientMap.set(a._id.toString(), a._id));
 
-        // Notify Hr Manager/HR
-        const emp = await Employee.findOne({ id: employee_id }).lean();
+        // Don't notify the applicant
+        if (applicant?._id) {
+            recipientMap.delete(applicant._id.toString());
+        }
+
+        // Create notifications
+        const notifications = Array.from(recipientMap.values()).map(recipientObjectId => ({
+            recipient: recipientObjectId,
+            sender: applicant?._id || null,
+            type: 'leave',
+            title: 'New Sick Leave Application',
+            message: `${applicant?.name || applicantId} has applied for sick leave from ${start_date} to ${end_date} (${days} day(s)).`,
+            data: { leaveId: leave._id.toString() }
+        }));
+
+        if (notifications.length > 0) {
+            await Notification.insertMany(notifications);
+        }
+
+        // Notify Hr Manager/HR via email
         const settings = await Setting.findOne().lean();
         const adminEmail = settings?.company_email;
 
         if (adminEmail) {
             sendEmail({
                 to: adminEmail,
-                subject: `New Leave Application: ${emp?.name || employee_id}`,
+                subject: `New Sick Leave Application: ${applicant?.name || applicantId}`,
                 html: `
-                    <h2 style="color: #6366f1;">New Leave Request</h2>
-                    <p><b>Employee:</b> ${emp?.name} (${employee_id})</p>
-                    <p><b>Type:</b> ${leave_type.toUpperCase()}</p>
+                    <h2 style="color: #6366f1;">New Sick Leave Request</h2>
+                    <p><b>Employee:</b> ${applicant?.name} (${applicantId})</p>
+                    <p><b>Type:</b> Sick Leave</p>
                     <p><b>Duration:</b> ${start_date} to ${end_date} (${days} days)</p>
                     <p><b>Reason:</b> ${reason}</p>
                     <hr />
@@ -125,8 +260,9 @@ const applyLeave = async (req, res) => {
             });
         }
 
-        res.status(201).json({ success: true, message: 'Leave application submitted successfully. HR notified.', leave });
+        res.status(201).json({ success: true, message: 'Sick leave application submitted successfully. Approvers notified.', leave });
     } catch (err) {
+        console.error('[applyLeave]', err);
         res.status(500).json({ success: false, message: 'Server error.' });
     }
 };
@@ -137,6 +273,11 @@ const approveLeave = async (req, res) => {
         const leave = await Leave.findById(req.params.id);
         if (!leave) return res.status(404).json({ success: false, message: 'Leave not found.' });
         if (leave.status !== 'pending') return res.status(400).json({ success: false, message: 'Leave is not pending.' });
+
+        const authCheck = await checkLeaveApprovalAuth(leave.employee_id, req.user);
+        if (!authCheck.allowed) {
+            return res.status(authCheck.status || 403).json({ success: false, message: authCheck.message });
+        }
 
         leave.status = 'approved';
         leave.approved_by = req.user.id;
@@ -182,11 +323,20 @@ const approveLeave = async (req, res) => {
 // PUT /api/leaves/:id/reject
 const rejectLeave = async (req, res) => {
     try {
-        const leave = await Leave.findByIdAndUpdate(req.params.id,
-            { status: 'rejected', approved_by: req.user.id, approved_date: new Date(), rejection_reason: req.body.rejection_reason },
-            { returnDocument: 'after' }
-        );
+        const leave = await Leave.findById(req.params.id);
         if (!leave) return res.status(404).json({ success: false, message: 'Leave not found.' });
+        if (leave.status !== 'pending') return res.status(400).json({ success: false, message: 'Leave is not pending.' });
+
+        const authCheck = await checkLeaveApprovalAuth(leave.employee_id, req.user);
+        if (!authCheck.allowed) {
+            return res.status(authCheck.status || 403).json({ success: false, message: authCheck.message });
+        }
+
+        leave.status = 'rejected';
+        leave.approved_by = req.user.id;
+        leave.approved_date = new Date();
+        leave.rejection_reason = req.body.rejection_reason;
+        await leave.save();
 
         // Notify Employee
         const emp = await Employee.findOne({ id: leave.employee_id }).lean();

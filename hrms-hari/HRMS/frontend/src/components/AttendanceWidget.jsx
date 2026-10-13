@@ -86,31 +86,21 @@ export default function AttendanceWidget() {
                          </div>
                     )}
                 </div>
-            ) : (status.dailyCount < (status.limit || 1)) ? (
-                <div style={{ textAlign: 'center' }}>
-                    {attRec?.check_out && (
-                          <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 10 }}>
-                             Last session: {formatTime(attRec.check_in)} - {formatTime(attRec.check_out)}
-                         </div>
-                    )}
-                    <button onClick={handleClockIn} className="btn" style={{ background: 'var(--accent-primary)', color: 'white', fontWeight: 700, padding: '10px 24px', borderRadius: 30, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <FiLogIn /> Clock In {status.dailyCount > 0 ? '(New Session)' : ''}
-                    </button>
-                    <div style={{ fontSize: '0.75rem', marginTop: 10, color: 'var(--text-muted)' }}>
-                        {status.dailyCount} of {status.limit} sessions used
-                    </div>
-                </div>
             ) : (
                 <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: '1rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'center' }}>
-                        <FiCheckCircle /> You are done for today!
-                    </div>
-                    <div style={{ fontSize: '0.8rem', opacity: 0.8, marginTop: 4 }}>
-                        {formatTime(attRec?.check_in)} - {formatTime(attRec?.check_out)} ({attRec?.work_hours} hrs)
-                    </div>
-                     <div style={{ fontSize: '0.75rem', marginTop: 10, color: 'var(--text-muted)' }}>
-                        All {status.limit} sessions completed
-                    </div>
+                    {attRec?.check_out && (
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 10 }}>
+                            Last session: {formatTime(attRec.check_in)} - {formatTime(attRec.check_out)} ({attRec.work_hours || 0} hrs)
+                        </div>
+                    )}
+                    <button onClick={handleClockIn} className="btn" style={{ background: 'var(--accent-primary)', color: 'white', fontWeight: 700, padding: '10px 24px', borderRadius: 30, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <FiLogIn /> Clock In {status?.dailyCount > 0 ? '(New Session)' : ''}
+                    </button>
+                    {status?.dailyCount > 0 && (
+                        <div style={{ fontSize: '0.75rem', marginTop: 10, color: 'var(--text-muted)' }}>
+                            {status.dailyCount} session{status.dailyCount > 1 ? 's' : ''} recorded today
+                        </div>
+                    )}
                 </div>
             )}
         </div>

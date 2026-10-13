@@ -20,10 +20,9 @@ const auth = (rolesOrPermissions = []) => {
             const decoded = jwt.verify(token, process.env.JWT_SECRET);
             req.user = decoded;
 
-            // 1. HR Manager / Admin Bypass - Complete System Access
+            // 1. Super Admin Bypass - Complete System Access for admin only
             const roleLower = (decoded.role || '').toLowerCase().replace(/\s+/g, '');
-            const isPowerfulRole = ['admin', 'hrmanager', 'hrmanger', 'hr_manager', 'hr_manger'].includes(roleLower);
-            if (isPowerfulRole) return next();
+            if (roleLower === 'admin') return next();
 
             // 1. Resolve requested permissions
             if (!rolesOrPermissions || rolesOrPermissions.length === 0) return next();
@@ -37,20 +36,32 @@ const auth = (rolesOrPermissions = []) => {
             if (!employee) return res.status(404).json({ success: false, message: 'Employee profile not found.' });
             if (employee.status !== 'active') return res.status(403).json({ success: false, message: 'Your account is deactivated.' });
 
+            // Helper to normalize legacy roles
+            const normalizeRole = (role) => {
+                const r = (role || '').toLowerCase().replace(/\s+/g, '');
+                if (['hr_manager', 'hrmanager', 'hrmanger', 'hr_manger'].includes(r)) return 'manager';
+                if (r === 'hr') return 'team_lead';
+                return r;
+            };
+
             // 3. Resolve permissions
-            const roleKey = (employee.role || 'employee').toLowerCase().replace(/\s+/g, '');
-            const matchedKey = Object.keys(settings?.roles_permissions || {}).find(k => k.toLowerCase().replace(/\s+/g, '') === roleKey) || employee.role;
-            const rolePermissions = settings?.roles_permissions?.[matchedKey] || [];
+            const rawRole = (employee.role || 'employee').toLowerCase().replace(/\s+/g, '');
+            const normalizedRole = normalizeRole(rawRole);
+            const rolePermissions = settings?.roles_permissions?.[normalizedRole] ||
+                settings?.roles_permissions?.[rawRole] ||
+                (normalizedRole === 'manager' ? settings?.roles_permissions?.['hr_manager'] : undefined) ||
+                (normalizedRole === 'team_lead' ? settings?.roles_permissions?.['hr'] : undefined) ||
+                [];
 
             let userPermissions;
             if (employee.permissions && Array.isArray(employee.permissions)) {
                 userPermissions = employee.permissions;
             } else {
-                const roleKeyTrimmed = (employee.role || '').toLowerCase().replace(/\s+/g, '');
-                const isManager = ['admin', 'hrmanager', 'hrmanger', 'hr_manager', 'hr_manger'].includes(roleKeyTrimmed);
+                const isManager = ['admin', 'manager'].includes(normalizedRole);
+                const isTeamLead = normalizedRole === 'team_lead';
                 
                 const BASIC_PERMISSIONS = ['dashboard', 'profile', 'attendance_user', 'leave_apply', 'payroll_user', 'tickets_user', 'events', 'exit_user'];
-                const basePerms = isManager ? (rolePermissions || []) : [];
+                const basePerms = (isManager || isTeamLead) ? (rolePermissions || []) : [];
                 userPermissions = [...new Set([...basePerms, ...BASIC_PERMISSIONS])];
             }
             
@@ -90,10 +101,12 @@ const auth = (rolesOrPermissions = []) => {
                 // 1. Direct permission match
                 if (userPermissions.includes(requested)) return true;
 
-                // 2. Role Identity Fallback - If the requirement is a base role (like 'hr' or 'employee'), 
+                // 2. Role Identity Fallback - If the requirement is a base role (like 'manager', 'team_lead', 'employee'), 
                 // allow it based on the user's actual role field, as these are not lockable 'modules'.
-                const roleKeyTrimmed = (employee.role || '').toLowerCase().replace(/\s+/g, '');
-                if (roleKeyTrimmed === req) return true;
+                const rawRole = (employee.role || '').toLowerCase().replace(/\s+/g, '');
+                const userNormalized = normalizeRole(rawRole);
+                const reqNormalized = normalizeRole(req);
+                if (userNormalized === reqNormalized || rawRole === req) return true;
 
                 // 3. Mapping for route requirements to module keys
                 const mappedKeys = REVERSE_PERMISSION_MAP[requested] || [];

@@ -27,7 +27,8 @@ const notificationSchema = new mongoose.Schema({
     data: {
         meetingId: { type: String },
         link: { type: String },
-        status: { type: String }
+        status: { type: String },
+        leaveId: { type: String }
     },
     is_read: {
         type: Boolean,

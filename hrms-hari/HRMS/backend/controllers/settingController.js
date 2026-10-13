@@ -12,7 +12,7 @@ const getSettings = async (req, res) => {
 
         const obj = settings.toObject();
 
-        const isAdmin = req.user && ['admin', 'hr_manager', 'hr', 'hrmanager'].includes(req.user.role.toLowerCase());
+        const isAdmin = req.user && ['admin', 'manager', 'team_lead', 'hr_manager', 'hr', 'hrmanager'].includes(req.user.role.toLowerCase());
 
         // Security: Remove sensitive email settings for regular employees / unauth
         if (!isAdmin) {

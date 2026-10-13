@@ -7,6 +7,7 @@ const attendanceSchema = new mongoose.Schema({
     check_in: { type: Date },
     check_out: { type: Date },
     work_hours: { type: Number, default: 0 },
+    is_open_session: { type: Boolean, default: false },
 }, { timestamps: true });
 
 attendanceSchema.index({ employee_id: 1, date: 1 });

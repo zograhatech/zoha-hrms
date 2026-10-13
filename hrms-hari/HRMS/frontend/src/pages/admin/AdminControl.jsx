@@ -6,6 +6,7 @@ import {
 } from 'react-icons/fi';
 import { useToast } from '../../context/ToastContext';
 import { useAuth } from '../../context/AuthContext';
+import { isSuperAdmin } from '../../utils/roleHelper';
 
 export default function AdminControl() {
     const { showToast } = useToast();
@@ -123,7 +124,7 @@ export default function AdminControl() {
                             </div>
 
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                                {users.filter(u => u.role !== 'admin' && (u.name.toLowerCase().includes(searchQuery.toLowerCase()) || u.email.toLowerCase().includes(searchQuery.toLowerCase()))).map((u, idx) => (
+                                {users.filter(u => (isSuperAdmin(user) ? true : u.role !== 'admin') && (u.name.toLowerCase().includes(searchQuery.toLowerCase()) || u.email.toLowerCase().includes(searchQuery.toLowerCase()))).map((u, idx) => (
                                     <div key={u.id || u._id || idx} className="user-access-card" style={{ 
                                         background: 'var(--bg-primary)', 
                                         border: '1px solid var(--border-color)', 
@@ -153,10 +154,9 @@ export default function AdminControl() {
                                                         showToast('Role updated successfully!');
                                                     }}
                                                 >
-                                                    <option value="admin">Admin</option>
-                                                    <option value="hr_manager">HR Manager</option>
-                                                    <option value="hr">HR</option>
-                                                    <option value="accountant">Accountant</option>
+                                                    <option value="admin">Super Admin</option>
+                                                    <option value="manager">Manager</option>
+                                                    <option value="team_lead">Team Lead</option>
                                                     <option value="employee">Employee</option>
                                                 </select>
 

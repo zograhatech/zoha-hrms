@@ -45,10 +45,19 @@ const login = async (req, res) => {
 
         // Fetch current role permissions from Settings
         const settings = await Setting.findOne();
-        const roleKey = (employee.role || 'employee').toLowerCase().replace(/\s+/g, '');
-        // Standardize role key lookup (case-insensitive and typo tolerant)
-        const matchedKey = Object.keys(settings?.roles_permissions || {}).find(k => k.toLowerCase().replace(/\s+/g, '') === roleKey) || employee.role;
-        const rolePermissions = settings?.roles_permissions?.[matchedKey] || [];
+        const rawRoleKey = (employee.role || 'employee').toLowerCase().replace(/\s+/g, '');
+        const normalizeRole = (role) => {
+            const r = (role || '').toLowerCase().replace(/\s+/g, '');
+            if (['hr_manager', 'hrmanager', 'hrmanger', 'hr_manger'].includes(r)) return 'manager';
+            if (r === 'hr') return 'team_lead';
+            return r;
+        };
+        const normalizedRole = normalizeRole(rawRoleKey);
+        const rolePermissions = settings?.roles_permissions?.[normalizedRole] ||
+            settings?.roles_permissions?.[rawRoleKey] ||
+            (normalizedRole === 'manager' ? settings?.roles_permissions?.['hr_manager'] : undefined) ||
+            (normalizedRole === 'team_lead' ? settings?.roles_permissions?.['hr'] : undefined) ||
+            [];
         
         // Strict Override: Individual override permissions take complete precedence.
         // HOWEVER, "Basic Workspace" modules are always granted to all staff.
@@ -59,12 +68,12 @@ const login = async (req, res) => {
             // STRICT MODE: Use ONLY individual selections
             combinedPermissions = employee.permissions;
         } else {
-            // DEFAULT MODE: Only top-level managers get all modules by default.
+            // DEFAULT MODE: Managers and team leads get their role permissions by default.
             // Everyone else only gets the BASIC modules (Workspace) by default.
-            const roleKey = (employee.role || '').toLowerCase().replace(/\s+/g, '');
-            const isManager = ['admin', 'hrmanager', 'hrmanger', 'hr_manager', 'hr_manger'].includes(roleKey);
+            const isManager = ['admin', 'manager'].includes(normalizedRole);
+            const isTeamLead = normalizedRole === 'team_lead';
             
-            const basePerms = isManager ? (rolePermissions || []) : [];
+            const basePerms = (isManager || isTeamLead) ? (rolePermissions || []) : [];
             combinedPermissions = [...new Set([...basePerms, ...BASIC_PERMISSIONS])];
         }
 
@@ -143,9 +152,19 @@ const getMe = async (req, res) => {
 
         // Fetch current role permissions from Settings
         const settings = await Setting.findOne();
-        const roleKey = (employee.role || 'employee').toLowerCase().replace(/\s+/g, '');
-        const matchedKey = Object.keys(settings?.roles_permissions || {}).find(k => k.toLowerCase().replace(/\s+/g, '') === roleKey) || employee.role;
-        const rolePermissions = settings?.roles_permissions?.[matchedKey] || [];
+        const rawRoleKey = (employee.role || 'employee').toLowerCase().replace(/\s+/g, '');
+        const normalizeRole = (role) => {
+            const r = (role || '').toLowerCase().replace(/\s+/g, '');
+            if (['hr_manager', 'hrmanager', 'hrmanger', 'hr_manger'].includes(r)) return 'manager';
+            if (r === 'hr') return 'team_lead';
+            return r;
+        };
+        const normalizedRole = normalizeRole(rawRoleKey);
+        const rolePermissions = settings?.roles_permissions?.[normalizedRole] ||
+            settings?.roles_permissions?.[rawRoleKey] ||
+            (normalizedRole === 'manager' ? settings?.roles_permissions?.['hr_manager'] : undefined) ||
+            (normalizedRole === 'team_lead' ? settings?.roles_permissions?.['hr'] : undefined) ||
+            [];
         
         // Same permission resolution logic as login for session refresh
         const BASIC_PERMISSIONS = ['dashboard', 'profile', 'attendance_user', 'leave_apply', 'payroll_user', 'tickets_user', 'events', 'exit_user'];
@@ -154,10 +173,10 @@ const getMe = async (req, res) => {
         if (employee.permissions && Array.isArray(employee.permissions)) {
             combinedPermissions = employee.permissions;
         } else {
-            const roleKey = (employee.role || '').toLowerCase().replace(/\s+/g, '');
-            const isManager = ['admin', 'hrmanager', 'hrmanger', 'hr_manager', 'hr_manger'].includes(roleKey);
+            const isManager = ['admin', 'manager'].includes(normalizedRole);
+            const isTeamLead = normalizedRole === 'team_lead';
             
-            const basePerms = isManager ? (rolePermissions || []) : [];
+            const basePerms = (isManager || isTeamLead) ? (rolePermissions || []) : [];
             combinedPermissions = [...new Set([...basePerms, ...BASIC_PERMISSIONS])];
         }
 

@@ -9,7 +9,7 @@ import {
 import { useToast } from '../../context/ToastContext';
 import ResignationModal from '../../components/ResignationModal';
 import { formatDate } from '../../utils/dateFormatter';
-import { isManagerRole } from '../../utils/roleHelper';
+import { isManagerRole, getRoleDisplayLabel } from '../../utils/roleHelper';
 import DocumentManager from '../../components/DocumentManager';
 
 export default function Profile() {
@@ -113,7 +113,7 @@ export default function Profile() {
         { label: 'Gender', value: emp.gender || 'N/A', icon: <FiUser /> },
         { label: 'Address', value: emp.address || 'N/A', icon: <FiHome /> },
         { label: 'Status', value: emp.status, icon: <FiCheckCircle /> },
-        { label: 'Role', value: emp.role, icon: <FiShield /> },
+        { label: 'Role', value: getRoleDisplayLabel(emp.role), icon: <FiShield /> },
     ];
 
     const baseUrl = import.meta.env.VITE_API_BASE_URL || '';
@@ -244,8 +244,8 @@ export default function Profile() {
                     <div>
                         <h2 style={{ fontSize: '1.4rem', fontWeight: 800 }}>{emp.name}</h2>
                         <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', marginTop: 4 }}>{emp.designation}</p>
-                        <span className={`badge badge-${emp.role === 'hr_manager' ? 'purple' : emp.role === 'admin' ? 'badge-info' : emp.role === 'hr' ? 'info' : 'success'}`} style={{ marginTop: 8 }}>
-                            {emp.role}
+                        <span className={`badge badge-${emp.role === 'admin' || isManagerRole(emp.role) ? 'purple' : emp.role === 'team_lead' || emp.role === 'hr' ? 'info' : 'success'}`} style={{ marginTop: 8 }}>
+                            {getRoleDisplayLabel(emp.role)}
                         </span>
                     </div>
                     <div style={{ width: '100%', padding: '16px 0', borderTop: '1px solid var(--border-color)' }}>

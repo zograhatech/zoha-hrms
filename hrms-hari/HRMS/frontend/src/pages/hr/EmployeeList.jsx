@@ -11,7 +11,7 @@ import {
 } from 'react-icons/fi';
 import { useToast } from '../../context/ToastContext';
 import { formatDate } from '../../utils/dateFormatter';
-import { isManagerRole } from '../../utils/roleHelper';
+import { isManagerRole, getRoleDisplayLabel } from '../../utils/roleHelper';
 import DocumentManager from '../../components/DocumentManager';
 
 export default function EmployeeList() {
@@ -530,10 +530,10 @@ export default function EmployeeList() {
                                         <label className="form-label">Role</label>
                                         <select className="form-select" value={form.role} onChange={e => setForm({ ...form, role: e.target.value })} required>
                                             <option value="">— Select Role —</option>
+                                            <option value="admin">Super Admin</option>
+                                            <option value="manager">Manager</option>
+                                            <option value="team_lead">Team Lead</option>
                                             <option value="employee">Employee</option>
-                                            <option value="hr">HR</option>
-                                            <option value="hr_manager">HR Manager</option>
-                                            <option value="admin">Admin</option>
                                         </select>
                                     </div>
                                     <div className="form-group">
@@ -751,7 +751,7 @@ export default function EmployeeList() {
                                     <td>{e.designation || '—'}</td>
                                     <td>{e.department_name || '—'}</td>
                                     <td style={{ fontSize: '0.8rem' }}>{formatDate(e.date_of_joining)}</td>
-                                    <td><span className={`badge badge-${isManagerRole(e.role) ? 'purple' : e.role === 'hr' ? 'info' : 'success'}`}>{isManagerRole(e.role) ? (e.role === 'admin' ? 'Admin' : 'HR Manager') : e.role === 'hr' ? 'HR' : e.role.charAt(0).toUpperCase() + e.role.slice(1).replace(/_/g, ' ')}</span></td>
+                                    <td><span className={`badge badge-${isManagerRole(e.role) ? 'purple' : e.role === 'team_lead' || e.role === 'hr' ? 'info' : 'success'}`}>{getRoleDisplayLabel(e.role)}</span></td>
                                     {canManage && (
                                         <td style={{ textAlign: 'center' }}>
                                             <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>

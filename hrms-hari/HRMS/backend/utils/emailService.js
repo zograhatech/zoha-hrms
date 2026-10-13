@@ -6,6 +6,9 @@ const Setting = require('../models/Setting');
  * Fetches latest SMTP settings from database and sends formatted emails.
  */
 const sendEmail = async ({ to, subject, text, html }) => {
+    if (process.env.NODE_ENV === 'test') {
+        return true;
+    }
     try {
         const settings = await Setting.findOne();
         if (!settings || !settings.email_settings || !settings.email_settings.mail_host) {

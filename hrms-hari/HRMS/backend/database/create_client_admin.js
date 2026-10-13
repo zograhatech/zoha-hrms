@@ -53,7 +53,7 @@ if (missing.length) {
             password_hash: process.env.ADMIN_PASSWORD,
             role: 'admin',
             department_id: hr._id,
-            designation: 'System Administrator',
+            designation: 'Super Admin',
             date_of_joining: new Date(),
             status: 'active',
         });

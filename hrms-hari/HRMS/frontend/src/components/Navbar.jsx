@@ -9,7 +9,7 @@ import API from '../api/axios';
 import { useState, useEffect, useCallback } from 'react';
 import { useSocket } from '../context/SocketContext';
 import { formatDate } from '../utils/dateFormatter';
-import { isManagerRole } from '../utils/roleHelper';
+import { isManagerRole, getRoleDisplayLabel, isSuperAdmin } from '../utils/roleHelper';
 
 export default function Navbar({ onToggleSidebar }) {
     const { user } = useAuth();
@@ -215,8 +215,8 @@ export default function Navbar({ onToggleSidebar }) {
                 </div>
 
                 {/* Role badge */}
-                <span className={`badge navbar-role-badge ${isManagerRole(user) ? 'badge-purple' : user?.role === 'hr' ? 'badge-info' : hasManagementAccess ? 'badge-info' : 'badge-success'}`}>
-                    {isManagerRole(user) ? <><FiShield /> {user?.role === 'admin' ? 'Admin' : 'HR Manager'}</> : user?.role === 'hr' ? <><FiUserCheck /> HR</> : <><FiUser /> Employee</>}
+                <span className={`badge navbar-role-badge ${isManagerRole(user) ? 'badge-purple' : isSuperAdmin(user) ? 'badge-purple' : user?.role === 'hr' ? 'badge-info' : hasManagementAccess ? 'badge-info' : 'badge-success'}`}>
+                    {isManagerRole(user) ? <><FiShield /> {getRoleDisplayLabel(user?.role)}</> : user?.role === 'hr' ? <><FiUserCheck /> Team Lead</> : <><FiUser /> {getRoleDisplayLabel(user?.role)}</>}
                 </span>
 
                 {/* Department — hide on small screens */}

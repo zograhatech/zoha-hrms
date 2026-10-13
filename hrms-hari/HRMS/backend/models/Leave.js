@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 
 const leaveSchema = new mongoose.Schema({
     employee_id: { type: String, required: true, ref: 'Employee' },
-    leave_type: { type: String, enum: ['casual', 'sick', 'earned', 'maternity', 'paternity', 'unpaid'], required: true },
+    leave_type: { type: String, enum: ['sick'], required: true, default: 'sick' },
     start_date: { type: Date, required: true },
     end_date: { type: Date, required: true },
     total_days: { type: Number, required: true },

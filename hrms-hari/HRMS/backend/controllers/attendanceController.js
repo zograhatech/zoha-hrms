@@ -21,24 +21,66 @@ const getEmployeeAttendance = async (req, res) => {
             };
         }
 
-        const attendance = await Attendance.find(filter).sort({ date: 1 }).lean();
+        const attendance = await Attendance.find(filter).sort({ date: 1, check_in: 1 }).lean();
 
-        // Since we now allow multiple clock-ins per day, we need to group by date for summary stats
-        const groupedByDate = {};
+        // Group by date to compute worked hours per day
+        const byDate = {};
         attendance.forEach(rec => {
             const d = new Date(rec.date).toISOString().split('T')[0];
-            if (!groupedByDate[d]) {
-                groupedByDate[d] = rec.status;
-            } else {
-                // If multiple records exist for the same day, prioritize "present" statuses over "absent"
-                const priority = { present: 4, late: 3, 'half-day': 2, holiday: 1, absent: 0 };
-                if (priority[rec.status] > priority[groupedByDate[d]]) {
-                    groupedByDate[d] = rec.status;
-                }
+            if (!byDate[d]) {
+                byDate[d] = {
+                    date: rec.date,
+                    records: [],
+                    status: rec.status,
+                    check_in: rec.check_in,
+                    check_out: rec.check_out,
+                    work_hours: 0,
+                    is_open_session: false
+                };
+            }
+            byDate[d].records.push(rec);
+
+            // Update status priority
+            const priority = { present: 4, late: 3, 'half-day': 2, holiday: 1, absent: 0 };
+            if (priority[rec.status] > priority[byDate[d].status]) {
+                byDate[d].status = rec.status;
+            }
+            // Track earliest check_in and latest check_out for the day
+            if (rec.check_in && (!byDate[d].check_in || new Date(rec.check_in) < new Date(byDate[d].check_in))) {
+                byDate[d].check_in = rec.check_in;
+            }
+            if (rec.check_out && (!byDate[d].check_out || new Date(rec.check_out) > new Date(byDate[d].check_out))) {
+                byDate[d].check_out = rec.check_out;
             }
         });
 
-        const statuses = Object.values(groupedByDate);
+        // Compute worked hours per day from completed sessions
+        const dailyData = Object.values(byDate).map(day => {
+            let totalHours = 0;
+            let hasOpenSession = false;
+
+            day.records.forEach(rec => {
+                if (rec.check_in && rec.check_out) {
+                    const diffMs = new Date(rec.check_out) - new Date(rec.check_in);
+                    totalHours += diffMs / (1000 * 60 * 60);
+                } else if (rec.check_in && !rec.check_out) {
+                    hasOpenSession = true;
+                }
+            });
+
+            return {
+                date: day.date,
+                status: day.status,
+                check_in: day.check_in,
+                check_out: day.check_out,
+                work_hours: Number(totalHours.toFixed(2)),
+                is_open_session: hasOpenSession,
+                _id: day.records[0]?._id
+            };
+        });
+
+        // Summary stats
+        const statuses = dailyData.map(d => d.status);
         const present = statuses.filter(s => s === 'present').length;
         const absent = statuses.filter(s => s === 'absent').length;
         const late = statuses.filter(s => s === 'late').length;
@@ -49,7 +91,7 @@ const getEmployeeAttendance = async (req, res) => {
 
         res.json({
             success: true,
-            attendance,
+            attendance: dailyData,
             summary: { present, absent, late, halfDay, holiday, total, totalWorkingDays },
         });
     } catch (err) {
@@ -140,20 +182,6 @@ const clockIn = async (req, res) => {
 
         if (activeSession) {
             return res.status(400).json({ success: false, message: 'You are already clocked in.' });
-        }
-
-        // 2. Check Daily Limit for Clock-ins
-        const dailyRecordsCount = await Attendance.countDocuments({
-            employee_id: req.user.id,
-            date: { $gte: today }
-        });
-
-        const limit = shift.allowed_clock_ins || 1;
-        if (dailyRecordsCount >= limit) {
-            return res.status(400).json({ 
-                success: false, 
-                message: `You have reached the maximum allowed clock-ins (${limit}) for today.` 
-            });
         }
 
         // --- Holiday and Leave Checks ---
@@ -283,10 +311,18 @@ const getTodayStatus = async (req, res) => {
         today.setHours(0, 0, 0, 0);
 
         // Prioritize finding an active session (not checked out) or the latest session for today
-        const attendance = await Attendance.findOne({
+        let attendance = await Attendance.findOne({
             employee_id: req.user.id,
+            check_out: { $exists: false },
             date: { $gte: today }
-        }).sort({ createdAt: -1 }); // Get the latest session first
+        });
+
+        if (!attendance) {
+            attendance = await Attendance.findOne({
+                employee_id: req.user.id,
+                date: { $gte: today }
+            }).sort({ createdAt: -1 });
+        }
 
         const employee = await Employee.findOne({ id: req.user.id }).populate('shift_id');
         const ShiftModel = require('../models/Shift');
@@ -493,10 +529,11 @@ const getAttendanceTrends = async (req, res) => {
             const nextD = new Date(d);
             nextD.setDate(d.getDate() + 1);
 
-            const count = await Attendance.countDocuments({
+            const dayRecords = await Attendance.find({
                 date: { $gte: d, $lt: nextD },
                 status: 'present'
-            });
+            }).select('employee_id').lean();
+            const count = new Set(dayRecords.map(r => r.employee_id)).size;
 
             trends.push({
                 date: d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),

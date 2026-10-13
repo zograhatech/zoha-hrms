@@ -55,8 +55,22 @@ const processMonthlyAttendanceReports = async () => {
                     date: { $gte: new Date(year, month - 1, 1), $lte: endDate }
                 });
                 
-                const late = records.filter(r => r.status === 'late').length;
-                const present = records.filter(r => r.status === 'present').length + late;
+                // Group records by calendar day first
+                const dayRecords = {};
+                records.forEach(rec => {
+                    const day = new Date(rec.date).toISOString().split('T')[0];
+                    if (!dayRecords[day]) {
+                        dayRecords[day] = rec.status;
+                    } else {
+                        const priority = { present: 4, late: 3, 'half-day': 2, holiday: 1, absent: 0 };
+                        if ((priority[rec.status] || 0) > (priority[dayRecords[day]] || 0)) {
+                            dayRecords[day] = rec.status;
+                        }
+                    }
+                });
+                const dayStatuses = Object.values(dayRecords);
+                const late = dayStatuses.filter(s => s === 'late').length;
+                const present = dayStatuses.filter(s => s === 'present').length + late;
                 
                 // 3. Send Email
                 const subject = `Monthly Attendance Report - ${monthName} ${year} - ${employee.name}`;

@@ -13,7 +13,7 @@ INSERT INTO departments (name, description) VALUES
 
 -- Employees (passwords are bcrypt of: admin123, hr123, emp123)
 INSERT INTO employees (id, name, email, password_hash, role, department_id, phone, designation, date_of_joining, date_of_birth, gender, address, status) VALUES
-('EMP001', 'Admin User',    'admin@hari.com', '$2b$10$YYDDMFNv6YLGIb.INJDiSe.3nXt0w9lUUKmv5VcDJ3OtU.dpXLIle', 'admin',    1, '9876543210', 'System Administrator',  '2020-01-15', '1985-05-10', 'male',   '12 Main Street, Chennai', 'active'),
+('EMP001', 'Admin User',    'admin@hari.com', '$2b$10$YYDDMFNv6YLGIb.INJDiSe.3nXt0w9lUUKmv5VcDJ3OtU.dpXLIle', 'admin',    1, '9876543210', 'Super Admin',           '2020-01-15', '1985-05-10', 'male',   '12 Main Street, Chennai', 'active'),
 ('EMP002', 'Priya Sharma',  'hr@hari.com',    '$2b$10$4i5hVELEqb5.Fp9B0YEhce5ICqaCW7M6fjFkS7j0C40xCYaMF3DGu', 'hr',       1, '9876543211', 'HR Manager',            '2021-03-10', '1990-08-22', 'female', '45 Park Avenue, Chennai', 'active'),
 ('EMP003', 'Rahul Kumar',   'emp@hari.com',   '$2b$10$w0qdtb7gVxGnvSQQv9JFD.8vbEIqcO7.1ppFbhYWsmn.XYW9hFH2q', 'employee', 2, '9876543212', 'Software Engineer',     '2022-06-01', '1995-11-15', 'male',   '78 Tech Park, Coimbatore', 'active'),
 ('EMP004', 'Anjali Singh',  'anjali@hari.com','$2b$10$w0qdtb7gVxGnvSQQv9JFD.8vbEIqcO7.1ppFbhYWsmn.XYW9hFH2q', 'employee', 3, '9876543213', 'Financial Analyst',     '2021-09-15', '1993-03-28', 'female', '23 Finance Nagar, Madurai', 'active'),

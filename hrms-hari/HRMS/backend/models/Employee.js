@@ -7,9 +7,11 @@ const employeeSchema = new mongoose.Schema({
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     password_hash: { type: String, required: true },
     role: { type: String, default: 'employee' },
+    previous_role: { type: String, default: null },
     department_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', default: null },
     shift_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Shift', default: null },
     manager_id: { type: String, ref: 'Employee', default: null },
+    team_lead_id: { type: String, ref: 'Employee', default: null },
     phone: { type: String, trim: true },
     designation: { type: String, trim: true },
     qualification: { type: String, trim: true },
@@ -54,6 +56,7 @@ employeeSchema.index({ role: 1 });
 employeeSchema.index({ department_id: 1 });
 employeeSchema.index({ name: 1 });
 employeeSchema.index({ date_of_joining: 1 });
+employeeSchema.index({ team_lead_id: 1 });
 
 employeeSchema.methods.matchPassword = function (password) {
     return bcrypt.compare(password, this.password_hash);

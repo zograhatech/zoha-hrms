@@ -12,7 +12,8 @@ import BirthdayCard from '../../components/BirthdayCard';
 import MonthCalendar from '../../components/MonthCalendar';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { formatDate } from '../../utils/dateFormatter';
-import { isManagerRole } from '../../utils/roleHelper';
+import { isManagerRole, getRoleDisplayLabel, isSuperAdmin } from '../../utils/roleHelper';
+import { useToast } from '../../context/ToastContext';
 import WorkspaceOverview from '../../components/WorkspaceOverview';
 
 const StatCard = (props) => {
@@ -44,10 +45,48 @@ export default function AdminDashboard() {
     const [upcomingEvents, setUpcomingEvents] = useState([]);
     const [attendanceTrends, setAttendanceTrends] = useState([]);
     const [zoomMeetings, setZoomMeetings] = useState([]);
-    const [resignations, setResignations] = useState([]);
     const [loading, setLoading] = useState(true);
+    const { showToast } = useToast();
+    const [showSuperAdminModal, setShowSuperAdminModal] = useState(false);
+    const [employeesList, setEmployeesList] = useState([]);
+    const [selectedEmpId, setSelectedEmpId] = useState('');
+    const [submittingSuperAdmin, setSubmittingSuperAdmin] = useState(false);
 
-    useEffect(() => {
+    const openSuperAdminModal = async () => {
+        setSelectedEmpId('');
+        setShowSuperAdminModal(true);
+        try {
+            const { data } = await API.get('/employees');
+            setEmployeesList(data.employees || []);
+        } catch (err) {
+            console.error(err);
+            showToast('Failed to load employees', 'error');
+        }
+    };
+
+    const handleGrantSuperAdmin = async () => {
+        if (!selectedEmpId) return;
+        const target = employeesList.find(e => e.id === selectedEmpId);
+        const name = target?.name || selectedEmpId;
+        const confirmed = window.confirm(`Are you sure you want to grant Super Admin privileges to ${name}?`);
+        if (!confirmed) return;
+
+        setSubmittingSuperAdmin(true);
+        try {
+            await API.patch(`/employees/${selectedEmpId}/super-admin`, { isSuperAdmin: true });
+            showToast(`Super Admin privileges granted to ${name}!`, 'success');
+            setShowSuperAdminModal(false);
+            if (hasAnalytics) {
+                const s = await API.get('/employees/stats');
+                setStats(s.data.stats);
+            }
+        } catch (err) {
+            console.error(err);
+            showToast(err.response?.data?.message || 'Failed to grant Super Admin privileges', 'error');
+        } finally {
+            setSubmittingSuperAdmin(false);
+        }
+    };
         const calls = [];
         if (hasAnalytics) calls.push(API.get('/employees/stats'));
         else calls.push(Promise.resolve({ data: { stats: null } }));
@@ -153,11 +192,20 @@ export default function AdminDashboard() {
     return (
         <div>
 
-            <div className="page-header">
+            <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div>
                     <div className="page-title"><FiShield style={{ marginRight: 8, verticalAlign: 'middle' }} /> Admin Dashboard</div>
                     <div className="page-subtitle">Complete overview of the HRMS system</div>
                 </div>
+                {isSuperAdmin(user) && (
+                    <button 
+                        className="btn btn-primary" 
+                        onClick={openSuperAdminModal} 
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}
+                    >
+                        <FiShield /> Add Super Admin
+                    </button>
+                )}
             </div>
 
             <AttendanceWidget />
@@ -218,11 +266,11 @@ export default function AdminDashboard() {
                         <div key={r.role} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 0', borderBottom: '1px solid var(--border-color)' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                                 <span style={{ fontSize: '1.1rem', color: 'var(--text-muted)', display: 'flex' }}>
-                                    {isManagerRole(r.role) ? <FiShield /> : r.role === 'hr' ? <FiBriefcase /> : <FiUser />}
+                                    {isManagerRole(r.role) ? <FiShield /> : r.role === 'team_lead' ? <FiBriefcase /> : <FiUser />}
                                 </span>
-                                <span style={{ fontWeight: 600, textTransform: 'capitalize' }}>{isManagerRole(r.role) ? (r.role === 'admin' ? 'Admin' : 'HR Manager') : r.role}</span>
+                                <span style={{ fontWeight: 600 }}>{getRoleDisplayLabel(r.role)}</span>
                             </div>
-                            <span className={`badge badge-${isManagerRole(r.role) ? 'purple' : r.role === 'hr' ? 'info' : 'success'}`}>{r.count} member{r.count !== 1 ? 's' : ''}</span>
+                            <span className={`badge badge-${isManagerRole(r.role) ? 'purple' : r.role === 'team_lead' ? 'info' : 'success'}`}>{r.count} member{r.count !== 1 ? 's' : ''}</span>
                         </div>
                     ))}
 
@@ -314,6 +362,55 @@ export default function AdminDashboard() {
                 </div>
 
             </div>
+
+            {showSuperAdminModal && (
+                <div style={{
+                    position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+                    backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex',
+                    alignItems: 'center', justifyContent: 'center', zIndex: 1000
+                }}>
+                    <div className="card" style={{ maxWidth: 480, width: '90%', padding: 24 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                            <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <FiShield style={{ color: 'var(--accent-primary)' }} /> Add Super Admin
+                            </h3>
+                            <button className="btn btn-icon btn-sm" onClick={() => setShowSuperAdminModal(false)}>
+                                &times;
+                            </button>
+                        </div>
+                        <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', marginBottom: 16 }}>
+                            Select an existing employee to grant full Super Admin authority.
+                        </p>
+                        <div className="form-group" style={{ marginBottom: 20 }}>
+                            <label className="form-label">Select Employee</label>
+                            <select 
+                                className="form-select" 
+                                value={selectedEmpId} 
+                                onChange={e => setSelectedEmpId(e.target.value)}
+                            >
+                                <option value="">— Select Employee —</option>
+                                {employeesList.filter(e => e.role !== 'admin').map(e => (
+                                    <option key={e.id} value={e.id}>
+                                        {e.name} ({e.id}) — {getRoleDisplayLabel(e.role)}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
+                            <button className="btn btn-outline" onClick={() => setShowSuperAdminModal(false)} disabled={submittingSuperAdmin}>
+                                Cancel
+                            </button>
+                            <button 
+                                className="btn btn-primary" 
+                                onClick={handleGrantSuperAdmin}
+                                disabled={!selectedEmpId || submittingSuperAdmin}
+                            >
+                                {submittingSuperAdmin ? 'Granting...' : 'Grant Super Admin'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
