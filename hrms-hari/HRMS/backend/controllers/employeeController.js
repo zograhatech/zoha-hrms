@@ -6,6 +6,7 @@ const { sendEmail } = require('../utils/emailService');
 const LeaveBalance = require('../models/LeaveBalance');
 const Setting = require('../models/Setting');
 const XLSX = require('xlsx');
+const { getVisibleEmployeeScope } = require('../utils/visibilityHelper');
 
 // Helper to populate department name into employee object
 const withDeptName = async (emp) => {
@@ -23,12 +24,32 @@ const withDeptName = async (emp) => {
 // GET /api/employees
 const getEmployees = async (req, res) => {
     try {
-        const { status, search, department, page = 1, limit = 50 } = req.query;
+        const { status, search, department, role, page = 1, limit = 50 } = req.query;
         const skip = (parseInt(page) - 1) * parseInt(limit);
         
         const filter = {};
         if (status) filter.status = status;
         if (department) filter.department_id = department;
+        if (role) {
+            // Map legacy roles if needed
+            const rLower = role.toLowerCase().replace(/\s+/g, '');
+            if (['manager', 'hr_manager', 'hrmanager', 'hrmanger', 'hr_manger'].includes(rLower)) {
+                filter.role = { $in: ['manager', 'hr_manager', 'hrmanager', 'hrmanger', 'hr_manger'] };
+            } else if (['team_lead', 'hr'].includes(rLower)) {
+                filter.role = { $in: ['team_lead', 'hr'] };
+            } else {
+                filter.role = rLower;
+            }
+        }
+
+        // Apply visibility scoping for calling user if authenticated
+        if (req.user) {
+            const scope = await getVisibleEmployeeScope(req.user);
+            if (!scope.isAll) {
+                filter.id = { $in: scope.visibleIds };
+            }
+        }
+
         if (search) {
             filter.$or = [
                 { name: { $regex: search, $options: 'i' } },
@@ -36,6 +57,7 @@ const getEmployees = async (req, res) => {
                 { id: { $regex: search, $options: 'i' } },
             ];
         }
+
 
         // Project only necessary fields for performance
         const projection = {
@@ -716,10 +738,12 @@ const getDashboardOverview = async (req, res) => {
         ]);
 
         // Process attendance for summary: group by calendar day first to avoid double counting
+        const { toISTDateString } = require('../utils/istDate');
         const groupedByDay = {};
         attendanceData.forEach(rec => {
-            const d = new Date(rec.date).toISOString().split('T')[0];
+            const d = toISTDateString(rec.date);
             if (!groupedByDay[d]) {
+
                 groupedByDay[d] = rec.status;
             } else {
                 const priority = { present: 4, late: 3, 'half-day': 2, holiday: 1, absent: 0 };

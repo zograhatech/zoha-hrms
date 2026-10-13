@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { isManagerRole } from '../../utils/roleHelper';
+import { isManagerRole, normalizeRole, isSuperAdmin, isTeamLead } from '../../utils/roleHelper';
 
 import API from '../../api/axios';
 import {
@@ -8,10 +8,14 @@ import {
     FiCheckCircle, FiUser, FiUsers, FiEdit2, FiTrash2
 } from 'react-icons/fi';
 
+
 export default function Departments() {
     const { user } = useAuth();
-    const permissions = user?.permissions || [];
-    const canManage = isManagerRole(user) || permissions.includes('manage_departments');
+    const userRole = normalizeRole(user?.role || '');
+    const canCreate = ['admin', 'manager', 'team_lead'].includes(userRole);
+    const canEdit = ['admin', 'manager'].includes(userRole);
+    const canDelete = userRole === 'admin';
+
 
     const [depts, setDepts] = useState([]);
 
@@ -80,7 +84,7 @@ export default function Departments() {
                     <div className="page-title"><FiBriefcase style={{ marginRight: 8, verticalAlign: 'middle' }} /> Departments</div>
                     <div className="page-subtitle">{depts.length} departments</div>
                 </div>
-                {canManage && (
+                {canCreate && (
                     <button className="btn btn-primary" onClick={() => { setEditingDept(null); setForm({ name: '', description: '', manager_id: '' }); setShowForm(true); }} style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
                         <FiPlus /> New Department
                     </button>
@@ -141,13 +145,14 @@ export default function Departments() {
                                     <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>ID: {d._id}</div>
                                 </div>
                             </div>
-                            {canManage && (
+                            {(canEdit || canDelete) && (
                                 <div style={{ display: 'flex', gap: 6, flexShrink: 0, marginLeft: 10 }}>
-                                    <button className="btn btn-icon btn-sm" onClick={() => handleEdit(d)} title="Edit"><FiEdit2 size={14} /></button>
-                                    <button className="btn btn-icon btn-sm text-error" onClick={() => handleDelete(d._id)} title="Delete"><FiTrash2 size={14} /></button>
+                                    {canEdit && <button className="btn btn-icon btn-sm" onClick={() => handleEdit(d)} title="Edit"><FiEdit2 size={14} /></button>}
+                                    {canDelete && <button className="btn btn-icon btn-sm text-error" onClick={() => handleDelete(d._id)} title="Delete"><FiTrash2 size={14} /></button>}
                                 </div>
                             )}
                         </div>
+
                         {d.description && <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.5 }}>{d.description}</p>}
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderTop: '1px solid var(--border-color)', fontSize: '0.8rem' }}>
                             <span style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>

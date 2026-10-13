@@ -40,9 +40,11 @@ const NAV_CONFIG = [
         section: 'HR MANAGEMENT',
         items: [
             { to: '/dashboard/employees', label: 'Employees', icon: <FiUsers />, permission: 'manage_employees' },
+            { to: '/dashboard/leave-approvals', label: 'Leave Approvals', icon: <FiCheckCircle />, permission: 'manage_leaves' },
             { to: '/dashboard/recruitment', label: 'Recruitment', icon: <FiUserPlus />, permission: 'recruitment' },
             { to: '/dashboard/performance', label: 'Performance', icon: <FiTarget />, permission: 'performance' },
             { to: '/dashboard/attendance-report', label: 'Attendance Report', icon: <FiCalendar />, permission: 'manage_attendance' },
+
             { to: '/dashboard/shift-roster', label: 'Shift Roster', icon: <FiClock />, permission: 'manage_shifts' },
             { to: '/dashboard/payroll-admin', label: 'Payroll Management', icon: <FiCreditCard />, permission: 'payroll' },
             { to: '/dashboard/assets', label: 'Assets', icon: <FiDatabase />, permission: 'assets' },
@@ -103,8 +105,28 @@ export default function Sidebar({ open, onClose }) {
         const isManager = isManagerRole(role);
         if (isManager) return true;
 
-        // 2. Individual Module Access Check — ONLY items given by HR Manager are visible
+        // 2. Team Lead role access: automatic access to Team Attendance Report, Leave Approvals, Performance, Employees, and Departments
+        const roleLower = (role || '').toLowerCase().replace(/\s+/g, '');
+        const isTL = roleLower === 'team_lead' || roleLower === 'hr';
+        if (isTL) {
+            const tlAllowedPaths = [
+                '/dashboard/attendance-report',
+                '/dashboard/leave-approvals',
+                '/dashboard/employees',
+                '/dashboard/performance',
+                '/dashboard/departments'
+            ];
+            if (tlAllowedPaths.includes(item.to)) return true;
+        }
+
+        // 3. Departments menu item is strictly hidden for employee, even with permission flag
+        if (item.to === '/dashboard/departments') {
+            return false;
+        }
+
+        // 4. Individual Module Access Check — Permission flags augment access, never remove what role grants
         if (item.permission) {
+
             const requiredPerms = Array.isArray(item.permission) ? item.permission : [item.permission];
             const hasAccess = requiredPerms.some(p => {
                 if (permissions.includes(p)) return true;
@@ -125,6 +147,7 @@ export default function Sidebar({ open, onClose }) {
         // Default: Items with no permission requirements are visible to everyone
         return true; 
     };
+
 
     const sections = NAV_CONFIG.map(s => ({
         ...s,

@@ -26,6 +26,7 @@ export default function EmployeeList() {
     const [search, setSearch] = useState('');
     const [depts, setDepts] = useState([]);
     const [filterDept, setFilterDept] = useState('');
+    const [filterRole, setFilterRole] = useState('');
     const [showForm, setShowForm] = useState(false);
     const [form, setForm] = useState({
         id: '', name: '', email: '', password: '', role: 'employee',
@@ -83,12 +84,14 @@ export default function EmployeeList() {
         });
         if (search) params.append('search', search);
         if (filterDept) params.append('department', filterDept);
+        if (filterRole) params.append('role', filterRole);
         API.get(`/employees?${params}`).then(r => { 
             setEmployees(r.data.employees || []); 
             if (r.data.pagination) setPagination(prev => ({ ...prev, ...r.data.pagination }));
             setLoading(false); 
         }).catch(() => setLoading(false));
-    }, [search, filterDept, pagination.page, pagination.limit]);
+    }, [search, filterDept, filterRole, pagination.page, pagination.limit]);
+
 
     useEffect(() => {
         API.get('/departments').then(r => setDepts(r.data.departments || [])).catch(() => { });
@@ -400,7 +403,15 @@ export default function EmployeeList() {
                     <option value="">All Departments</option>
                     {depts.map(d => <option key={d._id} value={d._id}>{d.name}</option>)}
                 </select>
+                <select className="form-select" style={{ width: 180 }} value={filterRole} onChange={e => setFilterRole(e.target.value)}>
+                    <option value="">All Roles</option>
+                    <option value="admin">Super Admin</option>
+                    <option value="manager">Manager</option>
+                    <option value="team_lead">Team Lead</option>
+                    <option value="employee">Employee</option>
+                </select>
             </div>
+
 
             {/* Add Employee Modal */}
             {showForm && (

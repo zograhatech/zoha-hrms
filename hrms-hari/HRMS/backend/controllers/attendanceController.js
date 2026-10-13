@@ -4,6 +4,8 @@ const Department = require('../models/Department');
 const Leave = require('../models/Leave');
 const Event = require('../models/Event');
 const XLSX = require('xlsx');
+const { toISTDateString, getISTDayStart, getISTDayEnd, getISOWeekInfo } = require('../utils/istDate');
+const { getVisibleEmployeeScope, isEmployeeVisible } = require('../utils/visibilityHelper');
 
 // GET /api/attendance/:employeeId
 const getEmployeeAttendance = async (req, res) => {
@@ -11,22 +13,34 @@ const getEmployeeAttendance = async (req, res) => {
         const { employeeId } = req.params;
         const { month, year } = req.query;
 
+        // Visibility check: employee can only see self unless admin, manager, team_lead within scope
+        const allowed = await isEmployeeVisible(req.user, employeeId);
+        if (!allowed) {
+            return res.status(403).json({ success: false, message: "Access denied for this employee's records." });
+        }
+
         const filter = { employee_id: employeeId };
         if (month && year) {
             const m = parseInt(month);
             const y = parseInt(year);
+            const mStr = String(m).padStart(2, '0');
+            const startDayStr = `${y}-${mStr}-01`;
+            // Last day of month
+            const daysInMonth = new Date(y, m, 0).getDate();
+            const endDayStr = `${y}-${mStr}-${String(daysInMonth).padStart(2, '0')}`;
             filter.date = {
-                $gte: new Date(y, m - 1, 1),
-                $lt: new Date(y, m, 1),
+                $gte: getISTDayStart(startDayStr),
+                $lt: getISTDayEnd(endDayStr),
             };
         }
 
         const attendance = await Attendance.find(filter).sort({ date: 1, check_in: 1 }).lean();
 
-        // Group by date to compute worked hours per day
+        // Group by date to compute worked hours per day using IST date
         const byDate = {};
         attendance.forEach(rec => {
-            const d = new Date(rec.date).toISOString().split('T')[0];
+            const d = toISTDateString(rec.date);
+
             if (!byDate[d]) {
                 byDate[d] = {
                     date: rec.date,
@@ -102,34 +116,81 @@ const getEmployeeAttendance = async (req, res) => {
 // GET /api/attendance/team?date=YYYY-MM-DD
 const getTeamAttendance = async (req, res) => {
     try {
-        const dateStr = req.query.date || new Date().toISOString().split('T')[0];
-        const date = new Date(dateStr);
-        const nextDay = new Date(date);
-        nextDay.setDate(nextDay.getDate() + 1);
+        const dateStr = req.query.date || toISTDateString(new Date());
+        const start = getISTDayStart(dateStr);
+        const nextDay = getISTDayEnd(dateStr);
 
-        const records = await Attendance.find({ date: { $gte: date, $lt: nextDay } }).lean();
+        // Visibility scope
+        const scope = await getVisibleEmployeeScope(req.user);
+        const empQuery = { status: 'active' };
+        if (!scope.isAll) {
+            empQuery.id = { $in: scope.visibleIds };
+        }
 
-        // Get all active employees
-        const employees = await Employee.find({ status: 'active' }).lean();
+        // Get active employees in scope
+        const employees = await Employee.find(empQuery).lean();
+        const allowedEmpIds = employees.map(e => e.id);
+
+        const records = await Attendance.find({
+            date: { $gte: start, $lt: nextDay },
+            employee_id: { $in: allowedEmpIds }
+        }).sort({ check_in: 1 }).lean();
+
         const deptIds = [...new Set(employees.map(e => e.department_id?.toString()).filter(Boolean))];
         const depts = await Department.find({ _id: { $in: deptIds } }).lean();
         const deptMap = Object.fromEntries(depts.map(d => [d._id.toString(), d.name]));
 
-        const attMap = Object.fromEntries(records.map(r => [r.employee_id, r]));
+        // Group records per employee for the day to compute worked hours and open session
+        const attByEmp = {};
+        records.forEach(rec => {
+            if (!attByEmp[rec.employee_id]) {
+                attByEmp[rec.employee_id] = {
+                    records: [],
+                    status: rec.status,
+                    check_in: rec.check_in,
+                    check_out: rec.check_out,
+                };
+            }
+            attByEmp[rec.employee_id].records.push(rec);
+
+            const priority = { present: 4, late: 3, 'half-day': 2, holiday: 1, absent: 0 };
+            if (priority[rec.status] > priority[attByEmp[rec.employee_id].status]) {
+                attByEmp[rec.employee_id].status = rec.status;
+            }
+            if (rec.check_in && (!attByEmp[rec.employee_id].check_in || new Date(rec.check_in) < new Date(attByEmp[rec.employee_id].check_in))) {
+                attByEmp[rec.employee_id].check_in = rec.check_in;
+            }
+            if (rec.check_out && (!attByEmp[rec.employee_id].check_out || new Date(rec.check_out) > new Date(attByEmp[rec.employee_id].check_out))) {
+                attByEmp[rec.employee_id].check_out = rec.check_out;
+            }
+        });
 
         const attendance = employees.map(emp => {
-            const rec = attMap[emp.id];
+            const data = attByEmp[emp.id];
+            let work_hours = null;
+            if (data && data.records.length > 0) {
+                let totalHours = 0;
+                data.records.forEach(rec => {
+                    if (rec.check_in && rec.check_out) {
+                        const diffMs = new Date(rec.check_out) - new Date(rec.check_in);
+                        totalHours += diffMs / (1000 * 60 * 60);
+                    }
+                });
+                work_hours = Number(totalHours.toFixed(2));
+            }
+
             return {
                 employee_id: emp.id,
                 name: emp.name,
                 department: emp.department_id ? deptMap[emp.department_id.toString()] : null,
                 designation: emp.designation,
-                status: rec?.status || 'absent',
-                check_in: rec?.check_in || null,
-                check_out: rec?.check_out || null,
-                work_hours: rec?.work_hours || null,
+                status: data?.status || 'absent',
+                check_in: data?.check_in || null,
+                check_out: data?.check_out || null,
+                work_hours: work_hours,
             };
         });
+
 
         const summary = {
             total: attendance.length,
@@ -445,60 +506,294 @@ const updateAttendanceManual = async (req, res) => {
     }
 };
 
-// GET /api/attendance/export?date=YYYY-MM-DD  OR  ?month=M&year=YYYY
+// Shared helper to aggregate attendance records by day for a list of employee IDs and date range
+const getDailyAttendanceData = async (allowedEmpIds, startDateStr, endDateStr) => {
+    const start = getISTDayStart(startDateStr);
+    const end = getISTDayEnd(endDateStr);
+
+    const records = await Attendance.find({
+        date: { $gte: start, $lt: end },
+        employee_id: { $in: allowedEmpIds }
+    }).sort({ check_in: 1 }).lean();
+
+    const employees = await Employee.find({ id: { $in: allowedEmpIds } }).select('id name department_id designation').lean();
+    const empMap = Object.fromEntries(employees.map(e => [e.id, e]));
+
+    // Group records by `employee_id` and IST date `YYYY-MM-DD`
+    const grouped = {};
+    records.forEach(rec => {
+        const dStr = toISTDateString(rec.date);
+        const key = `${rec.employee_id}__${dStr}`;
+        if (!grouped[key]) {
+            grouped[key] = {
+                employee_id: rec.employee_id,
+                date: dStr,
+                records: [],
+                status: rec.status,
+                check_in: rec.check_in,
+                check_out: rec.check_out,
+            };
+        }
+        grouped[key].records.push(rec);
+
+        const priority = { present: 4, late: 3, 'half-day': 2, holiday: 1, absent: 0 };
+        if (priority[rec.status] > priority[grouped[key].status]) {
+            grouped[key].status = rec.status;
+        }
+        if (rec.check_in && (!grouped[key].check_in || new Date(rec.check_in) < new Date(grouped[key].check_in))) {
+            grouped[key].check_in = rec.check_in;
+        }
+        if (rec.check_out && (!grouped[key].check_out || new Date(rec.check_out) > new Date(grouped[key].check_out))) {
+            grouped[key].check_out = rec.check_out;
+        }
+    });
+
+    const dailyRows = Object.values(grouped).map(item => {
+        let totalHours = 0;
+        let hasOpenSession = false;
+
+        item.records.forEach(rec => {
+            if (rec.check_in && rec.check_out) {
+                const diffMs = new Date(rec.check_out) - new Date(rec.check_in);
+                totalHours += diffMs / (1000 * 60 * 60);
+            } else if (rec.check_in && !rec.check_out) {
+                hasOpenSession = true;
+            }
+        });
+
+        const emp = empMap[item.employee_id] || {};
+        return {
+            employee_id: item.employee_id,
+            name: emp.name || item.employee_id,
+            date: item.date,
+            first_check_in: item.check_in || null,
+            last_check_out: item.check_out || null,
+            worked_hours: Number(totalHours.toFixed(2)),
+            open_session: hasOpenSession,
+            status: item.status
+        };
+    });
+
+    // Sort by date ascending, then employee_id
+    dailyRows.sort((a, b) => (a.date === b.date ? a.employee_id.localeCompare(b.employee_id) : a.date.localeCompare(b.date)));
+
+    return { dailyRows, empMap };
+};
+
+// GET /api/attendance/logs?employee_id=&from=&to=&view=daily|weekly|monthly
+const getAttendanceLogs = async (req, res) => {
+    try {
+        const { employee_id, from, to, view = 'daily' } = req.query;
+
+        // Visibility check
+        const scope = await getVisibleEmployeeScope(req.user);
+        let targetEmpIds = [];
+
+        if (employee_id) {
+            const allowed = await isEmployeeVisible(req.user, employee_id);
+            if (!allowed) {
+                return res.status(403).json({ success: false, message: "Access denied for this employee's records." });
+            }
+            targetEmpIds = [employee_id];
+        } else {
+            if (scope.isAll) {
+                const allEmps = await Employee.find({ status: 'active' }).select('id').lean();
+                targetEmpIds = allEmps.map(e => e.id);
+            } else {
+                targetEmpIds = scope.visibleIds;
+            }
+        }
+
+        // Determine date range (IST dates YYYY-MM-DD)
+        const todayIST = toISTDateString(new Date());
+        let fromDateStr = from || todayIST;
+        let toDateStr = to || fromDateStr;
+
+        if (fromDateStr > toDateStr) {
+            const tmp = fromDateStr;
+            fromDateStr = toDateStr;
+            toDateStr = tmp;
+        }
+
+        // Validate range <= 366 days
+        const startDay = new Date(fromDateStr);
+        const endDay = new Date(toDateStr);
+        const diffDays = Math.round((endDay - startDay) / (1000 * 60 * 60 * 24)) + 1;
+        if (diffDays > 366) {
+            return res.status(400).json({ success: false, message: 'Date range cannot exceed 366 days.' });
+        }
+
+        const { dailyRows } = await getDailyAttendanceData(targetEmpIds, fromDateStr, toDateStr);
+
+        let finalRows = [];
+        if (view === 'daily') {
+            finalRows = dailyRows;
+        } else if (view === 'weekly') {
+            // Group by employee_id + ISO week
+            const weeklyGroups = {};
+            dailyRows.forEach(row => {
+                const weekInfo = getISOWeekInfo(row.date);
+                const key = `${row.employee_id}__${weekInfo.key}`;
+                if (!weeklyGroups[key]) {
+                    weeklyGroups[key] = {
+                        employee_id: row.employee_id,
+                        name: row.name,
+                        week: weekInfo.key,
+                        date: weekInfo.label,
+                        first_check_in: row.first_check_in,
+                        last_check_out: row.last_check_out,
+                        worked_hours: 0,
+                        open_session: false
+                    };
+                }
+                const g = weeklyGroups[key];
+                g.worked_hours += row.worked_hours;
+                if (row.open_session) g.open_session = true;
+                if (row.first_check_in && (!g.first_check_in || new Date(row.first_check_in) < new Date(g.first_check_in))) {
+                    g.first_check_in = row.first_check_in;
+                }
+                if (row.last_check_out && (!g.last_check_out || new Date(row.last_check_out) > new Date(g.last_check_out))) {
+                    g.last_check_out = row.last_check_out;
+                }
+            });
+            finalRows = Object.values(weeklyGroups).map(w => ({
+                ...w,
+                worked_hours: Number(w.worked_hours.toFixed(2))
+            }));
+            finalRows.sort((a, b) => (a.week === b.week ? a.employee_id.localeCompare(b.employee_id) : a.week.localeCompare(b.week)));
+        } else if (view === 'monthly') {
+            // Group by employee_id + YYYY-MM
+            const monthlyGroups = {};
+            dailyRows.forEach(row => {
+                const mKey = row.date.substring(0, 7); // 'YYYY-MM'
+                const key = `${row.employee_id}__${mKey}`;
+                if (!monthlyGroups[key]) {
+                    monthlyGroups[key] = {
+                        employee_id: row.employee_id,
+                        name: row.name,
+                        month: mKey,
+                        date: mKey,
+                        first_check_in: row.first_check_in,
+                        last_check_out: row.last_check_out,
+                        worked_hours: 0,
+                        open_session: false
+                    };
+                }
+                const g = monthlyGroups[key];
+                g.worked_hours += row.worked_hours;
+                if (row.open_session) g.open_session = true;
+                if (row.first_check_in && (!g.first_check_in || new Date(row.first_check_in) < new Date(g.first_check_in))) {
+                    g.first_check_in = row.first_check_in;
+                }
+                if (row.last_check_out && (!g.last_check_out || new Date(row.last_check_out) > new Date(g.last_check_out))) {
+                    g.last_check_out = row.last_check_out;
+                }
+            });
+            finalRows = Object.values(monthlyGroups).map(m => ({
+                ...m,
+                worked_hours: Number(m.worked_hours.toFixed(2))
+            }));
+            finalRows.sort((a, b) => (a.month === b.month ? a.employee_id.localeCompare(b.employee_id) : a.month.localeCompare(b.month)));
+        }
+
+        const totalWorkedHours = Number(finalRows.reduce((sum, r) => sum + (r.worked_hours || 0), 0).toFixed(2));
+
+        res.json({
+            success: true,
+            view,
+            from: fromDateStr,
+            to: toDateStr,
+            totalRows: finalRows.length,
+            totalWorkedHours,
+            logs: finalRows
+        });
+    } catch (err) {
+        console.error('[getAttendanceLogs]', err);
+        res.status(500).json({ success: false, message: 'Server error while fetching attendance logs.' });
+    }
+};
+
+// GET /api/attendance/export?date=YYYY-MM-DD  OR  ?month=M&year=YYYY  OR  ?from=&to=&employee_id=
 const exportAttendance = async (req, res) => {
     try {
-        const { date, month, year } = req.query;
-        let filter = {};
+        const { date, month, year, from, to, employee_id } = req.query;
+
+        // Visibility scope
+        const scope = await getVisibleEmployeeScope(req.user);
+        let targetEmpIds = [];
+
+        if (employee_id) {
+            const allowed = await isEmployeeVisible(req.user, employee_id);
+            if (!allowed) {
+                return res.status(403).json({ success: false, message: "Access denied for this employee's records." });
+            }
+            targetEmpIds = [employee_id];
+        } else {
+            if (scope.isAll) {
+                const allEmps = await Employee.find({ status: 'active' }).select('id').lean();
+                targetEmpIds = allEmps.map(e => e.id);
+            } else {
+                targetEmpIds = scope.visibleIds;
+            }
+        }
+
+        let startDateStr = '';
+        let endDateStr = '';
         let fileName = 'attendance_export.xlsx';
         let sheetTitle = 'Attendance';
 
-        if (month && year) {
-            // Monthly export
-            filter.date = {
-                $gte: new Date(+year, +month - 1, 1),
-                $lt: new Date(+year, +month, 1),
-            };
-            const monthName = new Date(+year, +month - 1, 1).toLocaleString('en-US', { month: 'long' });
+        if (from || to) {
+            startDateStr = from || toISTDateString(new Date());
+            endDateStr = to || startDateStr;
+            if (startDateStr > endDateStr) {
+                const tmp = startDateStr;
+                startDateStr = endDateStr;
+                endDateStr = tmp;
+            }
+            fileName = `attendance_${startDateStr}_to_${endDateStr}.xlsx`;
+            sheetTitle = `${startDateStr} to ${endDateStr}`;
+        } else if (month && year) {
+            const m = parseInt(month);
+            const y = parseInt(year);
+            const mStr = String(m).padStart(2, '0');
+            const daysInMonth = new Date(y, m, 0).getDate();
+            startDateStr = `${y}-${mStr}-01`;
+            endDateStr = `${y}-${mStr}-${String(daysInMonth).padStart(2, '0')}`;
+            const monthName = new Date(y, m - 1, 1).toLocaleString('en-US', { month: 'long' });
             fileName = `attendance_${monthName}_${year}.xlsx`;
             sheetTitle = `${monthName} ${year}`;
         } else if (date) {
-            // Daily export
-            const d = new Date(date);
-            const nextDay = new Date(d); nextDay.setDate(nextDay.getDate() + 1);
-            filter.date = { $gte: d, $lt: nextDay };
+            startDateStr = date;
+            endDateStr = date;
             fileName = `attendance_${date}.xlsx`;
             sheetTitle = date;
         } else {
-            return res.status(400).json({ success: false, message: 'Provide date= or month=&year= query params.' });
+            return res.status(400).json({ success: false, message: 'Provide date=, month=&year=, or from=&to= query params.' });
         }
 
-        // Fetch records and enrich with employee data
-        const records = await Attendance.find(filter).lean();
-        const employees = await Employee.find({ status: 'active' }).lean();
-        const deptIds = [...new Set(employees.map(e => e.department_id?.toString()).filter(Boolean))];
-        const depts = await Department.find({ _id: { $in: deptIds } }).lean();
-        const deptMap = Object.fromEntries(depts.map(d => [d._id.toString(), d.name]));
-        const empMap = Object.fromEntries(employees.map(e => [e.id, e]));
+        // Validate range <= 366 days
+        const startDay = new Date(startDateStr);
+        const endDay = new Date(endDateStr);
+        const diffDays = Math.round((endDay - startDay) / (1000 * 60 * 60 * 24)) + 1;
+        if (diffDays > 366) {
+            return res.status(400).json({ success: false, message: 'Date range cannot exceed 366 days.' });
+        }
 
-        const rows = records.map(r => {
-            const emp = empMap[r.employee_id] || {};
-            return {
-                employee_id: r.employee_id,
-                name: emp.name || r.employee_id,
-                department: emp.department_id ? deptMap[emp.department_id.toString()] || '' : '',
-                designation: emp.designation || '',
-                date: new Date(r.date).toLocaleDateString('en-IN'),
-                status: r.status,
-                check_in: r.check_in || '',
-                check_out: r.check_out || '',
-                work_hours: r.work_hours ?? '',
-            };
-        });
+        const { dailyRows } = await getDailyAttendanceData(targetEmpIds, startDateStr, endDateStr);
 
-        if (rows.length === 0) {
+        if (dailyRows.length === 0) {
             return res.status(404).json({ success: false, message: 'No attendance records found for the selected period.' });
         }
+
+        const rows = dailyRows.map(r => ({
+            'Employee ID': r.employee_id,
+            'Employee Name': r.name,
+            'Date': r.date,
+            'First Check In': r.first_check_in ? new Date(r.first_check_in).toISOString() : '',
+            'Last Check Out': r.last_check_out ? new Date(r.last_check_out).toISOString() : '',
+            'Worked Hours': r.worked_hours,
+            'Open Session': r.open_session ? 'Yes' : 'No'
+        }));
 
         const ws = XLSX.utils.json_to_sheet(rows);
         const wb = XLSX.utils.book_new();
@@ -513,6 +808,7 @@ const exportAttendance = async (req, res) => {
         res.status(500).json({ success: false, message: 'Export failed.' });
     }
 };
+
 
 // GET /api/attendance/trends
 const getAttendanceTrends = async (req, res) => {
@@ -557,5 +853,7 @@ module.exports = {
     updateAttendanceManual,
     markHoliday,
     getAttendanceTrends,
-    exportAttendance
+    exportAttendance,
+    getAttendanceLogs
 };
+

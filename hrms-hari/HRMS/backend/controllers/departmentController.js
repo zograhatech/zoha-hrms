@@ -2,10 +2,18 @@ const mongoose = require('mongoose');
 const Department = require('../models/Department');
 const Employee = require('../models/Employee');
 
+const { normalizeRole } = require('../utils/visibilityHelper');
+
 // GET /api/departments
 const getDepartments = async (req, res) => {
     try {
+        const callerRole = normalizeRole(req.user?.role || '');
+        if (!['admin', 'manager', 'team_lead'].includes(callerRole)) {
+            return res.status(403).json({ success: false, message: 'Forbidden. You do not have permission to view departments.' });
+        }
+
         const departments = await Department.find().sort({ name: 1 }).lean();
+
 
         // Count employees per department
         const counts = await Employee.aggregate([
@@ -35,10 +43,14 @@ const getDepartments = async (req, res) => {
         res.status(500).json({ success: false, message: 'Server error.' });
     }
 };
-
 // POST /api/departments
 const createDepartment = async (req, res) => {
     try {
+        const callerRole = normalizeRole(req.user?.role || '');
+        if (!['admin', 'manager', 'team_lead'].includes(callerRole)) {
+            return res.status(403).json({ success: false, message: 'Forbidden. You do not have permission to create departments.' });
+        }
+
         const { name, description, manager_id, team_lead_id } = req.body;
         const existing = await Department.findOne({ name: { $regex: `^${name}$`, $options: 'i' } });
         if (existing) return res.status(400).json({ success: false, message: 'Department with this name already exists.' });
@@ -53,6 +65,11 @@ const createDepartment = async (req, res) => {
 // PUT /api/departments/:id
 const updateDepartment = async (req, res) => {
     try {
+        const callerRole = normalizeRole(req.user?.role || '');
+        if (!['admin', 'manager'].includes(callerRole)) {
+            return res.status(403).json({ success: false, message: 'Forbidden. Only Managers and Super Admins can edit departments.' });
+        }
+
         const { name, description, manager_id, team_lead_id } = req.body;
         const dept = await Department.findByIdAndUpdate(req.params.id, { name, description, manager_id, team_lead_id }, { returnDocument: 'after', runValidators: true });
         if (!dept) return res.status(404).json({ success: false, message: 'Department not found.' });
@@ -65,8 +82,15 @@ const updateDepartment = async (req, res) => {
 // DELETE /api/departments/:id
 const deleteDepartment = async (req, res) => {
     try {
+        const callerRole = normalizeRole(req.user?.role || '');
+        if (callerRole !== 'admin') {
+            return res.status(403).json({ success: false, message: 'Forbidden. Only Super Admins can delete departments.' });
+        }
+
         const empCount = await Employee.countDocuments({ department_id: req.params.id });
-        if (empCount > 0) return res.status(400).json({ success: false, message: `Cannot delete: ${empCount} employee(s) still assigned to this department.` });
+        if (empCount > 0) {
+            return res.status(400).json({ success: false, message: 'Department still has employees assigned. Reassign them first.' });
+        }
         const dept = await Department.findByIdAndDelete(req.params.id);
         if (!dept) return res.status(404).json({ success: false, message: 'Department not found.' });
         res.json({ success: true, message: 'Department deleted.' });
@@ -74,6 +98,7 @@ const deleteDepartment = async (req, res) => {
         res.status(500).json({ success: false, message: 'Server error.' });
     }
 };
+
 
 // GET /api/departments/:id/employees - Get employees in a department (for managers of that department and Super Admins)
 const getDepartmentEmployees = async (req, res) => {

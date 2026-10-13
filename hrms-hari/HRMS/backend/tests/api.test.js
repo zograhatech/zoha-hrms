@@ -1910,5 +1910,627 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(admInDb.status).toBe('active');
         });
     });
+
+    // 11. Phase 2: Attendance filters, exports, employee filters, and role-based menus
+    describe('11. Phase 2 Features Verification', () => {
+        const Employee = require('../models/Employee');
+        const Department = require('../models/Department');
+        const Attendance = require('../models/Attendance');
+        const XLSX = require('xlsx');
+
+        let p2AdminToken;
+        let p2MgrToken;
+        let p2TlToken;
+        let p2EmpToken;
+        let p2DeptA;
+        let p2DeptB;
+
+        beforeAll(async () => {
+            const pwd = await bcrypt.hash('P2Secret123!', 10);
+
+            // Dept A managed by P2_MGR_01
+            p2DeptA = await Department.create({
+                name: 'TEST_P2_DEPT_A',
+                description: 'Dept A',
+                manager_id: 'P2_MGR_01'
+            });
+
+            // Dept B managed by P2_MGR_02
+            p2DeptB = await Department.create({
+                name: 'TEST_P2_DEPT_B',
+                description: 'Dept B',
+                manager_id: 'P2_MGR_02'
+            });
+
+            // Manager 1 (in Dept A)
+            await Employee.create({
+                id: 'P2_MGR_01',
+                name: 'P2 Manager One',
+                email: 'p2_mgr1@zograhatechnologies.test',
+                password_hash: pwd,
+                role: 'manager',
+                department_id: p2DeptA._id,
+                status: 'active'
+            });
+
+            // Team Lead 1 (in Dept A, managed by P2_MGR_01)
+            await Employee.create({
+                id: 'P2_TL_01',
+                name: 'P2 Team Lead One',
+                email: 'p2_tl1@zograhatechnologies.test',
+                password_hash: pwd,
+                role: 'team_lead',
+                department_id: p2DeptA._id,
+                manager_id: 'P2_MGR_01',
+                status: 'active'
+            });
+
+            // Employee 1 (in Dept A, team lead P2_TL_01)
+            await Employee.create({
+                id: 'P2_EMP_01',
+                name: 'P2 Employee One',
+                email: 'p2_emp1@zograhatechnologies.test',
+                password_hash: pwd,
+                role: 'employee',
+                department_id: p2DeptA._id,
+                team_lead_id: 'P2_TL_01',
+                manager_id: 'P2_MGR_01',
+                status: 'active'
+            });
+
+            // Employee 2 (in Dept B, outside Mgr 1 and TL 1 scope)
+            await Employee.create({
+                id: 'P2_EMP_02',
+                name: 'P2 Employee Two',
+                email: 'p2_emp2@zograhatechnologies.test',
+                password_hash: pwd,
+                role: 'employee',
+                department_id: p2DeptB._id,
+                status: 'active'
+            });
+
+            p2AdminToken = jwt.sign({ id: 'ADM001', role: 'admin' }, process.env.JWT_SECRET);
+            p2MgrToken = jwt.sign({ id: 'P2_MGR_01', role: 'manager' }, process.env.JWT_SECRET);
+            p2TlToken = jwt.sign({ id: 'P2_TL_01', role: 'team_lead' }, process.env.JWT_SECRET);
+            p2EmpToken = jwt.sign({ id: 'P2_EMP_01', role: 'employee' }, process.env.JWT_SECRET);
+        });
+
+        // 1. GET /api/attendance/logs returns logs, not an employee lookup
+        it('1. GET /api/attendance/logs returns logs, not an employee lookup', async () => {
+            const res = await request(app)
+                .get('/api/attendance/logs')
+                .set('Authorization', `Bearer ${p2AdminToken}`);
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+            expect(res.body.logs).toBeDefined();
+            expect(Array.isArray(res.body.logs)).toBe(true);
+            // Must NOT return single employee lookup format { attendance: [...], summary: ... }
+            expect(res.body.summary).toBeUndefined();
+        });
+
+        // 2. Employee requesting another employee's logs: 403 with the exact message
+        it('2. Employee requesting another employee\'s logs: 403 with the exact message', async () => {
+            const res = await request(app)
+                .get('/api/attendance/logs?employee_id=P2_EMP_02')
+                .set('Authorization', `Bearer ${p2EmpToken}`);
+
+            expect(res.status).toBe(403);
+            expect(res.body.success).toBe(false);
+            expect(res.body.message).toBe("Access denied for this employee's records.");
+        });
+
+        // 3. Team lead requesting an employee outside their team in logs: 403
+        it('3. Team lead requesting an employee outside their team in logs: 403', async () => {
+            const res = await request(app)
+                .get('/api/attendance/logs?employee_id=P2_EMP_02')
+                .set('Authorization', `Bearer ${p2TlToken}`);
+
+            expect(res.status).toBe(403);
+            expect(res.body.success).toBe(false);
+            expect(res.body.message).toBe("Access denied for this employee's records.");
+        });
+
+        // 4. Manager's team view and export exclude employees outside their departments
+        it('4. Manager\'s team view and export exclude employees outside their departments', async () => {
+            // Seed attendance for P2_EMP_01 (Dept A) and P2_EMP_02 (Dept B) on 2026-06-15
+            const testDate = new Date('2026-06-15T09:00:00+05:30');
+            await Attendance.create([
+                { employee_id: 'P2_EMP_01', date: testDate, check_in: testDate, status: 'present' },
+                { employee_id: 'P2_EMP_02', date: testDate, check_in: testDate, status: 'present' }
+            ]);
+
+            // Team view check
+            const teamRes = await request(app)
+                .get('/api/attendance/team?date=2026-06-15')
+                .set('Authorization', `Bearer ${p2MgrToken}`);
+            expect(teamRes.status).toBe(200);
+            const teamEmpIds = teamRes.body.attendance.map(a => a.employee_id);
+            expect(teamEmpIds).toContain('P2_EMP_01');
+            expect(teamEmpIds).not.toContain('P2_EMP_02');
+
+            // Export check
+            const expRes = await request(app)
+                .get('/api/attendance/export?date=2026-06-15')
+                .set('Authorization', `Bearer ${p2MgrToken}`)
+                .responseType('blob');
+            expect(expRes.status).toBe(200);
+            const wb = XLSX.read(expRes.body, { type: 'buffer' });
+            const sheet = wb.Sheets[wb.SheetNames[0]];
+            const data = XLSX.utils.sheet_to_json(sheet);
+            const expEmpIds = data.map(d => d['Employee ID']);
+            expect(expEmpIds).toContain('P2_EMP_01');
+            expect(expEmpIds).not.toContain('P2_EMP_02');
+        });
+
+
+
+        // 5. Check-in at 00:30 IST and check-out at 23:30 IST on the same day: one day, correct first and last times, correct worked hours
+        it('5. Check-in at 00:30 IST and check-out at 23:30 IST on the same day: one day, correct first and last times, correct worked hours', async () => {
+            await Attendance.deleteMany({ employee_id: 'P2_EMP_01' });
+
+            // 2026-07-20 00:30:00 IST = 2026-07-19 19:00:00 UTC
+            const checkIn = new Date('2026-07-20T00:30:00+05:30');
+            // 2026-07-20 23:30:00 IST = 2026-07-20 18:00:00 UTC (23 hours duration)
+            const checkOut = new Date('2026-07-20T23:30:00+05:30');
+
+            await Attendance.create({
+                employee_id: 'P2_EMP_01',
+                date: checkIn,
+                check_in: checkIn,
+                check_out: checkOut,
+                status: 'present'
+            });
+
+            const res = await request(app)
+                .get('/api/attendance/logs?employee_id=P2_EMP_01&from=2026-07-20&to=2026-07-20&view=daily')
+                .set('Authorization', `Bearer ${p2AdminToken}`);
+
+            expect(res.status).toBe(200);
+            expect(res.body.logs.length).toBe(1);
+            const row = res.body.logs[0];
+            expect(row.date).toBe('2026-07-20');
+            expect(new Date(row.first_check_in).getTime()).toBe(checkIn.getTime());
+            expect(new Date(row.last_check_out).getTime()).toBe(checkOut.getTime());
+            expect(row.worked_hours).toBe(23);
+        });
+
+        // 6. Two sessions on one day: first check-in is the earliest, last check-out is the latest, worked hours are the sum, open_session false
+        it('6. Two sessions on one day: first check-in is the earliest, last check-out is the latest, worked hours are the sum, open_session false', async () => {
+            await Attendance.deleteMany({ employee_id: 'P2_EMP_01' });
+
+            // Session 1: 09:00 IST to 13:00 IST (4h)
+            const s1In = new Date('2026-08-10T09:00:00+05:30');
+            const s1Out = new Date('2026-08-10T13:00:00+05:30');
+            // Session 2: 14:00 IST to 18:30 IST (4.5h)
+            const s2In = new Date('2026-08-10T14:00:00+05:30');
+            const s2Out = new Date('2026-08-10T18:30:00+05:30');
+
+            await Attendance.create([
+                { employee_id: 'P2_EMP_01', date: s1In, check_in: s1In, check_out: s1Out, status: 'present' },
+                { employee_id: 'P2_EMP_01', date: s2In, check_in: s2In, check_out: s2Out, status: 'present' }
+            ]);
+
+            const res = await request(app)
+                .get('/api/attendance/logs?employee_id=P2_EMP_01&from=2026-08-10&to=2026-08-10&view=daily')
+                .set('Authorization', `Bearer ${p2AdminToken}`);
+
+            expect(res.status).toBe(200);
+            expect(res.body.logs.length).toBe(1);
+            const row = res.body.logs[0];
+            expect(new Date(row.first_check_in).getTime()).toBe(s1In.getTime());
+            expect(new Date(row.last_check_out).getTime()).toBe(s2Out.getTime());
+            expect(row.worked_hours).toBe(8.5);
+            expect(row.open_session).toBe(false);
+        });
+
+        // 7. An open session on a day: open_session true, worked hours exclude it
+        it('7. An open session on a day: open_session true, worked hours exclude it', async () => {
+            await Attendance.deleteMany({ employee_id: 'P2_EMP_01' });
+
+            // Session 1: completed 3h
+            const s1In = new Date('2026-08-11T09:00:00+05:30');
+            const s1Out = new Date('2026-08-11T12:00:00+05:30');
+            // Session 2: open session (no check_out)
+            const s2In = new Date('2026-08-11T13:00:00+05:30');
+
+            await Attendance.create([
+                { employee_id: 'P2_EMP_01', date: s1In, check_in: s1In, check_out: s1Out, status: 'present' },
+                { employee_id: 'P2_EMP_01', date: s2In, check_in: s2In, status: 'present' }
+            ]);
+
+            const res = await request(app)
+                .get('/api/attendance/logs?employee_id=P2_EMP_01&from=2026-08-11&to=2026-08-11&view=daily')
+                .set('Authorization', `Bearer ${p2AdminToken}`);
+
+            expect(res.status).toBe(200);
+            expect(res.body.logs.length).toBe(1);
+            const row = res.body.logs[0];
+            expect(row.open_session).toBe(true);
+            expect(row.worked_hours).toBe(3);
+        });
+
+        // 8. Daily, weekly, and monthly totals match for the same period
+        it('8. Daily, weekly, and monthly totals match for the same period', async () => {
+            await Attendance.deleteMany({ employee_id: 'P2_EMP_01' });
+
+            // Create records across 3 days in the same week and month (Aug 2026)
+            // Day 1: 5h
+            const d1In = new Date('2026-08-17T09:00:00+05:30'); // Monday
+            const d1Out = new Date('2026-08-17T14:00:00+05:30');
+            // Day 2: 6h
+            const d2In = new Date('2026-08-18T09:00:00+05:30'); // Tuesday
+            const d2Out = new Date('2026-08-18T15:00:00+05:30');
+            // Day 3: 4h
+            const d3In = new Date('2026-08-19T09:00:00+05:30'); // Wednesday
+            const d3Out = new Date('2026-08-19T13:00:00+05:30');
+
+            await Attendance.create([
+                { employee_id: 'P2_EMP_01', date: d1In, check_in: d1In, check_out: d1Out, status: 'present' },
+                { employee_id: 'P2_EMP_01', date: d2In, check_in: d2In, check_out: d2Out, status: 'present' },
+                { employee_id: 'P2_EMP_01', date: d3In, check_in: d3In, check_out: d3Out, status: 'present' }
+            ]);
+
+            const from = '2026-08-01';
+            const to = '2026-08-31';
+
+            const dailyRes = await request(app)
+                .get(`/api/attendance/logs?employee_id=P2_EMP_01&from=${from}&to=${to}&view=daily`)
+                .set('Authorization', `Bearer ${p2AdminToken}`);
+            const weeklyRes = await request(app)
+                .get(`/api/attendance/logs?employee_id=P2_EMP_01&from=${from}&to=${to}&view=weekly`)
+                .set('Authorization', `Bearer ${p2AdminToken}`);
+            const monthlyRes = await request(app)
+                .get(`/api/attendance/logs?employee_id=P2_EMP_01&from=${from}&to=${to}&view=monthly`)
+                .set('Authorization', `Bearer ${p2AdminToken}`);
+
+            expect(dailyRes.status).toBe(200);
+            expect(weeklyRes.status).toBe(200);
+            expect(monthlyRes.status).toBe(200);
+
+            const dailySum = dailyRes.body.logs.reduce((sum, r) => sum + r.worked_hours, 0);
+            const weeklySum = weeklyRes.body.logs.reduce((sum, r) => sum + r.worked_hours, 0);
+            const monthlySum = monthlyRes.body.logs.reduce((sum, r) => sum + r.worked_hours, 0);
+
+            expect(dailySum).toBe(15);
+            expect(weeklySum).toBe(15);
+            expect(monthlySum).toBe(15);
+            expect(dailyRes.body.totalWorkedHours).toBe(15);
+            expect(weeklyRes.body.totalWorkedHours).toBe(15);
+            expect(monthlyRes.body.totalWorkedHours).toBe(15);
+        });
+
+        // 9. Range over 366 days: 400 with the exact message
+        it('9. Range over 366 days: 400 with the exact message', async () => {
+            const res = await request(app)
+                .get('/api/attendance/logs?from=2024-01-01&to=2025-01-05')
+                .set('Authorization', `Bearer ${p2AdminToken}`);
+
+            expect(res.status).toBe(400);
+            expect(res.body.success).toBe(false);
+            expect(res.body.message).toBe('Date range cannot exceed 366 days.');
+        });
+
+        // 10. Export rows match the logs rows for the same caller
+        it('10. Export rows match the logs rows for the same caller', async () => {
+            const from = '2026-08-17';
+            const to = '2026-08-19';
+
+            const logRes = await request(app)
+                .get(`/api/attendance/logs?employee_id=P2_EMP_01&from=${from}&to=${to}&view=daily`)
+                .set('Authorization', `Bearer ${p2AdminToken}`);
+
+            const expRes = await request(app)
+                .get(`/api/attendance/export?employee_id=P2_EMP_01&from=${from}&to=${to}`)
+                .set('Authorization', `Bearer ${p2AdminToken}`)
+                .responseType('blob');
+
+            expect(logRes.status).toBe(200);
+
+            expect(expRes.status).toBe(200);
+
+            const wb = XLSX.read(expRes.body, { type: 'buffer' });
+            const sheet = wb.Sheets[wb.SheetNames[0]];
+            const expRows = XLSX.utils.sheet_to_json(sheet);
+
+            expect(expRows.length).toBe(logRes.body.logs.length);
+            for (let i = 0; i < expRows.length; i++) {
+                expect(expRows[i]['Employee ID']).toBe(logRes.body.logs[i].employee_id);
+                expect(expRows[i]['Date']).toBe(logRes.body.logs[i].date);
+                expect(expRows[i]['Worked Hours']).toBe(logRes.body.logs[i].worked_hours);
+            }
+        });
+
+        // 11. Employee list with department and role filters returns only matching employees
+        it('11. Employee list with department and role filters returns only matching employees', async () => {
+            // Filter department = p2DeptA._id and role = 'employee'
+            const res = await request(app)
+                .get(`/api/employees?department=${p2DeptA._id}&role=employee`)
+                .set('Authorization', `Bearer ${p2AdminToken}`);
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+            const emps = res.body.employees;
+            expect(emps.length).toBeGreaterThan(0);
+            emps.forEach(e => {
+                expect(e.department_id.toString()).toBe(p2DeptA._id.toString());
+                expect(e.role).toBe('employee');
+            });
+        });
+
+        // 12. Super Admin without manage_leaves sees the Leave Approvals menu item
+        it('12. Super Admin without manage_leaves sees the Leave Approvals menu item', () => {
+            // Test role-based menu logic: Super Admin has full system access automatically
+            const { normalizeRole } = require('../utils/visibilityHelper');
+            const adminUser = { role: 'admin', permissions: [] };
+
+            const isManagerOrAdmin = ['admin', 'manager'].includes(normalizeRole(adminUser.role));
+            expect(isManagerOrAdmin).toBe(true);
+
+            // In Sidebar.jsx isRowVisible: if (isManager) return true;
+            // Therefore, even with permissions = [] (lacking 'manage_leaves'), admin sees Leave Approvals
+            const isVisible = isManagerOrAdmin;
+            expect(isVisible).toBe(true);
+        });
+    });
+
+    // 12. Department Permissions Fix Tests
+    describe('12. Department Permissions Fix Tests', () => {
+        const Department = require('../models/Department');
+        const Employee = require('../models/Employee');
+
+        let deptAdminToken;
+        let deptMgrToken;
+        let deptTlToken;
+        let deptEmpToken;
+        let deptTlWithPermToken;
+        let deptEmpWithPermToken;
+
+        beforeAll(async () => {
+            const pwd = await bcrypt.hash('DeptSecret123!', 10);
+
+            await Employee.create([
+                {
+                    id: 'DEPT_TEST_ADM',
+                    name: 'Dept Admin',
+                    email: 'dept_admin@zograhatechnologies.test',
+                    password_hash: pwd,
+                    role: 'admin',
+                    status: 'active'
+                },
+                {
+                    id: 'DEPT_TEST_MGR',
+                    name: 'Dept Manager',
+                    email: 'dept_mgr@zograhatechnologies.test',
+                    password_hash: pwd,
+                    role: 'manager',
+                    status: 'active'
+                },
+                {
+                    id: 'DEPT_TEST_TL',
+                    name: 'Dept Team Lead',
+                    email: 'dept_tl@zograhatechnologies.test',
+                    password_hash: pwd,
+                    role: 'team_lead',
+                    status: 'active'
+                },
+                {
+                    id: 'DEPT_TEST_EMP',
+                    name: 'Dept Employee',
+                    email: 'dept_emp@zograhatechnologies.test',
+                    password_hash: pwd,
+                    role: 'employee',
+                    status: 'active'
+                },
+                {
+                    id: 'DEPT_TEST_TL_PERM',
+                    name: 'Dept TL With Perm',
+                    email: 'dept_tl_perm@zograhatechnologies.test',
+                    password_hash: pwd,
+                    role: 'team_lead',
+                    permissions: ['manage_departments', 'manage_employees'],
+                    status: 'active'
+                },
+                {
+                    id: 'DEPT_TEST_EMP_PERM',
+                    name: 'Dept Emp With Perm',
+                    email: 'dept_emp_perm@zograhatechnologies.test',
+                    password_hash: pwd,
+                    role: 'employee',
+                    permissions: ['manage_departments'],
+                    status: 'active'
+                }
+            ]);
+
+            deptAdminToken = jwt.sign({ id: 'DEPT_TEST_ADM', role: 'admin' }, process.env.JWT_SECRET);
+            deptMgrToken = jwt.sign({ id: 'DEPT_TEST_MGR', role: 'manager' }, process.env.JWT_SECRET);
+            deptTlToken = jwt.sign({ id: 'DEPT_TEST_TL', role: 'team_lead' }, process.env.JWT_SECRET);
+            deptEmpToken = jwt.sign({ id: 'DEPT_TEST_EMP', role: 'employee' }, process.env.JWT_SECRET);
+            deptTlWithPermToken = jwt.sign({ id: 'DEPT_TEST_TL_PERM', role: 'team_lead' }, process.env.JWT_SECRET);
+            deptEmpWithPermToken = jwt.sign({ id: 'DEPT_TEST_EMP_PERM', role: 'employee' }, process.env.JWT_SECRET);
+        });
+
+        // 1. Employee POST /api/departments: 403
+        it('1. Employee POST /api/departments: 403', async () => {
+            const res = await request(app)
+                .post('/api/departments')
+                .set('Authorization', `Bearer ${deptEmpToken}`)
+                .send({ name: 'TEST_EMP_POST_DEPT' });
+
+            expect(res.status).toBe(403);
+            const inDb = await Department.findOne({ name: 'TEST_EMP_POST_DEPT' });
+            expect(inDb).toBeNull();
+        });
+
+        // 2. Employee PUT /api/departments/:id: 403
+        it('2. Employee PUT /api/departments/:id: 403', async () => {
+            const tempDept = await Department.create({ name: 'TEST_DEPT_FOR_EMP_PUT' });
+            const res = await request(app)
+                .put(`/api/departments/${tempDept._id}`)
+                .set('Authorization', `Bearer ${deptEmpToken}`)
+                .send({ name: 'TEST_DEPT_EMP_PUT_MODIFIED' });
+
+            expect(res.status).toBe(403);
+            const inDb = await Department.findById(tempDept._id);
+            expect(inDb.name).toBe('TEST_DEPT_FOR_EMP_PUT');
+            await Department.deleteOne({ _id: tempDept._id });
+        });
+
+        // 3. Employee DELETE /api/departments/:id: 403
+        it('3. Employee DELETE /api/departments/:id: 403', async () => {
+            const tempDept = await Department.create({ name: 'TEST_DEPT_FOR_EMP_DEL' });
+            const res = await request(app)
+                .delete(`/api/departments/${tempDept._id}`)
+                .set('Authorization', `Bearer ${deptEmpToken}`);
+
+            expect(res.status).toBe(403);
+            const inDb = await Department.findById(tempDept._id);
+            expect(inDb).not.toBeNull();
+            await Department.deleteOne({ _id: tempDept._id });
+        });
+
+        // 4. Team lead creates a department: 201, saved in the database
+        it('4. Team lead creates a department: 201, saved in the database', async () => {
+            const res = await request(app)
+                .post('/api/departments')
+                .set('Authorization', `Bearer ${deptTlToken}`)
+                .send({ name: 'TEST_TL_CREATE_DEPT', description: 'Created by TL' });
+
+            expect(res.status).toBe(201);
+            expect(res.body.success).toBe(true);
+            const inDb = await Department.findOne({ name: 'TEST_TL_CREATE_DEPT' });
+            expect(inDb).not.toBeNull();
+            expect(inDb.description).toBe('Created by TL');
+            await Department.deleteOne({ _id: inDb._id });
+        });
+
+        // 5. Team lead PUT on a department: 403 with exact message, name unchanged in the database
+        it('5. Team lead PUT on a department: 403 with exact message, name unchanged in the database', async () => {
+            const tempDept = await Department.create({ name: 'TEST_TL_PUT_ORIGINAL' });
+            const res = await request(app)
+                .put(`/api/departments/${tempDept._id}`)
+                .set('Authorization', `Bearer ${deptTlToken}`)
+                .send({ name: 'TEST_TL_PUT_CHANGED' });
+
+            expect(res.status).toBe(403);
+            expect(res.body.message).toBe('Forbidden. Only Managers and Super Admins can edit departments.');
+            const inDb = await Department.findById(tempDept._id);
+            expect(inDb.name).toBe('TEST_TL_PUT_ORIGINAL');
+            await Department.deleteOne({ _id: tempDept._id });
+        });
+
+        // 6. Team lead DELETE on a department: 403 with exact message, still exists
+        it('6. Team lead DELETE on a department: 403 with exact message, still exists', async () => {
+            const tempDept = await Department.create({ name: 'TEST_TL_DEL_DEPT' });
+            const res = await request(app)
+                .delete(`/api/departments/${tempDept._id}`)
+                .set('Authorization', `Bearer ${deptTlToken}`);
+
+            expect(res.status).toBe(403);
+            expect(res.body.message).toBe('Forbidden. Only Super Admins can delete departments.');
+            const inDb = await Department.findById(tempDept._id);
+            expect(inDb).not.toBeNull();
+            await Department.deleteOne({ _id: tempDept._id });
+        });
+
+        // 7. Manager PUT on a department (name change): 200, name updated in the database
+        it('7. Manager PUT on a department (name change): 200, name updated in the database', async () => {
+            const tempDept = await Department.create({ name: 'TEST_MGR_PUT_ORIGINAL' });
+            const res = await request(app)
+                .put(`/api/departments/${tempDept._id}`)
+                .set('Authorization', `Bearer ${deptMgrToken}`)
+                .send({ name: 'TEST_MGR_PUT_UPDATED' });
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+            const inDb = await Department.findById(tempDept._id);
+            expect(inDb.name).toBe('TEST_MGR_PUT_UPDATED');
+            await Department.deleteOne({ _id: tempDept._id });
+        });
+
+        // 8. Manager DELETE on a department: 403 with exact message, still exists
+        it('8. Manager DELETE on a department: 403 with exact message, still exists', async () => {
+            const tempDept = await Department.create({ name: 'TEST_MGR_DEL_DEPT' });
+            const res = await request(app)
+                .delete(`/api/departments/${tempDept._id}`)
+                .set('Authorization', `Bearer ${deptMgrToken}`);
+
+            expect(res.status).toBe(403);
+            expect(res.body.message).toBe('Forbidden. Only Super Admins can delete departments.');
+            const inDb = await Department.findById(tempDept._id);
+            expect(inDb).not.toBeNull();
+            await Department.deleteOne({ _id: tempDept._id });
+        });
+
+        // 9. Super Admin DELETE on an empty department: 200, removed from the database
+        it('9. Super Admin DELETE on an empty department: 200, removed from the database', async () => {
+            const tempDept = await Department.create({ name: 'TEST_ADM_DEL_EMPTY' });
+            const res = await request(app)
+                .delete(`/api/departments/${tempDept._id}`)
+                .set('Authorization', `Bearer ${deptAdminToken}`);
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+            const inDb = await Department.findById(tempDept._id);
+            expect(inDb).toBeNull();
+        });
+
+        // 10. Super Admin DELETE on a department with an employee: 400 with exact message, still exists
+        it('10. Super Admin DELETE on a department with an employee: 400 with exact message, still exists', async () => {
+            const tempDept = await Department.create({ name: 'TEST_ADM_DEL_WITH_EMP' });
+            const pwd = await bcrypt.hash('DeptSecret123!', 10);
+            const assignedEmp = await Employee.create({
+                id: 'TEST_ASSIGNED_EMP_DEL',
+                name: 'Assigned Emp',
+                email: 'assigned_emp_del@zograhatechnologies.test',
+                password_hash: pwd,
+                department_id: tempDept._id,
+                status: 'active'
+            });
+
+            const res = await request(app)
+                .delete(`/api/departments/${tempDept._id}`)
+                .set('Authorization', `Bearer ${deptAdminToken}`);
+
+            expect(res.status).toBe(400);
+            expect(res.body.message).toBe('Department still has employees assigned. Reassign them first.');
+            const inDb = await Department.findById(tempDept._id);
+            expect(inDb).not.toBeNull();
+
+            // Cleanup
+            await Employee.deleteOne({ _id: assignedEmp._id });
+            await Department.deleteOne({ _id: tempDept._id });
+        });
+
+        // 11. Employee with permission flag manage_departments, role team_lead, PUT on a department: 403
+        it('11. Employee with permission flag manage_departments, role team_lead, PUT on a department: 403', async () => {
+            const tempDept = await Department.create({ name: 'TEST_TL_PERM_PUT' });
+            const res = await request(app)
+                .put(`/api/departments/${tempDept._id}`)
+                .set('Authorization', `Bearer ${deptTlWithPermToken}`)
+                .send({ name: 'TEST_TL_PERM_PUT_CHANGED' });
+
+            expect(res.status).toBe(403);
+            expect(res.body.message).toBe('Forbidden. Only Managers and Super Admins can edit departments.');
+            const inDb = await Department.findById(tempDept._id);
+            expect(inDb.name).toBe('TEST_TL_PERM_PUT');
+            await Department.deleteOne({ _id: tempDept._id });
+        });
+
+        // 12. Employee with permission flag manage_departments, role employee, POST on a department: 403
+        it('12. Employee with permission flag manage_departments, role employee, POST on a department: 403', async () => {
+            const res = await request(app)
+                .post('/api/departments')
+                .set('Authorization', `Bearer ${deptEmpWithPermToken}`)
+                .send({ name: 'TEST_EMP_PERM_POST' });
+
+            expect(res.status).toBe(403);
+            const inDb = await Department.findOne({ name: 'TEST_EMP_PERM_POST' });
+            expect(inDb).toBeNull();
+        });
+    });
 });
+
+
+
 

@@ -40,10 +40,74 @@ export default function AttendanceReport() {
     const [markingHoliday, setMarkingHoliday] = useState(false);
     const [showHolidayModal, setShowHolidayModal] = useState(false);
 
+    // Logs Tab state
+    const [activeTab, setActiveTab] = useState('daily'); // 'daily' (team view) or 'logs'
+    const [logEmployeeId, setLogEmployeeId] = useState('');
+    const [logFrom, setLogFrom] = useState(today.toISOString().split('T')[0]);
+    const [logTo, setLogTo] = useState(today.toISOString().split('T')[0]);
+    const [logView, setLogView] = useState('daily');
+    const [logData, setLogData] = useState(null);
+    const [logsLoading, setLogsLoading] = useState(false);
+
     useEffect(() => {
         setLoading(true);
         API.get(`/attendance/team?date=${date}`).then(r => { setData(r.data); setLoading(false); }).catch(() => setLoading(false));
     }, [date]);
+
+    const fetchLogs = async () => {
+        setLogsLoading(true);
+        try {
+            const params = new URLSearchParams({
+                from: logFrom,
+                to: logTo,
+                view: logView
+            });
+            if (logEmployeeId) params.append('employee_id', logEmployeeId);
+            const res = await API.get(`/attendance/logs?${params}`);
+            setLogData(res.data);
+        } catch (err) {
+            showToast(err.response?.data?.message || 'Failed to fetch logs.', 'error');
+        } finally {
+            setLogsLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        if (activeTab === 'logs') {
+            fetchLogs();
+        }
+    }, [activeTab, logFrom, logTo, logView]);
+
+    const handleClearLogFilters = () => {
+        const todayStr = today.toISOString().split('T')[0];
+        setLogEmployeeId('');
+        setLogFrom(todayStr);
+        setLogTo(todayStr);
+        setLogView('daily');
+    };
+
+    const handleExportLogs = async () => {
+        setExporting(true);
+        try {
+            const params = new URLSearchParams({
+                from: logFrom,
+                to: logTo,
+            });
+            if (logEmployeeId) params.append('employee_id', logEmployeeId);
+            const res = await API.get(`/attendance/export?${params}`, { responseType: 'blob' });
+            const url = window.URL.createObjectURL(new Blob([res.data]));
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `attendance_logs_${logFrom}_to_${logTo}.xlsx`;
+            a.click();
+            window.URL.revokeObjectURL(url);
+            showToast('Attendance report exported successfully.');
+        } catch {
+            showToast('No records found or export failed.', 'error');
+        } finally {
+            setExporting(false);
+        }
+    };
 
     const handleExportDaily = async () => {
         setExporting(true);
@@ -68,6 +132,7 @@ export default function AttendanceReport() {
         } catch { showToast('No records found for this month or export failed.', 'error'); }
         finally { setExporting(false); setShowExportMenu(false); }
     };
+
 
     const handleEdit = (rec) => {
         setEditingRecord(rec);
@@ -200,65 +265,174 @@ export default function AttendanceReport() {
             {/* Close export menu on outside click */}
             {showExportMenu && <div style={{ position: 'fixed', inset: 0, zIndex: 99 }} onClick={() => setShowExportMenu(false)} />}
 
-            {s && (
-                <div className="grid-4" style={{ marginBottom: 24 }}>
-                    {[
-                        { label: 'Total', value: s.total, color: '#6366f1', icon: <FiUsers /> },
-                        { label: 'Present', value: s.present, color: '#10b981', icon: <FiCheckCircle /> },
-                        { label: 'Absent', value: s.absent, color: '#ef4444', icon: <FiXCircle /> },
-                        { label: 'Late', value: s.late, color: '#f59e0b', icon: <FiClock /> },
-                    ].map(st => (
-                        <div key={st.label} className="card text-center">
-                            <div style={{ fontSize: '2rem', fontWeight: 900, color: st.color }}>{st.value}</div>
-                            <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
-                                {st.icon} {st.label}
+            {/* Tab navigation */}
+            <div style={{ display: 'flex', gap: 12, marginBottom: 20, borderBottom: '1px solid var(--border-color)', paddingBottom: 10 }}>
+                <button
+                    className={`btn btn-sm ${activeTab === 'daily' ? 'btn-primary' : 'btn-outline'}`}
+                    onClick={() => setActiveTab('daily')}
+                >
+                    Daily Team View
+                </button>
+                <button
+                    className={`btn btn-sm ${activeTab === 'logs' ? 'btn-primary' : 'btn-outline'}`}
+                    onClick={() => setActiveTab('logs')}
+                >
+                    Attendance Logs & Range
+                </button>
+            </div>
+
+            {activeTab === 'daily' ? (
+                <>
+                    {s && (
+                        <div className="grid-4" style={{ marginBottom: 24 }}>
+                            {[
+                                { label: 'Total', value: s.total, color: '#6366f1', icon: <FiUsers /> },
+                                { label: 'Present', value: s.present, color: '#10b981', icon: <FiCheckCircle /> },
+                                { label: 'Absent', value: s.absent, color: '#ef4444', icon: <FiXCircle /> },
+                                { label: 'Late', value: s.late, color: '#f59e0b', icon: <FiClock /> },
+                            ].map(st => (
+                                <div key={st.label} className="card text-center">
+                                    <div style={{ fontSize: '2rem', fontWeight: 900, color: st.color }}>{st.value}</div>
+                                    <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                                        {st.icon} {st.label}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
+                    {loading ? <div className="page-loader"><div className="loading-spinner" /></div> : (
+                        <div className="card" style={{ padding: 0 }}>
+                            <table className="data-table">
+                                <thead><tr><th>Employee</th><th>Department</th><th>Designation</th><th>Status</th><th>Check In</th><th>Check Out</th><th>Hours</th>{(canManage || canApproveLeaves) && <th>Actions</th>}</tr></thead>
+                                <tbody>
+                                    {data?.attendance?.length === 0 && (
+                                        <tr><td colSpan={(canManage || canApproveLeaves) ? 8 : 7} style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>No attendance records for this date.</td></tr>
+                                    )}
+                                    {data?.attendance?.map((a) => (
+                                        <tr key={a.employee_id}>
+                                            <td style={{ fontWeight: 600 }}>{a.name}</td>
+                                            <td>{a.department || '—'}</td>
+                                            <td>{a.designation || '—'}</td>
+                                            <td><span className={`badge badge-${a.status === 'present' ? 'success' : a.status === 'late' ? 'warning' : 'danger'}`}>{a.status}</span></td>
+                                            <td>{a.check_in || '—'}</td>
+                                            <td>{a.check_out || '—'}</td>
+                                            <td>{a.work_hours != null ? `${a.work_hours}h` : '—'}</td>
+                                            {(canManage || canApproveLeaves) && (
+                                                <td>
+                                                    <div style={{ display: 'flex', gap: 4 }}>
+                                                        {canManage && (
+                                                            <button className="btn btn-icon btn-sm" title="Edit Attendance" onClick={() => handleEdit(a)}>
+                                                                <FiEdit2 size={14} />
+                                                            </button>
+                                                        )}
+                                                        <button
+                                                            className="btn btn-icon btn-sm text-success"
+                                                            title="Manage Leaves"
+                                                            onClick={() => navigate('/dashboard/leave-approvals')}
+                                                        >
+                                                            <FiCheckCircle size={14} />
+                                                        </button>
+                                                    </div>
+                                                </td>
+                                            )}
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+                </>
+            ) : (
+                /* Attendance Logs Tab */
+                <div>
+                    {/* Log Controls */}
+                    <div className="card" style={{ marginBottom: 20 }}>
+                        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+                            <div style={{ minWidth: 150 }}>
+                                <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>Employee ID</label>
+                                <input
+                                    type="text"
+                                    className="form-input"
+                                    placeholder="e.g. EMP1001"
+                                    value={logEmployeeId}
+                                    onChange={e => setLogEmployeeId(e.target.value)}
+                                />
+                            </div>
+                            <div>
+                                <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>From</label>
+                                <DateInput className="form-input" value={logFrom} onChange={e => setLogFrom(e.target.value)} />
+                            </div>
+                            <div>
+                                <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>To</label>
+                                <DateInput className="form-input" value={logTo} onChange={e => setLogTo(e.target.value)} />
+                            </div>
+                            <div>
+                                <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>View</label>
+                                <select className="form-select" value={logView} onChange={e => setLogView(e.target.value)} style={{ width: 120 }}>
+                                    <option value="daily">Daily</option>
+                                    <option value="weekly">Weekly</option>
+                                    <option value="monthly">Monthly</option>
+                                </select>
+                            </div>
+                            <div style={{ display: 'flex', gap: 8, marginTop: 18 }}>
+                                <button className="btn btn-primary btn-sm" onClick={fetchLogs}>Apply</button>
+                                <button className="btn btn-outline btn-sm" onClick={handleClearLogFilters}>Clear</button>
+                                <button
+                                    className="btn btn-success btn-sm"
+                                    onClick={handleExportLogs}
+                                    disabled={exporting}
+                                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                                >
+                                    <FiDownload size={14} /> {exporting ? 'Exporting...' : 'Export XLSX'}
+                                </button>
                             </div>
                         </div>
-                    ))}
+                    </div>
+
+                    {logsLoading ? (
+                        <div className="page-loader"><div className="loading-spinner" /></div>
+                    ) : (
+                        <div className="card" style={{ padding: 0 }}>
+                            <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <span style={{ fontWeight: 600 }}>Showing {logData?.totalRows || 0} records ({logView} view)</span>
+                                <span style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>Total Worked Hours: <strong>{logData?.totalWorkedHours || 0} hrs</strong></span>
+                            </div>
+                            <table className="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Employee ID</th>
+                                        <th>Employee Name</th>
+                                        <th>{logView === 'daily' ? 'Date' : logView === 'weekly' ? 'Week' : 'Month'}</th>
+                                        <th>First Check In</th>
+                                        <th>Last Check Out</th>
+                                        <th>Worked Hours</th>
+                                        <th>Open Session</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {(!logData?.logs || logData.logs.length === 0) ? (
+                                        <tr><td colSpan={7} style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>No attendance logs found for this range.</td></tr>
+                                    ) : (
+                                        logData.logs.map((row, idx) => (
+                                            <tr key={`${row.employee_id}_${row.date || row.week || row.month}_${idx}`}>
+                                                <td style={{ fontWeight: 600 }}>{row.employee_id}</td>
+                                                <td>{row.name}</td>
+                                                <td>{row.date || row.week || row.month}</td>
+                                                <td>{row.first_check_in ? new Date(row.first_check_in).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
+                                                <td>{row.last_check_out ? new Date(row.last_check_out).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
+                                                <td>{row.worked_hours != null ? `${row.worked_hours}h` : '0h'}</td>
+                                                <td>{row.open_session ? <span className="badge badge-warning">Yes</span> : <span className="badge badge-success">No</span>}</td>
+                                            </tr>
+                                        ))
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
                 </div>
             )}
 
-            {loading ? <div className="page-loader"><div className="loading-spinner" /></div> : (
-                <div className="card" style={{ padding: 0 }}>
-                    <table className="data-table">
-                        <thead><tr><th>Employee</th><th>Department</th><th>Designation</th><th>Status</th><th>Check In</th><th>Check Out</th><th>Hours</th>{(canManage || canApproveLeaves) && <th>Actions</th>}</tr></thead>
-                        <tbody>
-                            {data?.attendance?.length === 0 && (
-                                <tr><td colSpan={(canManage || canApproveLeaves) ? 8 : 7} style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>No attendance records for this date.</td></tr>
-                            )}
-                            {data?.attendance?.map((a) => (
-                                <tr key={a.employee_id}>
-                                    <td style={{ fontWeight: 600 }}>{a.name}</td>
-                                    <td>{a.department || '—'}</td>
-                                    <td>{a.designation || '—'}</td>
-                                    <td><span className={`badge badge-${a.status === 'present' ? 'success' : a.status === 'late' ? 'warning' : 'danger'}`}>{a.status}</span></td>
-                                    <td>{a.check_in || '—'}</td>
-                                    <td>{a.check_out || '—'}</td>
-                                    <td>{a.work_hours != null ? `${a.work_hours}h` : '—'}</td>
-                                    {(canManage || canApproveLeaves) && (
-                                        <td>
-                                            <div style={{ display: 'flex', gap: 4 }}>
-                                                {canManage && (
-                                                    <button className="btn btn-icon btn-sm" title="Edit Attendance" onClick={() => handleEdit(a)}>
-                                                        <FiEdit2 size={14} />
-                                                    </button>
-                                                )}
-                                                <button
-                                                    className="btn btn-icon btn-sm text-success"
-                                                    title="Manage Leaves"
-                                                    onClick={() => navigate('/dashboard/leave-approvals')}
-                                                >
-                                                    <FiCheckCircle size={14} />
-                                                </button>
-                                            </div>
-                                        </td>
-                                    )}
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
-            )}
 
             {editingRecord && (
                 <div className="modal-overlay" onClick={() => setEditingRecord(null)}>
