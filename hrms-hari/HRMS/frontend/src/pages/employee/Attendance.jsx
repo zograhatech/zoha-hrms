@@ -10,6 +10,18 @@ import { formatDate } from '../../utils/dateFormatter';
 const STATUS_COLOR = { present: 'present', absent: 'absent', late: 'late', 'half-day': 'half-day', holiday: 'holiday' };
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
+function computeWorkedTime(record) {
+    if (!record?.check_in || !record?.check_out || record?.status === 'holiday' || record?.needs_review) {
+        return '—';
+    }
+    const diffMs = new Date(record.check_out) - new Date(record.check_in);
+    if (isNaN(diffMs) || diffMs < 0) return '—';
+    const totalMinutes = Math.round(diffMs / (1000 * 60));
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return `${hours}h ${String(minutes).padStart(2, '0')}m`;
+}
+
 export default function Attendance() {
     const { user } = useAuth();
     const today = new Date();
@@ -150,7 +162,7 @@ export default function Attendance() {
                                     </td>
                                     <td>{a.check_in ? new Date(a.check_in).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
                                     <td>{a.check_out ? new Date(a.check_out).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
-                                    <td>{a.work_hours !== undefined && a.work_hours !== null ? `${a.work_hours}h` : '—'}</td>
+                                    <td>{computeWorkedTime(a)}</td>
                                     <td>{a.is_open_session ? <span className="badge badge-warning">Yes</span> : '—'}</td>
                                 </tr>
                             ))}
