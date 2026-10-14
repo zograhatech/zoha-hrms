@@ -164,6 +164,7 @@ const updateSettings = async (req, res) => {
 
         let emailVerificationFlagChanged = false;
         let twofaFlagChanged = false;
+        let pilotListChanged = false;
 
         if (updateData.require_email_verification !== undefined && Boolean(updateData.require_email_verification) !== settings.require_email_verification) {
             settings.require_email_verification = Boolean(updateData.require_email_verification);
@@ -175,8 +176,41 @@ const updateSettings = async (req, res) => {
             twofaFlagChanged = true;
         }
 
+        if (updateData.security_pilot_employee_ids !== undefined) {
+            let pilots = [];
+            if (Array.isArray(updateData.security_pilot_employee_ids)) {
+                pilots = updateData.security_pilot_employee_ids.map(id => String(id).trim()).filter(Boolean);
+            } else if (typeof updateData.security_pilot_employee_ids === 'string') {
+                pilots = updateData.security_pilot_employee_ids.split(',').map(id => id.trim()).filter(Boolean);
+            }
+            settings.security_pilot_employee_ids = pilots;
+            settings.markModified('security_pilot_employee_ids');
+            pilotListChanged = true;
+        }
+
         const savedSettings = await settings.save();
         console.log('[updateSettings] Saved roles in DB:', Object.keys(savedSettings.roles_permissions || {}));
+
+        // Log security settings changes to AuditLog
+        if (req.user && (emailVerificationFlagChanged || twofaFlagChanged || pilotListChanged)) {
+            try {
+                const AuditLog = require('../models/AuditLog');
+                await AuditLog.create({
+                    user_id: req.user._id || req.user.id,
+                    action: 'UPDATE',
+                    resource: 'SecuritySettings',
+                    new_value: {
+                        require_email_verification: savedSettings.require_email_verification,
+                        require_2fa: savedSettings.require_2fa,
+                        security_pilot_employee_ids: savedSettings.security_pilot_employee_ids
+                    },
+                    ip_address: req.ip,
+                    user_agent: req.headers['user-agent']
+                });
+            } catch (auditErr) {
+                console.error('[updateSettings] AuditLog creation failed:', auditErr.message);
+            }
+        }
 
         // Send notifications and emails if feature flags were changed
         if (emailVerificationFlagChanged || twofaFlagChanged) {

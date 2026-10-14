@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const Setting = require('../models/Setting');
 const Employee = require('../models/Employee');
+const { isSecurityFlagOn } = require('../utils/securityFlags');
 
 /**
  * Authorization Middleware
@@ -35,7 +36,7 @@ const auth = (rolesOrPermissions = []) => {
 
             // Block unverified non-admin users from non-auth routes when flag is ON
             const isAuthRoute = req.baseUrl === '/api/auth' || (req.originalUrl && req.originalUrl.startsWith('/api/auth'));
-            if (!isAuthRoute && settings?.require_email_verification && !employee.emailVerified) {
+            if (!isAuthRoute && isSecurityFlagOn(settings, 'require_email_verification', decoded.id) && !employee.emailVerified) {
                 return res.status(403).json({
                     success: false,
                     email_verification_required: true,

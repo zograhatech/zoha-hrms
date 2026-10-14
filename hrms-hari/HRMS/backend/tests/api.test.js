@@ -4620,6 +4620,35 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(knownRes.body).toEqual(unknownRes.body);
             expect(knownRes.body.message).toBe('If an account exists, a code has been sent.');
         });
+
+        // 9. With flags off and the employee in the pilot list, that employee gets the 2FA step. Other employees log in unchanged.
+        it('9. With flags off and the employee in the pilot list, that employee gets the 2FA step. Other employees log in unchanged', async () => {
+            await Setting.updateOne({}, {
+                $set: {
+                    require_email_verification: false,
+                    require_2fa: false,
+                    security_pilot_employee_ids: [sec15Emp.id]
+                }
+            });
+
+            // Pilot employee gets 2FA step
+            const pilotRes = await request(app)
+                .post('/api/auth/login')
+                .send({ email: sec15Emp.email, password: testPassword });
+
+            expect(pilotRes.status).toBe(200);
+            expect(pilotRes.body.requires2fa).toBe(true);
+            expect(pilotRes.body.token).toBeUndefined();
+
+            // Other employee logs in unchanged
+            const otherRes = await request(app)
+                .post('/api/auth/login')
+                .send({ email: sec15Admin.email, password: testPassword });
+
+            expect(otherRes.status).toBe(200);
+            expect(otherRes.body.token).toBeDefined();
+            expect(otherRes.body.requires2fa).toBeUndefined();
+        });
     });
 });
 

@@ -5,6 +5,7 @@ const jwt = require('jsonwebtoken');
 const { sendEmail } = require('../utils/emailService');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
+const { isSecurityFlagOn } = require('../utils/securityFlags');
 
 const hashSha256 = (val) => crypto.createHash('sha256').update(String(val)).digest('hex');
 
@@ -113,7 +114,8 @@ const login = async (req, res) => {
         const settings = await Setting.findOne();
 
         // Check 2FA requirement
-        if (settings?.require_2fa) {
+        const is2faActive = isSecurityFlagOn(settings, 'require_2fa', employee.id) || isSecurityFlagOn(settings, 'require_2fa', employee._id);
+        if (is2faActive) {
             const code = Math.floor(100000 + Math.random() * 900000).toString();
             employee.twofaCodeHash = hashSha256(code);
             employee.twofaCodeExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
@@ -149,7 +151,8 @@ const login = async (req, res) => {
         }
 
         const authData = await generateAuthPayload(employee, rememberMe, settings);
-        const needsEmailVerification = settings?.require_email_verification && !employee.emailVerified && employee.role !== 'admin';
+        const isEmailVerifActive = isSecurityFlagOn(settings, 'require_email_verification', employee.id) || isSecurityFlagOn(settings, 'require_email_verification', employee._id);
+        const needsEmailVerification = isEmailVerifActive && !employee.emailVerified && employee.role !== 'admin';
 
         res.json({
             success: true,
@@ -572,7 +575,8 @@ const verify2fa = async (req, res) => {
 
         const settings = await Setting.findOne();
         const authData = await generateAuthPayload(employee, rememberMe, settings);
-        const needsEmailVerification = settings?.require_email_verification && !employee.emailVerified && employee.role !== 'admin';
+        const isEmailVerifActive = isSecurityFlagOn(settings, 'require_email_verification', employee.id) || isSecurityFlagOn(settings, 'require_email_verification', employee._id);
+        const needsEmailVerification = isEmailVerifActive && !employee.emailVerified && employee.role !== 'admin';
 
         return res.json({
             success: true,

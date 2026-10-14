@@ -66,10 +66,13 @@ export default function Settings() {
             pt_slab2_limit: 15000,
             pt_slab2_amount: 150,
             pt_above_amount: 200
-        }
+        },
+        require_email_verification: false,
+        require_2fa: false,
+        security_pilot_employee_ids: []
     });
 
-
+    const [pilotIdsInput, setPilotIdsInput] = useState('');
     const [shifts, setShifts] = useState([]);
     const [showShiftModal, setShowShiftModal] = useState(false);
     const [activeTab, setActiveTab] = useState('company');
@@ -126,6 +129,9 @@ export default function Settings() {
                 // Ensure roles_permissions is always an object
                 if (!s.roles_permissions) s.roles_permissions = { hr_manager: [], hr: [], employee: [] };
                 setSettings(s);
+                if (s.security_pilot_employee_ids && Array.isArray(s.security_pilot_employee_ids)) {
+                    setPilotIdsInput(s.security_pilot_employee_ids.join(', '));
+                }
             }
             if (resShi && resShi.data.shifts) setShifts(resShi.data.shifts);
             setLoading(false);
@@ -200,7 +206,12 @@ export default function Settings() {
             });
 
             if (res.data.success) {
-                if (res.data.settings) setSettings(res.data.settings);
+                if (res.data.settings) {
+                    setSettings(res.data.settings);
+                    if (res.data.settings.security_pilot_employee_ids && Array.isArray(res.data.settings.security_pilot_employee_ids)) {
+                        setPilotIdsInput(res.data.settings.security_pilot_employee_ids.join(', '));
+                    }
+                }
                 setMsg({ text: 'Settings saved successfully!', type: 'success' });
                 if (refreshBranding) refreshBranding();
                 if (refreshUser) await refreshUser();
@@ -347,7 +358,10 @@ export default function Settings() {
                     <button className={`tab-link ${activeTab === 'users' ? 'active' : ''}`} onClick={() => setActiveTab('users')}><FiUserCheck /> User Management</button>
                 )}
                 {isSuperAdmin(user) && (
-                    <button className={`tab-link ${activeTab === 'holidays' ? 'active' : ''}`} onClick={() => setActiveTab('holidays')}><FiCalendar /> Holidays</button>
+                    <>
+                        <button className={`tab-link ${activeTab === 'holidays' ? 'active' : ''}`} onClick={() => setActiveTab('holidays')}><FiCalendar /> Holidays</button>
+                        <button className={`tab-link ${activeTab === 'security' ? 'active' : ''}`} onClick={() => setActiveTab('security')}><FiShield /> Security</button>
+                    </>
                 )}
 
             </div>
@@ -833,6 +847,99 @@ export default function Settings() {
                             </table>
                         )}
                     </div>
+                </div>
+            )}
+
+            {activeTab === 'security' && isSuperAdmin(user) && (
+                <div className="card">
+                    <div className="card-header">
+                        <h3 className="card-title"><FiShield /> Security Settings</h3>
+                        <p className="card-subtitle">Manage system-wide authentication security and pilot rollout</p>
+                    </div>
+
+                    {msg.text && (
+                        <div className={`alert alert-${msg.type}`} style={{ margin: '16px 20px 0' }}>
+                            {msg.text}
+                        </div>
+                    )}
+
+                    <form onSubmit={handleSave}>
+                        <div className="card-body">
+                            <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px', background: 'var(--bg-secondary, #f8fafc)', borderRadius: '8px', marginBottom: '16px' }}>
+                                <div>
+                                    <div style={{ fontWeight: 600, fontSize: '0.95rem', color: 'var(--text-primary)' }}>Require Email Verification</div>
+                                    <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Require employees to verify their email address before accessing features.</div>
+                                </div>
+                                <label className="switch" style={{ position: 'relative', display: 'inline-block', width: 44, height: 24 }}>
+                                    <input
+                                        type="checkbox"
+                                        checked={Boolean(settings.require_email_verification)}
+                                        onChange={e => setSettings(prev => ({ ...prev, require_email_verification: e.target.checked }))}
+                                        style={{ opacity: 0, width: 0, height: 0 }}
+                                    />
+                                    <span style={{
+                                        position: 'absolute', cursor: 'pointer', top: 0, left: 0, right: 0, bottom: 0,
+                                        backgroundColor: settings.require_email_verification ? 'var(--accent-primary, #6366f1)' : '#cbd5e1',
+                                        borderRadius: 24, transition: '.3s'
+                                    }}>
+                                        <span style={{
+                                            position: 'absolute', height: 18, width: 18, left: settings.require_email_verification ? 23 : 3, bottom: 3,
+                                            backgroundColor: '#fff', borderRadius: '50%', transition: '.3s'
+                                        }} />
+                                    </span>
+                                </label>
+                            </div>
+
+                            <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px', background: 'var(--bg-secondary, #f8fafc)', borderRadius: '8px', marginBottom: '24px' }}>
+                                <div>
+                                    <div style={{ fontWeight: 600, fontSize: '0.95rem', color: 'var(--text-primary)' }}>Require Two-Factor Authentication (2FA)</div>
+                                    <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Require 6-digit email OTP verification upon sign-in.</div>
+                                </div>
+                                <label className="switch" style={{ position: 'relative', display: 'inline-block', width: 44, height: 24 }}>
+                                    <input
+                                        type="checkbox"
+                                        checked={Boolean(settings.require_2fa)}
+                                        onChange={e => setSettings(prev => ({ ...prev, require_2fa: e.target.checked }))}
+                                        style={{ opacity: 0, width: 0, height: 0 }}
+                                    />
+                                    <span style={{
+                                        position: 'absolute', cursor: 'pointer', top: 0, left: 0, right: 0, bottom: 0,
+                                        backgroundColor: settings.require_2fa ? 'var(--accent-primary, #6366f1)' : '#cbd5e1',
+                                        borderRadius: 24, transition: '.3s'
+                                    }}>
+                                        <span style={{
+                                            position: 'absolute', height: 18, width: 18, left: settings.require_2fa ? 23 : 3, bottom: 3,
+                                            backgroundColor: '#fff', borderRadius: '50%', transition: '.3s'
+                                        }} />
+                                    </span>
+                                </label>
+                            </div>
+
+                            <div className="form-group">
+                                <label className="form-label" style={{ fontWeight: 600 }}>Security Pilot Employee IDs (Comma-Separated)</label>
+                                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: 8 }}>
+                                    Employees listed here will have 2FA and email verification enabled even if the global toggles above are turned OFF.
+                                </p>
+                                <input
+                                    type="text"
+                                    className="form-input"
+                                    placeholder="e.g. EMP001, EMP002, 6acefc95c4d6bb5fc2e45010"
+                                    value={pilotIdsInput}
+                                    onChange={e => {
+                                        setPilotIdsInput(e.target.value);
+                                        const ids = e.target.value.split(',').map(s => s.trim()).filter(Boolean);
+                                        setSettings(prev => ({ ...prev, security_pilot_employee_ids: ids }));
+                                    }}
+                                />
+                            </div>
+                        </div>
+
+                        <div className="card-footer" style={{ display: 'flex', justifyContent: 'flex-end', padding: '16px 20px' }}>
+                            <button type="submit" className="btn btn-primary" disabled={saving} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <FiSave /> {saving ? 'Saving...' : 'Save Security Settings'}
+                            </button>
+                        </div>
+                    </form>
                 </div>
             )}
 
