@@ -4780,6 +4780,437 @@ describe('HRMS Backend Automated Test Suite', () => {
             // Verify plain code is not in login response
             expect(loginRes.body.code).toBeUndefined();
         });
+
+        // 13. Database connection options use 'hrms_db' by default when DB_NAME is unset, and DB_NAME overrides it
+        it('13. Database connection options use "hrms_db" by default when DB_NAME is unset, and DB_NAME overrides it', async () => {
+            const connectDB = require('../config/db');
+            const originalReadyState = mongoose.connection.readyState;
+            const originalDbName = process.env.DB_NAME;
+
+            let capturedOptions = [];
+            const connectSpy = jest.spyOn(mongoose, 'connect').mockImplementation(async (uri, options) => {
+                capturedOptions.push(options);
+                return mongoose.connection;
+            });
+
+            // Mock readyState to 0 so connectDB evaluates connection options rather than reusing open connection
+            Object.defineProperty(mongoose.connection, 'readyState', { value: 0, configurable: true, writable: true });
+
+            try {
+                // Case 1: DB_NAME unset -> defaults to 'hrms_db'
+                delete process.env.DB_NAME;
+                await connectDB();
+                expect(capturedOptions[0].dbName).toBe('hrms_db');
+
+                // Case 2: DB_NAME set -> overrides default
+                process.env.DB_NAME = 'custom_hrms_db';
+                await connectDB();
+                expect(capturedOptions[1].dbName).toBe('custom_hrms_db');
+            } finally {
+                connectSpy.mockRestore();
+                Object.defineProperty(mongoose.connection, 'readyState', { value: originalReadyState, configurable: true, writable: true });
+                if (originalDbName !== undefined) {
+                    process.env.DB_NAME = originalDbName;
+                } else {
+                    delete process.env.DB_NAME;
+                }
+            }
+        });
+
+        // 14. Guard refuses local connections when NODE_ENV is not production and DB_NAME is unset or 'hrms_db'
+        it('14. Guard refuses local connections when NODE_ENV is not production and DB_NAME is unset or "hrms_db"', async () => {
+            const connectDB = require('../config/db');
+            const originalReadyState = mongoose.connection.readyState;
+            const originalDbName = process.env.DB_NAME;
+            const originalVercel = process.env.VERCEL;
+            const originalNodeEnv = process.env.NODE_ENV;
+
+            let capturedOptions = [];
+            const connectSpy = jest.spyOn(mongoose, 'connect').mockImplementation(async (uri, options) => {
+                capturedOptions.push(options);
+                return mongoose.connection;
+            });
+            const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+            Object.defineProperty(mongoose.connection, 'readyState', { value: 0, configurable: true, writable: true });
+
+            try {
+                // Simulate local development environment (not Vercel, not production)
+                delete process.env.VERCEL;
+                process.env.NODE_ENV = 'development';
+
+                // Case 1: DB_NAME unset -> throws guard error and does not connect
+                delete process.env.DB_NAME;
+                await expect(connectDB()).rejects.toThrow('Local runs must use DB_NAME=hrms_dev.');
+                expect(connectSpy).not.toHaveBeenCalled();
+
+                // Case 2: DB_NAME is 'hrms_db' -> throws guard error and does not connect
+                process.env.DB_NAME = 'hrms_db';
+                await expect(connectDB()).rejects.toThrow('Local runs must use DB_NAME=hrms_dev.');
+                expect(connectSpy).not.toHaveBeenCalled();
+
+                // Case 3: DB_NAME is 'hrms_dev' -> succeeds and passes dbName: 'hrms_dev'
+                process.env.DB_NAME = 'hrms_dev';
+                await connectDB();
+                expect(connectSpy).toHaveBeenCalledTimes(1);
+                expect(capturedOptions[0].dbName).toBe('hrms_dev');
+            } finally {
+                connectSpy.mockRestore();
+                warnSpy.mockRestore();
+                Object.defineProperty(mongoose.connection, 'readyState', { value: originalReadyState, configurable: true, writable: true });
+                if (originalDbName !== undefined) process.env.DB_NAME = originalDbName; else delete process.env.DB_NAME;
+                if (originalVercel !== undefined) process.env.VERCEL = originalVercel; else delete process.env.VERCEL;
+                if (originalNodeEnv !== undefined) process.env.NODE_ENV = originalNodeEnv; else delete process.env.NODE_ENV;
+            }
+        });
+
+        // 15. create_client_admin.js refuses to run unless DB_NAME is exactly hrms_dev
+        it('15. create_client_admin.js refuses to run unless DB_NAME is exactly hrms_dev', () => {
+            const { execFileSync } = require('child_process');
+            const path = require('path');
+            const scriptPath = path.join(__dirname, '../database/create_client_admin.js');
+
+            try {
+                execFileSync(process.execPath, [scriptPath], {
+                    env: {
+                        ...process.env,
+                        DB_NAME: 'hrms_db',
+                        MONGO_URI: 'mongodb://127.0.0.1:27017',
+                        COMPANY_NAME: 'Test Co',
+                        ADMIN_NAME: 'Admin',
+                        ADMIN_EMAIL: 'admin@example.com',
+                        ADMIN_PASSWORD: 'Password123!'
+                    },
+                    stdio: 'pipe'
+                });
+                // Should not reach here
+                expect(true).toBe(false);
+            } catch (err) {
+                expect(err.status).toBe(1);
+                expect(err.stderr.toString()).toContain('Refusing: DB_NAME must be hrms_dev');
+            }
+        });
+    });
+
+    describe('16. Phase 3 IP Access Control Tests', () => {
+        const AccessSettings = require('../models/AccessSettings');
+        const RemoteAccess = require('../models/RemoteAccess');
+        const Employee = require('../models/Employee');
+        const { invalidateAccessSettingsCache } = require('../middleware/ipAccess');
+
+        let ipEmpToken;
+        let ipMgrToken;
+        const officeCidr = '192.168.1.0/24';
+        const allowedOfficeIp = '192.168.1.55';
+        const blockedRemoteIp = '203.0.113.195';
+
+        beforeAll(async () => {
+            const passwordHash = await bcrypt.hash('TestPass123!', 10);
+            const ipEmp = await Employee.create({
+                id: 'IP_EMP_01',
+                name: 'IP Test Employee',
+                email: 'ip_emp@zograhatechnologies.test',
+                password_hash: passwordHash,
+                role: 'employee',
+                department_id: testDeptId,
+                status: 'active',
+                emailVerified: true
+            });
+
+            const ipMgr = await Employee.create({
+                id: 'IP_MGR_01',
+                name: 'IP Test Manager',
+                email: 'ip_mgr@zograhatechnologies.test',
+                password_hash: passwordHash,
+                role: 'manager',
+                department_id: testDeptId,
+                status: 'active',
+                emailVerified: true
+            });
+
+            ipEmpToken = jwt.sign(
+                { id: ipEmp.id, _id: ipEmp._id, role: ipEmp.role, email: ipEmp.email },
+                process.env.JWT_SECRET,
+                { expiresIn: '1h' }
+            );
+
+            ipMgrToken = jwt.sign(
+                { id: ipMgr.id, _id: ipMgr._id, role: ipMgr.role, email: ipMgr.email },
+                process.env.JWT_SECRET,
+                { expiresIn: '1h' }
+            );
+
+            process.env.TRUST_PROXY = 'vercel';
+        });
+
+        afterAll(() => {
+            delete process.env.TRUST_PROXY;
+        });
+
+        afterEach(async () => {
+            await AccessSettings.deleteMany({});
+            await RemoteAccess.deleteMany({});
+            invalidateAccessSettingsCache();
+            process.env.TRUST_PROXY = 'vercel';
+        });
+
+        // 1. allowed IP passes
+        it('1. allowed IP passes', async () => {
+            await AccessSettings.create({
+                enforce_ip_access: true,
+                ranges: [{ cidr: officeCidr, label: 'Office', enabled: true }]
+            });
+            invalidateAccessSettingsCache();
+
+            const res = await request(app)
+                .get('/api/notifications')
+                .set('Authorization', `Bearer ${ipEmpToken}`)
+                .set('x-vercel-forwarded-for', allowedOfficeIp);
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+        });
+
+        // 2. blocked IP gets 403
+        it('2. blocked IP gets 403', async () => {
+            await AccessSettings.create({
+                enforce_ip_access: true,
+                ranges: [{ cidr: officeCidr, label: 'Office', enabled: true }]
+            });
+            invalidateAccessSettingsCache();
+
+            const res = await request(app)
+                .get('/api/notifications')
+                .set('Authorization', `Bearer ${ipEmpToken}`)
+                .set('x-vercel-forwarded-for', blockedRemoteIp);
+
+            expect(res.status).toBe(403);
+            expect(res.body.message).toBe('Access allowed only from the office network.');
+        });
+
+        // 3. manager and SuperAdmin pass from anywhere
+        it('3. manager and SuperAdmin pass from anywhere', async () => {
+            await AccessSettings.create({
+                enforce_ip_access: true,
+                ranges: [{ cidr: officeCidr, label: 'Office', enabled: true }]
+            });
+            invalidateAccessSettingsCache();
+
+            // Manager from blocked IP
+            const mgrRes = await request(app)
+                .get('/api/notifications')
+                .set('Authorization', `Bearer ${ipMgrToken}`)
+                .set('x-vercel-forwarded-for', blockedRemoteIp);
+
+            expect(mgrRes.status).toBe(200);
+            expect(mgrRes.body.success).toBe(true);
+
+            // SuperAdmin from blocked IP
+            const adminRes = await request(app)
+                .get('/api/notifications')
+                .set('Authorization', `Bearer ${adminToken}`)
+                .set('x-vercel-forwarded-for', blockedRemoteIp);
+
+            expect(adminRes.status).toBe(200);
+            expect(adminRes.body.success).toBe(true);
+        });
+
+        // 4. enforce OFF passes everyone
+        it('4. enforce OFF passes everyone', async () => {
+            await AccessSettings.create({
+                enforce_ip_access: false,
+                ranges: [{ cidr: officeCidr, label: 'Office', enabled: true }]
+            });
+            invalidateAccessSettingsCache();
+
+            const res = await request(app)
+                .get('/api/notifications')
+                .set('Authorization', `Bearer ${ipEmpToken}`)
+                .set('x-vercel-forwarded-for', blockedRemoteIp);
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+        });
+
+        // 5. empty ranges passes everyone
+        it('5. empty ranges passes everyone', async () => {
+            await AccessSettings.create({
+                enforce_ip_access: true,
+                ranges: []
+            });
+            invalidateAccessSettingsCache();
+
+            const res = await request(app)
+                .get('/api/notifications')
+                .set('Authorization', `Bearer ${ipEmpToken}`)
+                .set('x-vercel-forwarded-for', blockedRemoteIp);
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+        });
+
+        // 6. remote exception active passes, expired is blocked
+        it('6. remote exception active passes, expired is blocked', async () => {
+            await AccessSettings.create({
+                enforce_ip_access: true,
+                ranges: [{ cidr: officeCidr, label: 'Office', enabled: true }]
+            });
+            invalidateAccessSettingsCache();
+
+            // Create active exception with future expiry
+            const exc = await RemoteAccess.create({
+                employee_id: 'IP_EMP_01',
+                grantedBy: 'ADM001',
+                expiresAt: new Date(Date.now() + 60000),
+                active: true
+            });
+
+            // Active exception allows access from blocked IP
+            const activeRes = await request(app)
+                .get('/api/notifications')
+                .set('Authorization', `Bearer ${ipEmpToken}`)
+                .set('x-vercel-forwarded-for', blockedRemoteIp);
+
+            expect(activeRes.status).toBe(200);
+            expect(activeRes.body.success).toBe(true);
+
+            // Now expire the exception
+            await RemoteAccess.updateOne({ _id: exc._id }, { $set: { expiresAt: new Date(Date.now() - 60000) } });
+
+            const expiredRes = await request(app)
+                .get('/api/notifications')
+                .set('Authorization', `Bearer ${ipEmpToken}`)
+                .set('x-vercel-forwarded-for', blockedRemoteIp);
+
+            expect(expiredRes.status).toBe(403);
+            expect(expiredRes.body.message).toBe('Access allowed only from the office network.');
+        });
+
+        // 7. invalid CIDR rejected
+        it('7. invalid CIDR rejected', async () => {
+            const res = await request(app)
+                .put('/api/access-settings')
+                .set('Authorization', `Bearer ${adminToken}`)
+                .send({
+                    enforce_ip_access: true,
+                    ranges: [{ cidr: 'invalid-cidr/99', label: 'Bad CIDR' }]
+                });
+
+            expect(res.status).toBe(400);
+            expect(res.body.success).toBe(false);
+            expect(res.body.message).toContain('Invalid CIDR');
+        });
+
+        // 8. x-forwarded-for from a client is ignored
+        it('8. x-forwarded-for from a client is ignored', async () => {
+            await AccessSettings.create({
+                enforce_ip_access: true,
+                ranges: [{ cidr: officeCidr, label: 'Office', enabled: true }]
+            });
+            invalidateAccessSettingsCache();
+
+            // Client sets X-Forwarded-For: allowedOfficeIp, but no x-vercel-forwarded-for
+            // Server ignores x-forwarded-for and uses socket IP (127.0.0.1, not in 192.168.1.0/24)
+            const res = await request(app)
+                .get('/api/notifications')
+                .set('Authorization', `Bearer ${ipEmpToken}`)
+                .set('X-Forwarded-For', allowedOfficeIp);
+
+            expect(res.status).toBe(403);
+            expect(res.body.message).toBe('Access allowed only from the office network.');
+        });
+
+        // 9. SuperAdmin lockout warning requires confirm
+        it('9. SuperAdmin lockout warning requires confirm', async () => {
+            const adminCurrentIp = '10.20.30.40';
+
+            // Without confirm=true, saving ranges that exclude current admin IP fails with warning
+            const warningRes = await request(app)
+                .put('/api/access-settings')
+                .set('Authorization', `Bearer ${adminToken}`)
+                .set('x-vercel-forwarded-for', adminCurrentIp)
+                .send({
+                    enforce_ip_access: true,
+                    ranges: [{ cidr: officeCidr, label: 'Office', enabled: true }]
+                });
+
+            expect(warningRes.status).toBe(400);
+            expect(warningRes.body.requires_confirm).toBe(true);
+            expect(warningRes.body.warning).toContain(adminCurrentIp);
+
+            // With confirm=true, saving succeeds
+            const confirmRes = await request(app)
+                .put('/api/access-settings')
+                .set('Authorization', `Bearer ${adminToken}`)
+                .set('x-vercel-forwarded-for', adminCurrentIp)
+                .send({
+                    enforce_ip_access: true,
+                    ranges: [{ cidr: officeCidr, label: 'Office', enabled: true }],
+                    confirm: true
+                });
+
+            expect(confirmRes.status).toBe(200);
+            expect(confirmRes.body.success).toBe(true);
+            expect(confirmRes.body.settings.enforce_ip_access).toBe(true);
+        });
+
+        // 10. with TRUST_PROXY unset, a request with x-vercel-forwarded-for set to an allowed IP is still evaluated by req.ip and blocked
+        it('10. with TRUST_PROXY unset, a request with x-vercel-forwarded-for set to an allowed IP is still evaluated by req.ip and blocked', async () => {
+            const origTrustProxy = process.env.TRUST_PROXY;
+            delete process.env.TRUST_PROXY;
+
+            try {
+                await AccessSettings.create({
+                    enforce_ip_access: true,
+                    ranges: [{ cidr: officeCidr, label: 'Office', enabled: true }]
+                });
+                invalidateAccessSettingsCache();
+
+                // Spoofed header from client when TRUST_PROXY is unset -> uses req.ip (127.0.0.1) and blocks
+                const res = await request(app)
+                    .get('/api/notifications')
+                    .set('Authorization', `Bearer ${ipEmpToken}`)
+                    .set('x-vercel-forwarded-for', allowedOfficeIp);
+
+                expect(res.status).toBe(403);
+                expect(res.body.message).toBe('Access allowed only from the office network.');
+            } finally {
+                if (origTrustProxy !== undefined) {
+                    process.env.TRUST_PROXY = origTrustProxy;
+                } else {
+                    delete process.env.TRUST_PROXY;
+                }
+            }
+        });
+
+        // 11. with TRUST_PROXY=vercel, the x-vercel-forwarded-for value is used
+        it('11. with TRUST_PROXY=vercel, the x-vercel-forwarded-for value is used', async () => {
+            const origTrustProxy = process.env.TRUST_PROXY;
+            process.env.TRUST_PROXY = 'vercel';
+
+            try {
+                await AccessSettings.create({
+                    enforce_ip_access: true,
+                    ranges: [{ cidr: officeCidr, label: 'Office', enabled: true }]
+                });
+                invalidateAccessSettingsCache();
+
+                // Header honored when TRUST_PROXY=vercel -> allowed
+                const res = await request(app)
+                    .get('/api/notifications')
+                    .set('Authorization', `Bearer ${ipEmpToken}`)
+                    .set('x-vercel-forwarded-for', allowedOfficeIp);
+
+                expect(res.status).toBe(200);
+                expect(res.body.success).toBe(true);
+            } finally {
+                if (origTrustProxy !== undefined) {
+                    process.env.TRUST_PROXY = origTrustProxy;
+                } else {
+                    delete process.env.TRUST_PROXY;
+                }
+            }
+        });
     });
 });
 

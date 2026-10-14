@@ -4,7 +4,6 @@ const dotenv = require('dotenv');
 const path = require('path');
 const dns = require('node:dns');
 dns.setDefaultResultOrder('ipv4first');
-const connectDB = require('./config/db');
 
 dotenv.config();
 
@@ -12,6 +11,8 @@ dotenv.config();
 if (!process.env.VERCEL) {
     dotenv.config({ path: path.join(__dirname, '.env.local-dns') });
 }
+
+const connectDB = require('./config/db');
 
 // Ensure JWT secrets are strictly provided in production / Vercel
 if (process.env.NODE_ENV === 'production' || process.env.VERCEL) {
@@ -32,6 +33,12 @@ if (process.env.NODE_ENV === 'production' || process.env.VERCEL) {
 }
 
 const app = express();
+
+// Trust proxy setting: controlled by TRUST_PROXY env var (default: off).
+// When TRUST_PROXY=vercel, trust 1 hop for Vercel deployment headers.
+if (process.env.TRUST_PROXY === 'vercel') {
+    app.set('trust proxy', 1);
+}
 const http = require('http');
 const server = http.createServer(app);
 
@@ -178,6 +185,8 @@ app.use('/api/tax', require('./routes/taxRoutes'));
 app.use('/api/banking', require('./routes/bankingRoutes'));
 app.use('/api/verification', require('./routes/verificationRoutes'));
 app.use('/api/reports', require('./routes/reportsRoutes'));
+app.use('/api/access-settings', require('./routes/accessSettingsRoutes'));
+app.use('/api/remote-access', require('./routes/remoteAccessRoutes'));
 
 
 // ── Routes ─────────────────────────────────────────────

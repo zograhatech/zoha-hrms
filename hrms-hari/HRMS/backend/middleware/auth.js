@@ -33,6 +33,11 @@ const auth = (rolesOrPermissions = []) => {
             if (!employee) return res.status(404).json({ success: false, message: 'Employee profile not found.' });
             if (employee.status !== 'active') return res.status(403).json({ success: false, message: 'Your account is deactivated.' });
 
+            // IP Access Control Check
+            const { checkIpAccess } = require('./ipAccess');
+            const ipAllowed = await checkIpAccess(req, res, employee.role);
+            if (!ipAllowed) return;
+
             // 3. Resolve requested permissions
             if (!rolesOrPermissions || rolesOrPermissions.length === 0) return next();
 

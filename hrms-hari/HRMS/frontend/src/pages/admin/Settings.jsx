@@ -7,7 +7,8 @@ import { isManagerRole, isSuperAdmin } from '../../utils/roleHelper';
 import {
     FiSettings, FiBriefcase, FiMail, FiClock,
     FiSave, FiSend, FiPlus, FiEye, FiEyeOff,
-    FiX, FiUmbrella, FiTrash2, FiEdit2, FiLock, FiShield, FiUserCheck, FiPercent, FiVideo, FiLayers, FiCreditCard, FiCalendar
+    FiX, FiUmbrella, FiTrash2, FiEdit2, FiLock, FiShield, FiUserCheck, FiPercent, FiVideo, FiLayers, FiCreditCard, FiCalendar,
+    FiGlobe, FiAlertTriangle, FiCheckCircle, FiKey
 } from 'react-icons/fi';
 
 import ZoomSettings from '../zoom/ZoomSettings';
@@ -363,6 +364,128 @@ export default function Settings() {
         }
     }, [activeTab, user]);
 
+    // IP Access Control State
+    const [accessSettings, setAccessSettings] = useState({ enforce_ip_access: false, ranges: [] });
+    const [currentClientIp, setCurrentClientIp] = useState('');
+    const [remoteExceptions, setRemoteExceptions] = useState([]);
+    const [newCidr, setNewCidr] = useState('');
+    const [newCidrLabel, setNewCidrLabel] = useState('');
+    const [remoteEmpId, setRemoteEmpId] = useState('');
+    const [remoteExpiry, setRemoteExpiry] = useState('');
+    const [remoteAllowedIp, setRemoteAllowedIp] = useState('');
+    const [ipAccessMsg, setIpAccessMsg] = useState({ type: '', text: '' });
+    const [confirmLockout, setConfirmLockout] = useState(false);
+    const [savingIpAccess, setSavingIpAccess] = useState(false);
+
+    const fetchIpAccessData = async () => {
+        try {
+            const [accRes, remRes] = await Promise.all([
+                API.get('/access-settings'),
+                API.get('/remote-access')
+            ]);
+            if (accRes.data?.settings) {
+                setAccessSettings(accRes.data.settings);
+            }
+            if (accRes.data?.current_ip) {
+                setCurrentClientIp(accRes.data.current_ip);
+            }
+            if (remRes.data?.data) {
+                setRemoteExceptions(remRes.data.data);
+            }
+        } catch (err) {
+            console.error('Failed to load IP access data:', err);
+        }
+    };
+
+    useEffect(() => {
+        if (activeTab === 'ip_access' && isSuperAdmin(user)) {
+            fetchIpAccessData();
+            if (allEmployees.length === 0) {
+                fetchAllEmployees();
+            }
+        }
+    }, [activeTab, user]);
+
+    const handleSaveIpAccess = async (e) => {
+        if (e) e.preventDefault();
+        setSavingIpAccess(true);
+        setIpAccessMsg({ type: '', text: '' });
+        try {
+            const res = await API.put('/access-settings', {
+                enforce_ip_access: accessSettings.enforce_ip_access,
+                ranges: accessSettings.ranges,
+                confirm: confirmLockout
+            });
+            if (res.data.success) {
+                setAccessSettings(res.data.settings);
+                setIpAccessMsg({ type: 'success', text: 'IP Access Settings saved successfully.' });
+                setConfirmLockout(false);
+            }
+        } catch (err) {
+            const data = err.response?.data;
+            if (data?.requires_confirm) {
+                setIpAccessMsg({ type: 'warning', text: data.warning });
+            } else {
+                setIpAccessMsg({ type: 'danger', text: data?.message || 'Failed to save settings.' });
+            }
+        } finally {
+            setSavingIpAccess(false);
+        }
+    };
+
+    const handleAddRange = () => {
+        if (!newCidr.trim()) return;
+        setAccessSettings(prev => ({
+            ...prev,
+            ranges: [...(prev.ranges || []), { cidr: newCidr.trim(), label: newCidrLabel.trim(), enabled: true }]
+        }));
+        setNewCidr('');
+        setNewCidrLabel('');
+    };
+
+    const handleRemoveRange = (idx) => {
+        setAccessSettings(prev => ({
+            ...prev,
+            ranges: (prev.ranges || []).filter((_, i) => i !== idx)
+        }));
+    };
+
+    const handleToggleRange = (idx) => {
+        setAccessSettings(prev => ({
+            ...prev,
+            ranges: (prev.ranges || []).map((r, i) => i === idx ? { ...r, enabled: !r.enabled } : r)
+        }));
+    };
+
+    const handleGrantRemoteAccess = async (e) => {
+        if (e) e.preventDefault();
+        if (!remoteEmpId) return;
+        try {
+            await API.post('/remote-access', {
+                employee_id: remoteEmpId,
+                expiresAt: remoteExpiry ? new Date(remoteExpiry).toISOString() : null,
+                allowedIp: remoteAllowedIp.trim() || null
+            });
+            setRemoteEmpId('');
+            setRemoteExpiry('');
+            setRemoteAllowedIp('');
+            fetchIpAccessData();
+            setIpAccessMsg({ type: 'success', text: 'Remote access exception granted successfully.' });
+        } catch (err) {
+            setIpAccessMsg({ type: 'danger', text: err.response?.data?.message || 'Failed to grant remote access.' });
+        }
+    };
+
+    const handleRevokeRemoteAccess = async (id) => {
+        try {
+            await API.delete(`/remote-access/${id}`);
+            fetchIpAccessData();
+            setIpAccessMsg({ type: 'success', text: 'Remote access exception revoked.' });
+        } catch (err) {
+            setIpAccessMsg({ type: 'danger', text: err.response?.data?.message || 'Failed to revoke remote access.' });
+        }
+    };
+
     const distinctDepartments = Array.from(
         new Set(allEmployees.map(emp => emp.department_name).filter(Boolean))
     ).sort();
@@ -428,6 +551,7 @@ export default function Settings() {
                     <>
                         <button className={`tab-link ${activeTab === 'holidays' ? 'active' : ''}`} onClick={() => setActiveTab('holidays')}><FiCalendar /> Holidays</button>
                         <button className={`tab-link ${activeTab === 'security' ? 'active' : ''}`} onClick={() => setActiveTab('security')}><FiShield /> Security</button>
+                        <button className={`tab-link ${activeTab === 'ip_access' ? 'active' : ''}`} onClick={() => setActiveTab('ip_access')}><FiGlobe /> IP Access</button>
                     </>
                 )}
 
@@ -1091,6 +1215,318 @@ export default function Settings() {
                             </button>
                         </div>
                     </form>
+                </div>
+            )}
+
+            {activeTab === 'ip_access' && isSuperAdmin(user) && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+                    {ipAccessMsg.text && (
+                        <div className={`alert alert-${ipAccessMsg.type}`}>
+                            {ipAccessMsg.text}
+                        </div>
+                    )}
+
+                    {/* Access Settings Card */}
+                    <div className="card">
+                        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div>
+                                <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    <FiGlobe /> IP Access Control
+                                </h3>
+                                <p className="card-subtitle">
+                                    Restrict platform access to designated office network CIDR ranges. SuperAdmin and Managers are never blocked.
+                                </p>
+                            </div>
+                            {currentClientIp && (
+                                <div style={{ background: 'var(--bg-secondary, #f1f5f9)', padding: '6px 12px', borderRadius: 6, fontSize: '0.85rem' }}>
+                                    Detected Public IP: <strong style={{ fontFamily: 'monospace' }}>{currentClientIp}</strong>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="card-body">
+                            {/* Enforce Toggle */}
+                            <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px', background: 'var(--bg-secondary, #f8fafc)', borderRadius: '8px', marginBottom: '20px' }}>
+                                <div>
+                                    <div style={{ fontWeight: 600, fontSize: '0.95rem' }}>Enforce IP Access Control</div>
+                                    <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                                        When enabled, non-manager employees and team leads outside configured ranges or without active remote exceptions are blocked.
+                                    </div>
+                                </div>
+                                <label className="switch" style={{ position: 'relative', display: 'inline-block', width: 44, height: 24 }}>
+                                    <input
+                                        type="checkbox"
+                                        checked={Boolean(accessSettings.enforce_ip_access)}
+                                        onChange={e => setAccessSettings(prev => ({ ...prev, enforce_ip_access: e.target.checked }))}
+                                        style={{ opacity: 0, width: 0, height: 0 }}
+                                    />
+                                    <span style={{
+                                        position: 'absolute', cursor: 'pointer', top: 0, left: 0, right: 0, bottom: 0,
+                                        backgroundColor: accessSettings.enforce_ip_access ? 'var(--accent-primary, #6366f1)' : '#cbd5e1',
+                                        borderRadius: 24, transition: '.3s'
+                                    }}>
+                                        <span style={{
+                                            position: 'absolute', height: 18, width: 18, left: accessSettings.enforce_ip_access ? 23 : 3, bottom: 3,
+                                            backgroundColor: '#fff', borderRadius: '50%', transition: '.3s'
+                                        }} />
+                                    </span>
+                                </label>
+                            </div>
+
+                            {/* Lockout Warning */}
+                            {accessSettings.enforce_ip_access && (accessSettings.ranges || []).some(r => r.enabled) && (
+                                <div className="alert alert-warning" style={{ margin: '16px 0', display: 'flex', alignItems: 'flex-start', gap: 12, padding: 14, borderRadius: 8, background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e' }}>
+                                    <FiAlertTriangle size={20} style={{ flexShrink: 0, marginTop: 2 }} />
+                                    <div>
+                                        <strong>Lockout Safety Notice:</strong> Ensure your current IP (<span style={{ fontFamily: 'monospace' }}>{currentClientIp}</span>) is allowed or you have confirmed this change.
+                                        <div style={{ marginTop: 8 }}>
+                                            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontWeight: 600, fontSize: '0.85rem' }}>
+                                                <input
+                                                    type="checkbox"
+                                                    checked={confirmLockout}
+                                                    onChange={e => setConfirmLockout(e.target.checked)}
+                                                />
+                                                Confirm saving settings even if it would exclude current IP (confirm=true)
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Configured CIDR Ranges */}
+                            <div style={{ marginBottom: 20 }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                                    <label style={{ fontWeight: 600, margin: 0 }}>Office Network CIDR Ranges</label>
+                                    <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                                        Empty ranges allows all connections even when enforcement is ON.
+                                    </span>
+                                </div>
+
+                                {/* Add range form */}
+                                <div style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
+                                    <input
+                                        type="text"
+                                        className="form-control"
+                                        placeholder="CIDR Block (e.g. 192.168.1.0/24 or 2001:db8::/32)"
+                                        value={newCidr}
+                                        onChange={e => setNewCidr(e.target.value)}
+                                        style={{ flex: 2 }}
+                                    />
+                                    <input
+                                        type="text"
+                                        className="form-control"
+                                        placeholder="Label (e.g. HQ Main Office)"
+                                        value={newCidrLabel}
+                                        onChange={e => setNewCidrLabel(e.target.value)}
+                                        style={{ flex: 2 }}
+                                    />
+                                    <button
+                                        type="button"
+                                        className="btn btn-secondary"
+                                        onClick={handleAddRange}
+                                        style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+                                    >
+                                        <FiPlus /> Add Range
+                                    </button>
+                                </div>
+
+                                {/* Ranges List */}
+                                <div style={{ border: '1px solid var(--border-color, #e2e8f0)', borderRadius: 8, overflow: 'hidden' }}>
+                                    {(accessSettings.ranges || []).length === 0 ? (
+                                        <div style={{ padding: 16, textAlign: 'center', color: 'var(--text-muted)' }}>
+                                            No CIDR ranges defined. All networks are currently unrestricted.
+                                        </div>
+                                    ) : (
+                                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+                                            <thead>
+                                                <tr style={{ background: 'var(--bg-secondary, #f8fafc)', borderBottom: '1px solid var(--border-color, #e2e8f0)', textAlign: 'left' }}>
+                                                    <th style={{ padding: '10px 14px' }}>Status</th>
+                                                    <th style={{ padding: '10px 14px' }}>CIDR Block</th>
+                                                    <th style={{ padding: '10px 14px' }}>Label</th>
+                                                    <th style={{ padding: '10px 14px', textAlign: 'right' }}>Actions</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {accessSettings.ranges.map((range, idx) => (
+                                                    <tr key={idx} style={{ borderBottom: '1px solid var(--border-color, #f1f5f9)' }}>
+                                                        <td style={{ padding: '10px 14px' }}>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleToggleRange(idx)}
+                                                                style={{
+                                                                    border: 'none', background: range.enabled ? '#dcfce7' : '#fee2e2',
+                                                                    color: range.enabled ? '#15803d' : '#b91c1c',
+                                                                    padding: '3px 8px', borderRadius: 12, fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer'
+                                                                }}
+                                                            >
+                                                                {range.enabled ? 'Enabled' : 'Disabled'}
+                                                            </button>
+                                                        </td>
+                                                        <td style={{ padding: '10px 14px', fontFamily: 'monospace', fontWeight: 600 }}>
+                                                            {range.cidr}
+                                                        </td>
+                                                        <td style={{ padding: '10px 14px', color: 'var(--text-muted)' }}>
+                                                            {range.label || '-'}
+                                                        </td>
+                                                        <td style={{ padding: '10px 14px', textAlign: 'right' }}>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleRemoveRange(idx)}
+                                                                style={{ border: 'none', background: 'transparent', color: '#ef4444', cursor: 'pointer', padding: 4 }}
+                                                                title="Remove Range"
+                                                            >
+                                                                <FiTrash2 size={16} />
+                                                            </button>
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="card-footer" style={{ display: 'flex', justifyContent: 'flex-end', padding: '16px 20px' }}>
+                            <button
+                                type="button"
+                                className="btn btn-primary"
+                                onClick={handleSaveIpAccess}
+                                disabled={savingIpAccess}
+                                style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+                            >
+                                <FiSave /> {savingIpAccess ? 'Saving...' : 'Save IP Access Settings'}
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Remote Access Section */}
+                    <div className="card">
+                        <div className="card-header">
+                            <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <FiKey /> Remote Access Exceptions
+                            </h3>
+                            <p className="card-subtitle">
+                                Grant specific employees remote access exceptions to work outside the office network.
+                            </p>
+                        </div>
+
+                        <div className="card-body">
+                            {/* Grant Form */}
+                            <form onSubmit={handleGrantRemoteAccess} style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 20, alignItems: 'flex-end', background: 'var(--bg-secondary, #f8fafc)', padding: 16, borderRadius: 8 }}>
+                                <div style={{ flex: 1, minWidth: 160 }}>
+                                    <label style={{ fontSize: '0.85rem', fontWeight: 600, marginBottom: 4, display: 'block' }}>Employee</label>
+                                    <select
+                                        className="form-control"
+                                        value={remoteEmpId}
+                                        onChange={e => setRemoteEmpId(e.target.value)}
+                                        required
+                                    >
+                                        <option value="">Select Employee...</option>
+                                        {allEmployees.map(emp => (
+                                            <option key={emp.id} value={emp.id}>
+                                                {emp.name} ({emp.id})
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <div style={{ flex: 1, minWidth: 160 }}>
+                                    <label style={{ fontSize: '0.85rem', fontWeight: 600, marginBottom: 4, display: 'block' }}>Expiry (optional)</label>
+                                    <input
+                                        type="datetime-local"
+                                        className="form-control"
+                                        value={remoteExpiry}
+                                        onChange={e => setRemoteExpiry(e.target.value)}
+                                        placeholder="Leave empty for permanent"
+                                    />
+                                </div>
+                                <div style={{ flex: 1, minWidth: 160 }}>
+                                    <label style={{ fontSize: '0.85rem', fontWeight: 600, marginBottom: 4, display: 'block' }}>Allowed IP / CIDR (optional)</label>
+                                    <input
+                                        type="text"
+                                        className="form-control"
+                                        placeholder="Any remote IP if empty"
+                                        value={remoteAllowedIp}
+                                        onChange={e => setRemoteAllowedIp(e.target.value)}
+                                    />
+                                </div>
+                                <div>
+                                    <button
+                                        type="submit"
+                                        className="btn btn-primary"
+                                        style={{ display: 'flex', alignItems: 'center', gap: 6, height: 42 }}
+                                    >
+                                        <FiPlus /> Grant Exception
+                                    </button>
+                                </div>
+                            </form>
+
+                            {/* Exceptions Table */}
+                            <div style={{ border: '1px solid var(--border-color, #e2e8f0)', borderRadius: 8, overflow: 'hidden' }}>
+                                {remoteExceptions.length === 0 ? (
+                                    <div style={{ padding: 16, textAlign: 'center', color: 'var(--text-muted)' }}>
+                                        No active remote access exceptions.
+                                    </div>
+                                ) : (
+                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+                                        <thead>
+                                            <tr style={{ background: 'var(--bg-secondary, #f8fafc)', borderBottom: '1px solid var(--border-color, #e2e8f0)', textAlign: 'left' }}>
+                                                <th style={{ padding: '10px 14px' }}>Employee</th>
+                                                <th style={{ padding: '10px 14px' }}>Granted By</th>
+                                                <th style={{ padding: '10px 14px' }}>Allowed IP</th>
+                                                <th style={{ padding: '10px 14px' }}>Expires</th>
+                                                <th style={{ padding: '10px 14px' }}>Status</th>
+                                                <th style={{ padding: '10px 14px', textAlign: 'right' }}>Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {remoteExceptions.map(exc => {
+                                                const isExpired = exc.expiresAt && new Date(exc.expiresAt) < new Date();
+                                                const isActive = exc.active && !isExpired;
+                                                return (
+                                                    <tr key={exc._id} style={{ borderBottom: '1px solid var(--border-color, #f1f5f9)' }}>
+                                                        <td style={{ padding: '10px 14px', fontWeight: 600 }}>
+                                                            {exc.employee_id}
+                                                        </td>
+                                                        <td style={{ padding: '10px 14px', color: 'var(--text-muted)' }}>
+                                                            {exc.grantedBy}
+                                                        </td>
+                                                        <td style={{ padding: '10px 14px', fontFamily: 'monospace' }}>
+                                                            {exc.allowedIp || 'Any IP'}
+                                                        </td>
+                                                        <td style={{ padding: '10px 14px', fontSize: '0.85rem' }}>
+                                                            {exc.expiresAt ? new Date(exc.expiresAt).toLocaleString() : 'Until Revoked'}
+                                                        </td>
+                                                        <td style={{ padding: '10px 14px' }}>
+                                                            <span style={{
+                                                                background: isActive ? '#dcfce7' : '#fee2e2',
+                                                                color: isActive ? '#15803d' : '#b91c1c',
+                                                                padding: '3px 8px', borderRadius: 12, fontSize: '0.75rem', fontWeight: 600
+                                                            }}>
+                                                                {isActive ? 'Active' : isExpired ? 'Expired' : 'Revoked'}
+                                                            </span>
+                                                        </td>
+                                                        <td style={{ padding: '10px 14px', textAlign: 'right' }}>
+                                                            {exc.active && (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleRevokeRemoteAccess(exc._id)}
+                                                                    className="btn btn-sm btn-outline-danger"
+                                                                    style={{ padding: '3px 8px', fontSize: '0.8rem' }}
+                                                                >
+                                                                    Revoke
+                                                                </button>
+                                                            )}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                )}
+                            </div>
+                        </div>
+                    </div>
                 </div>
             )}
 
