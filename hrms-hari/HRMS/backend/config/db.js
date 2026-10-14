@@ -26,9 +26,14 @@ const connectDB = async () => {
     throw new Error('Database configuration error: Neither MONGODB_URI nor MONGO_URI is defined in environment variables.');
   }
 
+  if (!process.env.VERCEL && process.env.NODE_ENV !== 'production' && (!process.env.DB_NAME || process.env.DB_NAME === 'hrms_db')) {
+    console.warn('Local runs must use DB_NAME=hrms_dev.');
+    throw new Error('Local runs must use DB_NAME=hrms_dev.');
+  }
+
   try {
     const options = {
-      dbName: 'hrms_db',
+      dbName: process.env.DB_NAME || 'hrms_db',
       serverSelectionTimeoutMS: 5000, // Fail fast on Vercel serverless (10s limit)
       connectTimeoutMS: 10000,
       heartbeatFrequencyMS: 2000,
@@ -38,7 +43,7 @@ const connectDB = async () => {
         require('dns').setServers(process.env.DNS_SERVERS.split(',').map(s => s.trim()));
     }
 
-    console.log('Connecting to MongoDB Atlas (hrms_db)...');
+    console.log(`Connecting to MongoDB Atlas (${options.dbName})...`);
     cachedConnectionPromise = mongoose.connect(uri, options);
     await cachedConnectionPromise;
 

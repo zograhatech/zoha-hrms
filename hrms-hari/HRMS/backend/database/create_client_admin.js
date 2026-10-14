@@ -28,7 +28,12 @@ if (missing.length) {
 
 (async () => {
     try {
-        await mongoose.connect(process.env.MONGO_URI, { dbName: 'hrms_db' });
+        if (process.env.DB_NAME !== 'hrms_dev') {
+            console.error('Refusing: DB_NAME must be hrms_dev');
+            process.exit(1);
+        }
+
+        await mongoose.connect(process.env.MONGO_URI, { dbName: process.env.DB_NAME });
         console.log('Connected to MongoDB');
 
         const existing = await Employee.countDocuments();
