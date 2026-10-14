@@ -13,7 +13,7 @@ const notificationSchema = new mongoose.Schema({
     },
     type: {
         type: String,
-        enum: ['meeting', 'leave', 'announcement', 'ticket', 'general', 'resignation'],
+        enum: ['meeting', 'leave', 'announcement', 'ticket', 'general', 'resignation', 'holiday'],
         default: 'general'
     },
     title: {

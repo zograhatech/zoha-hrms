@@ -34,6 +34,7 @@ export default function EmployeeDashboard() {
     const [upcomingEvents, setUpcomingEvents] = useState([]);
     const [zoomMeetings, setZoomMeetings] = useState([]);
     const [companyEvents, setCompanyEvents] = useState([]);
+    const [upcomingHolidays, setUpcomingHolidays] = useState([]);
     const [globalPolicies, setGlobalPolicies] = useState({});
     const [resignation, setResignation] = useState(null);
 
@@ -49,6 +50,16 @@ export default function EmployeeDashboard() {
                 setUpcomingEvents(dashboard.upcomingEvents);
                 setCompanyEvents(dashboard.companyEvents);
                 setGlobalPolicies(dashboard.globalPolicies || {});
+                if (dashboard.upcomingHolidays) {
+                    setUpcomingHolidays(dashboard.upcomingHolidays);
+                }
+            }
+        }).catch(() => { });
+
+        // Standalone call for upcoming holidays
+        API.get('/holidays/upcoming').then(r => {
+            if (r.data.success && r.data.holidays) {
+                setUpcomingHolidays(r.data.holidays);
             }
         }).catch(() => { });
 
@@ -132,6 +143,15 @@ export default function EmployeeDashboard() {
         });
     }
 
+    upcomingHolidays.forEach(h => {
+        calendarEvents.push({
+            date: h.date,
+            title: `${h.name} (Holiday)`,
+            type: 'holiday',
+            color: '#10b981'
+        });
+    });
+
     return (
         <div>
             {/* Welcome banner */}
@@ -159,17 +179,12 @@ export default function EmployeeDashboard() {
             <AttendanceWidget />
             <div style={{ marginBottom: 24 }} />
 
-
-
             <WorkspaceOverview />
-
-
-
 
             {/* Monthly Calendar */}
             <MonthCalendar events={calendarEvents} />
 
-            {/* Leave Balance & Recent Leaves */}
+            {/* Leave Balance, Upcoming Holidays & Recent Leaves */}
             <div className="grid-2" style={{ marginBottom: 24 }}>
                 <div className="card">
                     <h3 style={{ marginBottom: 16, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -191,11 +206,45 @@ export default function EmployeeDashboard() {
                                     </div>
                                 </div>
                             ))}
+                            {/* Sick leave this month exact display */}
+                            <div style={{ marginTop: 8, padding: '10px 14px', background: 'rgba(99, 102, 241, 0.06)', borderRadius: 8, border: '1px solid rgba(99, 102, 241, 0.15)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <span style={{ fontSize: '0.875rem', fontWeight: 600 }}>Sick leave this month:</span>
+                                <span style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--accent-primary)' }}>
+                                    {leave?.sickLeaveThisMonth?.used ?? 0} of 1 used
+                                </span>
+                            </div>
                         </div>
                     ) : <p style={{ color: 'var(--text-muted)' }}>Loading...</p>}
                     <button className="btn btn-primary btn-sm" style={{ marginTop: 16, display: 'inline-flex', alignItems: 'center', gap: 6 }} onClick={() => navigate('/dashboard/leave')}>
                         Apply Leave <FiArrowRight />
                     </button>
+                </div>
+
+                {/* Upcoming Holidays Card */}
+                <div className="card">
+                    <h3 style={{ marginBottom: 16, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <FiCalendar className="text-primary" /> Upcoming Holidays
+                    </h3>
+                    {upcomingHolidays.length > 0 ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            {upcomingHolidays.slice(0, 5).map(h => (
+                                <div key={h._id || h.date} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 12px', background: 'rgba(0,0,0,0.03)', borderRadius: 8, border: '1px solid var(--border-color)' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                        <div style={{ width: 36, height: 36, borderRadius: 8, background: '#10b98122', color: '#10b981', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: '0.9rem' }}>
+                                            <FiCalendar />
+                                        </div>
+                                        <div>
+                                            <div style={{ fontSize: '0.875rem', fontWeight: 600 }}>{h.name}</div>
+                                            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{formatDate(h.date)}</div>
+                                        </div>
+                                    </div>
+                                    <span className="badge badge-success" style={{ fontSize: '0.75rem' }}>Holiday</span>
+                                </div>
+                            ))}
+                        </div>
+                    ) : (
+                        <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>No upcoming holidays scheduled.</p>
+                    )}
                 </div>
 
                 <div className="card">

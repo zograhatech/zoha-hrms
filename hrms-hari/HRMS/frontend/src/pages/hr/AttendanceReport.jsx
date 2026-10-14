@@ -11,7 +11,7 @@ import {
 } from 'react-icons/fi';
 import { useToast } from '../../context/ToastContext';
 import { formatDate } from '../../utils/dateFormatter';
-import { isManagerRole } from '../../utils/roleHelper';
+import { isManagerRole, isSuperAdmin } from '../../utils/roleHelper';
 
 const MONTHS = ['', 'January', 'February', 'March', 'April', 'May', 'June',
     'July', 'August', 'September', 'October', 'November', 'December'];
@@ -35,7 +35,7 @@ export default function AttendanceReport() {
     const [exportYear, setExportYear] = useState(today.getFullYear());
     const [editingRecord, setEditingRecord] = useState(null);
     const [form, setForm] = useState({ status: 'present', check_in: '', check_out: '', work_hours: '' });
-    const [holidayForm, setHolidayForm] = useState({ startDate: date, endDate: date });
+    const [holidayForm, setHolidayForm] = useState({ date: date, name: '' });
     const [saving, setSaving] = useState(false);
     const [markingHoliday, setMarkingHoliday] = useState(false);
     const [showHolidayModal, setShowHolidayModal] = useState(false);
@@ -166,15 +166,23 @@ export default function AttendanceReport() {
 
     const handleMarkHoliday = async (e) => {
         e.preventDefault();
+        if (!holidayForm.date || !holidayForm.name?.trim()) {
+            showToast('Please provide both holiday date and name.', 'error');
+            return;
+        }
         setMarkingHoliday(true);
         try {
-            await API.post('/attendance/mark-holiday', holidayForm);
-            showToast('Holiday(s) marked successfully.');
+            await API.post('/holidays', {
+                date: holidayForm.date,
+                name: holidayForm.name.trim()
+            });
+            showToast('Holiday created successfully.');
             setShowHolidayModal(false);
+            setHolidayForm({ date: date, name: '' });
             // Refresh data for current report date
             API.get(`/attendance/team?date=${date}`).then(r => setData(r.data));
         } catch (err) {
-            showToast(err.response?.data?.message || 'Failed to mark holiday.', 'error');
+            showToast(err.response?.data?.message || 'Failed to create holiday.', 'error');
         } finally {
             setMarkingHoliday(false);
         }
@@ -202,11 +210,11 @@ export default function AttendanceReport() {
                     >
                         <FiCheckCircle size={15} /> Leave Approvals
                     </button>
-                    {canManage && (
+                    {isSuperAdmin(user) && (
                         <button
                             className="btn btn-outline"
                             onClick={() => {
-                                setHolidayForm({ startDate: date, endDate: date });
+                                setHolidayForm({ date: date, name: '' });
                                 setShowHolidayModal(true);
                             }}
                             style={{ display: 'inline-flex', alignItems: 'center', gap: 8, color: 'var(--accent-red)', borderColor: 'var(--accent-red)' }}
@@ -508,31 +516,27 @@ export default function AttendanceReport() {
                         <form onSubmit={handleMarkHoliday}>
                             <div className="modal-body">
                                 <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: 20 }}>
-                                    Select a date range to mark as a holiday for ALL active employees.
+                                    Declare a company holiday for ALL active employees.
                                 </p>
-                                <div className="form-group">
-                                    <label className="form-label">Start Date</label>
+                                <div className="form-group" style={{ marginBottom: 16 }}>
+                                    <label className="form-label">Holiday Date (IST)</label>
                                     <DateInput
                                         className="form-input"
-                                        value={holidayForm.startDate}
-                                        onChange={e => setHolidayForm({ ...holidayForm, startDate: e.target.value })}
+                                        value={holidayForm.date}
+                                        onChange={e => setHolidayForm({ ...holidayForm, date: e.target.value })}
                                         required
                                     />
                                 </div>
-                                <div className="form-group">
-                                    <label className="form-label">End Date (Optional)</label>
-                                    <DateInput
+                                <div className="form-group" style={{ marginBottom: 16 }}>
+                                    <label className="form-label">Holiday Name</label>
+                                    <input
+                                        type="text"
                                         className="form-input"
-                                        value={holidayForm.endDate}
-                                        onChange={e => setHolidayForm({ ...holidayForm, endDate: e.target.value })}
-                                        placeholder="Same as start date"
+                                        placeholder="e.g. Republic Day, Diwali"
+                                        value={holidayForm.name}
+                                        onChange={e => setHolidayForm({ ...holidayForm, name: e.target.value })}
+                                        required
                                     />
-                                    <small style={{ color: 'var(--text-muted)', fontSize: '0.75rem', display: 'block', marginTop: 4 }}>
-                                        Leave empty for a single-day holiday.
-                                    </small>
-                                </div>
-                                <div style={{ marginTop: 16, padding: 12, borderRadius: 8, background: 'rgba(239,68,68,0.1)', color: 'var(--accent-red)', fontSize: '0.8rem' }}>
-                                    <strong>Caution:</strong> This will override any existing attendance records for the selected range.
                                 </div>
                             </div>
                             <div className="modal-footer">

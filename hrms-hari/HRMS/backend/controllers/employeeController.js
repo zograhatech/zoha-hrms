@@ -4,9 +4,12 @@ const Department = require('../models/Department');
 const bcrypt = require('bcryptjs');
 const { sendEmail } = require('../utils/emailService');
 const LeaveBalance = require('../models/LeaveBalance');
+const Leave = require('../models/Leave');
+const Holiday = require('../models/Holiday');
 const Setting = require('../models/Setting');
 const XLSX = require('xlsx');
 const { getVisibleEmployeeScope } = require('../utils/visibilityHelper');
+const { toISTDateString, getISTDayStart, getISTDayEnd } = require('../utils/istDate');
 
 // Helper to populate department name into employee object
 const withDeptName = async (emp) => {
@@ -719,31 +722,62 @@ const getDashboardOverview = async (req, res) => {
     try {
         const empId = req.user.id;
         const now = new Date();
-        const m = now.getMonth() + 1;
-        const y = now.getFullYear();
+        const todayISTStr = toISTDateString(now);
+        const [yearStr, monthStr] = todayISTStr.split('-');
+        const istYear = parseInt(yearStr);
+        const istMonth = parseInt(monthStr);
+        const daysInMonth = new Date(istYear, istMonth, 0).getDate();
+        const monthStart = getISTDayStart(`${istYear}-${String(istMonth).padStart(2, '0')}-01`);
+        const monthEnd = getISTDayEnd(`${istYear}-${String(istMonth).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`);
 
-        const [leaveData, attendanceData, ticketData, upcomingEventsData, companyEventsData, settingsData] = await Promise.all([
-            LeaveBalance.findOne({ employee_id: empId, year: y }).lean(),
+        const todayStart = getISTDayStart(todayISTStr);
+        const [leaveData, attendanceData, ticketData, upcomingEventsData, companyEventsData, settingsData, sickLeaveCount, upcomingHolidaysData, eventHolidaysData, employeeLeaves] = await Promise.all([
+            LeaveBalance.findOne({ employee_id: empId, year: istYear }).lean(),
             require('../models/Attendance').find({ 
                 employee_id: empId, 
-                date: { $gte: new Date(y, m-1, 1), $lt: new Date(y, m, 1) } 
+                date: { $gte: monthStart, $lt: monthEnd } 
             }).lean(),
             require('../models/Ticket').find({ employee_id: empId }).limit(5).sort({ createdAt: -1 }).lean(),
             Employee.find({
                 status: 'active',
                 $or: [{ date_of_birth: { $ne: null } }, { date_of_joining: { $ne: null } }]
             }, { id: 1, name: 1, profile_image: 1, date_of_birth: 1, date_of_joining: 1 }).limit(10).lean(),
-            require('../models/Event').find({ date: { $gte: new Date(now.getFullYear(), now.getMonth(), 1) } }).limit(5).lean(),
-            Setting.findOne().lean()
+            require('../models/Event').find({ date: { $gte: monthStart } }).limit(5).lean(),
+            Setting.findOne().lean(),
+            Leave.countDocuments({
+                employee_id: empId,
+                leave_type: 'sick',
+                status: { $in: ['pending', 'approved'] },
+                start_date: { $gte: monthStart, $lt: monthEnd }
+            }),
+            Holiday.find({ date: { $gte: todayISTStr } }).sort({ date: 1 }).limit(10).lean(),
+            require('../models/Event').find({ type: 'holiday', date: { $gte: todayStart } }).sort({ date: 1 }).limit(10).lean(),
+            Leave.find({ employee_id: empId }).sort({ start_date: -1 }).limit(10).lean()
         ]);
 
+        const seenHolidayDates = new Set();
+        const upcomingHolidays = [];
+        for (const h of upcomingHolidaysData) {
+            const d = toISTDateString(h.date);
+            if (!seenHolidayDates.has(d)) {
+                seenHolidayDates.add(d);
+                upcomingHolidays.push({ _id: h._id, name: h.name, date: d });
+            }
+        }
+        for (const e of eventHolidaysData) {
+            const d = toISTDateString(e.date);
+            if (!seenHolidayDates.has(d)) {
+                seenHolidayDates.add(d);
+                upcomingHolidays.push({ _id: e._id, name: e.title, date: d });
+            }
+        }
+        upcomingHolidays.sort((a, b) => a.date.localeCompare(b.date));
+
         // Process attendance for summary: group by calendar day first to avoid double counting
-        const { toISTDateString } = require('../utils/istDate');
         const groupedByDay = {};
         attendanceData.forEach(rec => {
             const d = toISTDateString(rec.date);
             if (!groupedByDay[d]) {
-
                 groupedByDay[d] = rec.status;
             } else {
                 const priority = { present: 4, late: 3, 'half-day': 2, holiday: 1, absent: 0 };
@@ -764,7 +798,16 @@ const getDashboardOverview = async (req, res) => {
         res.json({
             success: true,
             dashboard: {
-                leave: { balance: leaveData },
+                leave: {
+                    balance: leaveData,
+                    leaves: employeeLeaves,
+                    sickLeaveThisMonth: {
+                        used: sickLeaveCount,
+                        total: 1,
+                        text: `Sick leave this month: ${sickLeaveCount} of 1 used`
+                    }
+                },
+                upcomingHolidays,
                 attendance: { summary: attendanceSummary, list: attendanceData },
                 tickets: ticketData,
                 upcomingEvents: upcomingEventsData.map(e => {

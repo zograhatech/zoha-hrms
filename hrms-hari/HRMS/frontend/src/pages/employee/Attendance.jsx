@@ -144,7 +144,10 @@ export default function Attendance() {
                             {data.attendance.map(a => (
                                 <tr key={a._id || a.id}>
                                     <td>{formatDate(a.date)}</td>
-                                    <td><span className={`badge badge-${a.status === 'present' ? 'success' : a.status === 'absent' ? 'danger' : a.status === 'late' ? 'warning' : 'info'}`}>{a.status}</span></td>
+                                    <td>
+                                        <span className={`badge badge-${a.status === 'present' ? 'success' : a.status === 'absent' ? 'danger' : a.status === 'late' ? 'warning' : 'info'}`}>{a.status}</span>
+                                        {a.needs_review && <span className="badge badge-danger" style={{ marginLeft: 6 }}>Needs review</span>}
+                                    </td>
                                     <td>{a.check_in ? new Date(a.check_in).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
                                     <td>{a.check_out ? new Date(a.check_out).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
                                     <td>{a.work_hours !== undefined && a.work_hours !== null ? `${a.work_hours}h` : '—'}</td>

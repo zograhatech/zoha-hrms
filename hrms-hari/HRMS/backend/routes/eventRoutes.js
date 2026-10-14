@@ -1,7 +1,32 @@
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
 const Event = require('../models/Event');
+const Employee = require('../models/Employee');
+const Notification = require('../models/Notification');
 const auth = require('../middleware/auth');
+const { normalizeRole } = require('../utils/visibilityHelper');
+const { toISTDateString } = require('../utils/istDate');
+
+async function sendHolidayEventNotifications(event, user) {
+    const activeEmployees = await Employee.find({ status: 'active' }).select('_id').lean();
+    if (activeEmployees.length > 0) {
+        const senderId = (user?._id && mongoose.Types.ObjectId.isValid(user._id))
+            ? user._id
+            : (mongoose.Types.ObjectId.isValid(user?.id) ? user.id : null);
+        const dateStr = toISTDateString(event.date);
+
+        const notifs = activeEmployees.map(emp => ({
+            recipient: emp._id,
+            sender: senderId,
+            type: 'holiday',
+            title: 'New Holiday Announced',
+            message: `${event.title} has been declared a holiday on ${dateStr}.`,
+            is_read: false
+        }));
+        await Notification.insertMany(notifs);
+    }
+}
 
 // @desc    Get all events
 // @route   GET /api/events
@@ -25,6 +50,13 @@ router.post('/', auth(['hr_manager', 'manage_events']), async (req, res) => {
         console.log(`[POST /api/events] User: ${req.user.email}, Body:`, req.body);
         const { title, description, date, startTime, endTime, type, color } = req.body;
         
+        if (type === 'holiday' && normalizeRole(req.user?.role) !== 'admin') {
+            return res.status(403).json({
+                success: false,
+                message: 'Forbidden. Only Super Admins can create holiday events.'
+            });
+        }
+
         const event = await Event.create({
             title,
             description,
@@ -35,6 +67,10 @@ router.post('/', auth(['hr_manager', 'manage_events']), async (req, res) => {
             color,
             createdBy: req.user._id
         });
+
+        if (event.type === 'holiday') {
+            await sendHolidayEventNotifications(event, req.user);
+        }
 
         res.status(201).json({ success: true, event });
     } catch (error) {
@@ -48,8 +84,32 @@ router.post('/', auth(['hr_manager', 'manage_events']), async (req, res) => {
 // @access  Private (Admin/HR)
 router.put('/:id', auth(['hr_manager', 'manage_events']), async (req, res) => {
     try {
+        if (req.body.type === 'holiday' && normalizeRole(req.user?.role) !== 'admin') {
+            return res.status(403).json({
+                success: false,
+                message: 'Forbidden. Only Super Admins can update events to type holiday.'
+            });
+        }
+        const existing = await Event.findById(req.params.id);
+        if (!existing) return res.status(404).json({ success: false, message: 'Event not found' });
+        if (existing.type === 'holiday' && normalizeRole(req.user?.role) !== 'admin') {
+            return res.status(403).json({
+                success: false,
+                message: 'Forbidden. Only Super Admins can update holiday events.'
+            });
+        }
+
+        const isTypeChangedToHoliday = existing.type !== 'holiday' && req.body.type === 'holiday';
+        const finalType = req.body.type !== undefined ? req.body.type : existing.type;
+        const isHolidayDateChanged = finalType === 'holiday' && req.body.date && toISTDateString(req.body.date) !== toISTDateString(existing.date);
+        const shouldNotify = isTypeChangedToHoliday || isHolidayDateChanged;
+
         const event = await Event.findByIdAndUpdate(req.params.id, req.body, { new: true });
-        if (!event) return res.status(404).json({ success: false, message: 'Event not found' });
+
+        if (shouldNotify && event) {
+            await sendHolidayEventNotifications(event, req.user);
+        }
+
         res.json({ success: true, event });
     } catch (error) {
         res.status(400).json({ success: false, message: error.message });

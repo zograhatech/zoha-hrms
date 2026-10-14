@@ -2,12 +2,12 @@ import { useState, useEffect } from 'react';
 import API from '../../api/axios';
 import { useBranding } from '../../context/BrandingContext';
 import { useAuth } from '../../context/AuthContext';
-import { isManagerRole } from '../../utils/roleHelper';
+import { isManagerRole, isSuperAdmin } from '../../utils/roleHelper';
 
 import {
     FiSettings, FiBriefcase, FiMail, FiClock,
     FiSave, FiSend, FiPlus, FiEye, FiEyeOff,
-    FiX, FiUmbrella, FiTrash2, FiEdit2, FiLock, FiShield, FiUserCheck, FiPercent, FiVideo, FiLayers, FiCreditCard
+    FiX, FiUmbrella, FiTrash2, FiEdit2, FiLock, FiShield, FiUserCheck, FiPercent, FiVideo, FiLayers, FiCreditCard, FiCalendar
 } from 'react-icons/fi';
 
 import ZoomSettings from '../zoom/ZoomSettings';
@@ -255,6 +255,68 @@ export default function Settings() {
         }
     };
 
+    const [holidays, setHolidays] = useState([]);
+    const [loadingHolidays, setLoadingHolidays] = useState(false);
+    const [holidayForm, setHolidayForm] = useState({ date: '', name: '' });
+    const [submittingHoliday, setSubmittingHoliday] = useState(false);
+
+    const fetchHolidays = async () => {
+        try {
+            setLoadingHolidays(true);
+            const res = await API.get('/holidays');
+            if (res.data.success) {
+                setHolidays(res.data.holidays || []);
+            }
+        } catch (err) {
+            console.error('[fetchHolidays]', err);
+        } finally {
+            setLoadingHolidays(false);
+        }
+    };
+
+    useEffect(() => {
+        if (activeTab === 'holidays' && isSuperAdmin(user)) {
+            fetchHolidays();
+        }
+    }, [activeTab, user]);
+
+    const handleCreateHoliday = async (e) => {
+        e.preventDefault();
+        if (!holidayForm.date || !holidayForm.name.trim()) {
+            showToast('Please provide both holiday date and name.', 'error');
+            return;
+        }
+        try {
+            setSubmittingHoliday(true);
+            const res = await API.post('/holidays', {
+                date: holidayForm.date,
+                name: holidayForm.name.trim()
+            });
+            if (res.data.success) {
+                showToast('Holiday created successfully!');
+                setHolidayForm({ date: '', name: '' });
+                fetchHolidays();
+            }
+        } catch (err) {
+            showToast(err.response?.data?.message || 'Failed to create holiday.', 'error');
+        } finally {
+            setSubmittingHoliday(false);
+        }
+    };
+
+    const handleDeleteHoliday = async (id) => {
+        if (!window.confirm('Are you sure you want to delete this holiday?')) return;
+        try {
+            const res = await API.delete(`/holidays/${id}`);
+            if (res.data.success) {
+                showToast('Holiday deleted successfully!');
+                setHolidays(prev => prev.filter(h => h._id !== id));
+            }
+        } catch (err) {
+            showToast(err.response?.data?.message || 'Failed to delete holiday.', 'error');
+        }
+    };
+
     if (loading) return <div className="page-loader"><div className="loading-spinner" /></div>;
 
     return (
@@ -283,6 +345,9 @@ export default function Settings() {
                 )}
                 {(isManagerRole(user) || permissions.includes('manage_settings')) && (
                     <button className={`tab-link ${activeTab === 'users' ? 'active' : ''}`} onClick={() => setActiveTab('users')}><FiUserCheck /> User Management</button>
+                )}
+                {isSuperAdmin(user) && (
+                    <button className={`tab-link ${activeTab === 'holidays' ? 'active' : ''}`} onClick={() => setActiveTab('holidays')}><FiCalendar /> Holidays</button>
                 )}
 
             </div>
@@ -688,6 +753,86 @@ export default function Settings() {
             {activeTab === 'integrations' && (
                 <div style={{ backgroundColor: 'var(--bg-lite)' }}>
                     <ZoomSettings />
+                </div>
+            )}
+
+            {activeTab === 'holidays' && isSuperAdmin(user) && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+                    <div className="card">
+                        <h3 style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <FiCalendar /> Mark as Holiday
+                        </h3>
+                        <form onSubmit={handleCreateHoliday} style={{ maxWidth: 500 }}>
+                            <div className="form-group" style={{ marginBottom: 16 }}>
+                                <label className="form-label">Holiday Date (IST)</label>
+                                <input
+                                    type="date"
+                                    className="form-input"
+                                    value={holidayForm.date}
+                                    onChange={e => setHolidayForm({ ...holidayForm, date: e.target.value })}
+                                    required
+                                />
+                            </div>
+                            <div className="form-group" style={{ marginBottom: 16 }}>
+                                <label className="form-label">Holiday Name</label>
+                                <input
+                                    type="text"
+                                    className="form-input"
+                                    placeholder="e.g. Republic Day, Diwali"
+                                    value={holidayForm.name}
+                                    onChange={e => setHolidayForm({ ...holidayForm, name: e.target.value })}
+                                    required
+                                />
+                            </div>
+                            <button
+                                type="submit"
+                                className="btn btn-primary"
+                                disabled={submittingHoliday}
+                                style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}
+                            >
+                                <FiPlus /> {submittingHoliday ? 'Marking...' : 'Mark as Holiday'}
+                            </button>
+                        </form>
+                    </div>
+
+                    <div className="card">
+                        <h3 style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <FiCalendar /> Declared Holidays
+                        </h3>
+                        {loadingHolidays ? (
+                            <p style={{ color: 'var(--text-muted)' }}>Loading holidays...</p>
+                        ) : holidays.length === 0 ? (
+                            <p style={{ color: 'var(--text-muted)' }}>No holidays declared yet.</p>
+                        ) : (
+                            <table className="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Date</th>
+                                        <th>Holiday Name</th>
+                                        <th>Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {holidays.map(h => (
+                                        <tr key={h._id || h.date}>
+                                            <td style={{ fontWeight: 600 }}>{h.date}</td>
+                                            <td>{h.name}</td>
+                                            <td>
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-danger btn-sm"
+                                                    onClick={() => handleDeleteHoliday(h._id)}
+                                                    style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                                                >
+                                                    <FiTrash2 /> Delete
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        )}
+                    </div>
                 </div>
             )}
 

@@ -3,9 +3,10 @@ const Employee = require('../models/Employee');
 const Department = require('../models/Department');
 const Leave = require('../models/Leave');
 const Event = require('../models/Event');
+const Holiday = require('../models/Holiday');
 const XLSX = require('xlsx');
 const { toISTDateString, getISTDayStart, getISTDayEnd, getISOWeekInfo } = require('../utils/istDate');
-const { getVisibleEmployeeScope, isEmployeeVisible } = require('../utils/visibilityHelper');
+const { getVisibleEmployeeScope, isEmployeeVisible, normalizeRole } = require('../utils/visibilityHelper');
 
 // GET /api/attendance/:employeeId
 const getEmployeeAttendance = async (req, res) => {
@@ -73,12 +74,25 @@ const getEmployeeAttendance = async (req, res) => {
             let totalHours = 0;
             let hasOpenSession = false;
 
+            let hasNeedsReview = false;
+
             day.records.forEach(rec => {
-                if (rec.check_in && rec.check_out) {
+                const isHolidayRow = rec.status === 'holiday';
+                const hasCheckIn = !!rec.check_in;
+                const hasCheckOut = !!rec.check_out;
+                const isInverted = hasCheckIn && hasCheckOut && (new Date(rec.check_out) < new Date(rec.check_in));
+
+                if (rec.needs_review || isInverted) {
+                    hasNeedsReview = true;
+                }
+
+                if (!isHolidayRow && hasCheckIn && !hasCheckOut) {
+                    hasOpenSession = true;
+                }
+
+                if (hasCheckIn && hasCheckOut && !isInverted && !rec.needs_review) {
                     const diffMs = new Date(rec.check_out) - new Date(rec.check_in);
                     totalHours += diffMs / (1000 * 60 * 60);
-                } else if (rec.check_in && !rec.check_out) {
-                    hasOpenSession = true;
                 }
             });
 
@@ -89,6 +103,7 @@ const getEmployeeAttendance = async (req, res) => {
                 check_out: day.check_out,
                 work_hours: Number(totalHours.toFixed(2)),
                 is_open_session: hasOpenSession,
+                needs_review: hasNeedsReview,
                 _id: day.records[0]?._id
             };
         });
@@ -171,7 +186,7 @@ const getTeamAttendance = async (req, res) => {
             if (data && data.records.length > 0) {
                 let totalHours = 0;
                 data.records.forEach(rec => {
-                    if (rec.check_in && rec.check_out) {
+                    if (rec.check_in && rec.check_out && !rec.is_open_session) {
                         const diffMs = new Date(rec.check_out) - new Date(rec.check_in);
                         totalHours += diffMs / (1000 * 60 * 60);
                     }
@@ -205,6 +220,16 @@ const getTeamAttendance = async (req, res) => {
     }
 };
 
+// Helper to find the most recent open session for an employee (all time)
+const findOpenSession = async (employeeId) => {
+    return await Attendance.findOne({
+        employee_id: employeeId,
+        check_in: { $exists: true, $ne: null },
+        status: { $ne: 'holiday' },
+        $or: [{ check_out: { $exists: false } }, { check_out: null }]
+    }).sort({ check_in: -1 });
+};
+
 // Helper to parse "HH:mm" to today's date
 const parseTime = (timeStr) => {
     const [hours, minutes] = timeStr.split(':').map(Number);
@@ -234,19 +259,51 @@ const clockIn = async (req, res) => {
             });
         }
 
-        // 1. Check if already clocked in for an active session
-        const activeSession = await Attendance.findOne({
-            employee_id: req.user.id,
-            check_out: { $exists: false },
-            date: { $gte: today }
-        });
+        // 1. Check if already clocked in for an active session using findOpenSession
+        const activeSession = await findOpenSession(req.user.id);
 
         if (activeSession) {
-            return res.status(400).json({ success: false, message: 'You are already clocked in.' });
+            const sessionDate = activeSession.check_in || activeSession.date || new Date();
+            const istDateStr = toISTDateString(sessionDate);
+            const [y, m, d] = istDateStr.split('-');
+            const formattedDate = `${d}/${m}/${y}`;
+            const todayIST = toISTDateString(new Date());
+
+            const message = istDateStr !== todayIST
+                ? `You have an open session from ${formattedDate}. Clock out first.`
+                : 'Cannot clock in while a session is open. Please clock out first.';
+
+            return res.status(400).json({
+                success: false,
+                message
+            });
+        }
+
+        // 2. Reject if now is earlier than the latest attendance check_in for this employee
+        const now = new Date();
+        const latestAttendance = await Attendance.findOne({
+            employee_id: req.user.id,
+            check_in: { $exists: true, $ne: null }
+        }).sort({ check_in: -1 }).lean();
+
+        if (latestAttendance && latestAttendance.check_in && now < new Date(latestAttendance.check_in)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid session time. Contact HR.'
+            });
         }
 
         // --- Holiday and Leave Checks ---
         // 1. Check for Holiday
+        const todayStr = toISTDateString(new Date());
+        const holidayRecord = await Holiday.findOne({ date: todayStr });
+        if (holidayRecord) {
+            return res.status(400).json({
+                success: false,
+                message: `Today is a holiday (${holidayRecord.name}). Clock-in is not required.`
+            });
+        }
+
         const holidayEvent = await Event.findOne({
             type: 'holiday',
             date: {
@@ -279,7 +336,6 @@ const clockIn = async (req, res) => {
         // --- END OF CHECKS ---
 
         let status = 'present';
-        const now = new Date();
         
         let shiftStart = parseTime(shift.start_time);
         let shiftEnd = parseTime(shift.end_time);
@@ -300,17 +356,6 @@ const clockIn = async (req, res) => {
         const earliestClockIn = new Date(shiftStart);
         earliestClockIn.setHours(earliestClockIn.getHours() - 2);
 
-        // Removed strict window restriction to allow clock-in regardless of server/local timezone mismatch.
-        // Employees should be allowed to clock in if they are reporting for work.
-        /*
-        if (now < earliestClockIn || now > shiftEnd) {
-            return res.status(400).json({ 
-                success: false, 
-                message: `You cannot clock in right now. Your shift is from ${shift.start_time} to ${shift.end_time}.` 
-            });
-        }
-        */
-
         // Calculate exact start limit based on grace period (in minutes)
         const latestOnTime = new Date(shiftStart);
         latestOnTime.setMinutes(latestOnTime.getMinutes() + (shift.grace_period || 15));
@@ -323,7 +368,9 @@ const clockIn = async (req, res) => {
             employee_id: req.user.id,
             date: new Date(),
             check_in: new Date(),
-            status: status
+            status: status,
+            is_open_session: true,
+            work_hours: 0
         });
 
         res.status(201).json({ success: true, message: 'Clocked in successfully.', attendance });
@@ -336,25 +383,39 @@ const clockIn = async (req, res) => {
 // POST /api/attendance/clock-out
 const clockOut = async (req, res) => {
     try {
-        const last24Hours = new Date(new Date().getTime() - 24 * 60 * 60 * 1000);
+        // Find the most recent open attendance session using findOpenSession
+        const attendance = await findOpenSession(req.user.id);
 
-        // Find the most recent attendance record that doesn't have a checkout
-        const attendance = await Attendance.findOne({
-            employee_id: req.user.id,
-            check_out: { $exists: false },
-            date: { $gte: last24Hours }
-        }).sort({ date: -1 });
-
-        if (!attendance) {
-            return res.status(400).json({ success: false, message: 'You have not clocked in, or you already clocked out.' });
+        if (!attendance || attendance.status === 'holiday' || !attendance.check_in) {
+            return res.status(400).json({
+                success: false,
+                message: (!attendance ? 'No open clock-in session found to clock out from.' : 'No open session to clock out.')
+            });
         }
 
         const now = new Date();
-        const diffMs = now - attendance.check_in;
-        const diffHrs = diffMs / (1000 * 60 * 60);
+        const checkInTime = new Date(attendance.check_in || attendance.date);
+        const isInvertedOrFuture = checkInTime > now;
+
+        let diffHrs = 0;
+        if (!isInvertedOrFuture) {
+            const diffMs = Math.max(0, now - checkInTime);
+            diffHrs = diffMs / (1000 * 60 * 60);
+        }
 
         attendance.check_out = now;
-        attendance.work_hours = Number(diffHrs.toFixed(2));
+        attendance.work_hours = isInvertedOrFuture ? 0 : Number(diffHrs.toFixed(2));
+        attendance.is_open_session = false;
+
+        // If check_in is in the future or check_out < check_in, or session spans multiple IST days
+        const checkInIST = toISTDateString(checkInTime);
+        const checkOutIST = toISTDateString(now);
+        if (isInvertedOrFuture || (checkInIST && checkOutIST && checkInIST !== checkOutIST)) {
+            attendance.needs_review = true;
+        } else {
+            attendance.needs_review = false;
+        }
+
         await attendance.save();
 
         res.json({ success: true, message: 'Clocked out successfully.', attendance });
@@ -368,20 +429,23 @@ const clockOut = async (req, res) => {
 // GET /api/attendance/today
 const getTodayStatus = async (req, res) => {
     try {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
+        const todayISTStr = toISTDateString(new Date());
+        const todayStart = getISTDayStart(todayISTStr);
+        const todayEnd = getISTDayEnd(todayISTStr);
 
-        // Prioritize finding an active session (not checked out) or the latest session for today
-        let attendance = await Attendance.findOne({
-            employee_id: req.user.id,
-            check_out: { $exists: false },
-            date: { $gte: today }
-        });
+        // Find active open session using findOpenSession
+        const openSessionRecord = await findOpenSession(req.user.id);
+        const open_session = openSessionRecord ? {
+            check_in: openSessionRecord.check_in,
+            date: openSessionRecord.date
+        } : null;
 
+        // attendance record for today's display
+        let attendance = openSessionRecord;
         if (!attendance) {
             attendance = await Attendance.findOne({
                 employee_id: req.user.id,
-                date: { $gte: today }
+                date: { $gte: todayStart, $lt: todayEnd }
             }).sort({ createdAt: -1 });
         }
 
@@ -391,33 +455,39 @@ const getTodayStatus = async (req, res) => {
 
         const dailyCount = await Attendance.countDocuments({
             employee_id: req.user.id,
-            date: { $gte: today }
+            date: { $gte: todayStart, $lt: todayEnd }
         });
 
         const limit = shift?.allowed_clock_ins || 1;
 
         // Check for Holiday
+        const todayStr = toISTDateString(new Date());
+        const holidayRecord = await Holiday.findOne({ date: todayStr });
         const holidayEvent = await Event.findOne({
             type: 'holiday',
             date: {
-                $gte: today,
-                $lt: new Date(today.getTime() + 24 * 60 * 60 * 1000)
+                $gte: todayStart,
+                $lt: todayEnd
             }
         });
+
+        const isHoliday = !!(holidayRecord || holidayEvent);
+        const holidayName = holidayRecord?.name || holidayEvent?.title;
 
         // Check for Leave
         const approvedLeave = await Leave.findOne({
             employee_id: req.user.id,
             status: 'approved',
             start_date: { $lte: new Date() },
-            end_date: { $gte: today }
+            end_date: { $gte: todayStart }
         });
 
         res.json({ 
             success: true, 
             attendance,
-            isHoliday: !!holidayEvent,
-            holidayName: holidayEvent?.title,
+            open_session,
+            isHoliday,
+            holidayName,
             isOnLeave: !!approvedLeave,
             dailyCount,
             limit
@@ -430,6 +500,13 @@ const getTodayStatus = async (req, res) => {
 // POST /api/attendance/mark-holiday
 const markHoliday = async (req, res) => {
     try {
+        const callerRole = normalizeRole(req.user?.role);
+        if (callerRole !== 'admin') {
+            return res.status(403).json({
+                success: false,
+                message: 'Forbidden. Only Super Admins can mark holidays.'
+            });
+        }
         const { startDate, endDate } = req.body;
         if (!startDate) return res.status(400).json({ success: false, message: 'Start date is required.' });
 
@@ -553,11 +630,18 @@ const getDailyAttendanceData = async (allowedEmpIds, startDateStr, endDateStr) =
         let hasOpenSession = false;
 
         item.records.forEach(rec => {
-            if (rec.check_in && rec.check_out) {
+            const isHolidayRow = rec.status === 'holiday';
+            const hasCheckIn = !!rec.check_in;
+            const hasCheckOut = !!rec.check_out;
+            const isInverted = hasCheckIn && hasCheckOut && (new Date(rec.check_out) < new Date(rec.check_in));
+
+            if (!isHolidayRow && hasCheckIn && !hasCheckOut) {
+                hasOpenSession = true;
+            }
+
+            if (hasCheckIn && hasCheckOut && !isInverted && !rec.needs_review) {
                 const diffMs = new Date(rec.check_out) - new Date(rec.check_in);
                 totalHours += diffMs / (1000 * 60 * 60);
-            } else if (rec.check_in && !rec.check_out) {
-                hasOpenSession = true;
             }
         });
 

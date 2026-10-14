@@ -6,7 +6,7 @@ import AttendanceWidget from '../../components/AttendanceWidget';
 import {
     FiUsers, FiUserPlus, FiClock, FiActivity, FiTag,
     FiGift, FiStar, FiExternalLink, FiFileText, FiHelpCircle, FiCreditCard,
-    FiCpu, FiVideo, FiLogOut, FiZap, FiShield, FiBriefcase, FiUser
+    FiCpu, FiVideo, FiLogOut, FiZap, FiShield, FiBriefcase, FiUser, FiCalendar
 } from 'react-icons/fi';
 import BirthdayCard from '../../components/BirthdayCard';
 import MonthCalendar from '../../components/MonthCalendar';
@@ -43,6 +43,7 @@ export default function AdminDashboard() {
     const [stats, setStats] = useState(null);
     const [pending, setPending] = useState([]);
     const [upcomingEvents, setUpcomingEvents] = useState([]);
+    const [upcomingHolidays, setUpcomingHolidays] = useState([]);
     const [attendanceTrends, setAttendanceTrends] = useState([]);
     const [zoomMeetings, setZoomMeetings] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -122,13 +123,16 @@ export default function AdminDashboard() {
         if (hasExit) calls.push(API.get('/resignations'));
         else calls.push(Promise.resolve({ data: { resignations: [] } }));
 
+        calls.push(API.get('/holidays/upcoming').catch(() => ({ data: { holidays: [] } })));
+
         Promise.all(calls).then((responses) => {
-            const [s, l, , , u, a, z, r] = responses;
+            const [s, l, , , u, a, z, r, h] = responses;
             setStats(s.data.stats);
             setPending(l.data.leaves || []);
             setUpcomingEvents(u.data.events || []);
             setAttendanceTrends(a.data.trends || []);
             setResignations(r.data.resignations || []);
+            setUpcomingHolidays(h?.data?.holidays || []);
             
             if (z && z.data && z.data.success) {
                 const now = new Date();
@@ -144,6 +148,14 @@ export default function AdminDashboard() {
     if (loading) return <div className="page-loader"><div className="loading-spinner" /></div>;
 
     const calendarEvents = [];
+    upcomingHolidays.forEach(h => {
+        calendarEvents.push({
+            date: h.date,
+            title: `${h.name} (Holiday)`,
+            type: 'holiday',
+            color: '#10b981'
+        });
+    });
     pending.forEach(l => {
         if (l.start_date) {
             calendarEvents.push({
@@ -361,6 +373,31 @@ export default function AdminDashboard() {
                     })()}
                 </div>
 
+                <div className="card">
+                    <h3 style={{ marginBottom: 16, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <FiCalendar className="text-primary" /> Upcoming Holidays
+                    </h3>
+                    {upcomingHolidays.length > 0 ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            {upcomingHolidays.slice(0, 5).map(h => (
+                                <div key={h._id || h.date} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 12px', background: 'rgba(255,255,255,0.03)', borderRadius: 12, border: '1px solid var(--border-color)' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                        <div style={{ width: 36, height: 36, borderRadius: 8, background: '#10b98122', color: '#10b981', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: '0.9rem' }}>
+                                            <FiCalendar />
+                                        </div>
+                                        <div>
+                                            <div style={{ fontSize: '0.875rem', fontWeight: 600 }}>{h.name}</div>
+                                            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{formatDate(h.date)}</div>
+                                        </div>
+                                    </div>
+                                    <span className="badge badge-success" style={{ fontSize: '0.75rem' }}>Holiday</span>
+                                </div>
+                            ))}
+                        </div>
+                    ) : (
+                        <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>No upcoming holidays scheduled.</p>
+                    )}
+                </div>
             </div>
 
             {showSuperAdminModal && (

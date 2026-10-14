@@ -3158,6 +3158,1102 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(res.body.message).toBe('Forbidden. You can only view your own performance records.');
         });
     });
+
+    describe('14. Phase 1 Attendance Sessions, Holidays, and Dashboard Tests', () => {
+        let deptP1, adminP1, mgrP1, tlP1, empP1;
+        let adminTokenP1, mgrTokenP1, tlTokenP1, empTokenP1;
+        let defaultShift;
+        const Holiday = require('../models/Holiday');
+        const Event = require('../models/Event');
+        const Attendance = require('../models/Attendance');
+        const Notification = require('../models/Notification');
+        const Leave = require('../models/Leave');
+        const Shift = require('../models/Shift');
+        const Department = require('../models/Department');
+        const Employee = require('../models/Employee');
+        const { toISTDateString, getISTDayStart, getISTDayEnd } = require('../utils/istDate');
+
+        beforeAll(async () => {
+            deptP1 = await Department.create({ name: 'TEST_P1_DEPT' });
+            const pwd = await bcrypt.hash('Secret123!', 10);
+
+            defaultShift = await Shift.findOne({ is_default: true });
+            if (!defaultShift) {
+                defaultShift = await Shift.create({
+                    name: 'TEST_P1_DEFAULT_SHIFT',
+                    start_time: '09:00',
+                    end_time: '18:00',
+                    is_default: true,
+                    grace_period: 15
+                });
+            }
+
+            adminP1 = await Employee.create({
+                id: 'TEST_P1_ADMIN',
+                name: 'P1 Admin',
+                email: 'p1_admin@zograhatechnologies.test',
+                password_hash: pwd,
+                role: 'admin',
+                department_id: deptP1._id,
+                status: 'active'
+            });
+
+            mgrP1 = await Employee.create({
+                id: 'TEST_P1_MGR',
+                name: 'P1 Manager',
+                email: 'p1_mgr@zograhatechnologies.test',
+                password_hash: pwd,
+                role: 'manager',
+                department_id: deptP1._id,
+                status: 'active'
+            });
+
+            tlP1 = await Employee.create({
+                id: 'TEST_P1_TL',
+                name: 'P1 Team Lead',
+                email: 'p1_tl@zograhatechnologies.test',
+                password_hash: pwd,
+                role: 'team_lead',
+                department_id: deptP1._id,
+                status: 'active'
+            });
+
+            empP1 = await Employee.create({
+                id: 'TEST_P1_EMP',
+                name: 'P1 Employee',
+                email: 'p1_emp@zograhatechnologies.test',
+                password_hash: pwd,
+                role: 'employee',
+                department_id: deptP1._id,
+                status: 'active'
+            });
+
+            adminTokenP1 = jwt.sign({ id: adminP1.id, _id: adminP1._id, role: adminP1.role }, process.env.JWT_SECRET);
+            mgrTokenP1 = jwt.sign({ id: mgrP1.id, _id: mgrP1._id, role: mgrP1.role }, process.env.JWT_SECRET);
+            tlTokenP1 = jwt.sign({ id: tlP1.id, _id: tlP1._id, role: tlP1.role }, process.env.JWT_SECRET);
+            empTokenP1 = jwt.sign({ id: empP1.id, _id: empP1._id, role: empP1.role }, process.env.JWT_SECRET);
+        });
+
+        afterAll(async () => {
+            if (empP1) await Attendance.deleteMany({ employee_id: empP1.id });
+            await Employee.deleteMany({ id: { $in: ['TEST_P1_ADMIN', 'TEST_P1_MGR', 'TEST_P1_TL', 'TEST_P1_EMP'] } });
+            if (deptP1) await Department.deleteOne({ _id: deptP1._id });
+        });
+
+        // 1. Reject second check-in while a session is open with 400
+        it('1. Reject a second check-in while a session is open with 400', async () => {
+            await Attendance.deleteMany({ employee_id: empP1.id });
+            try {
+                const in1 = await request(app)
+                    .post('/api/attendance/clock-in')
+                    .set('Authorization', `Bearer ${empTokenP1}`);
+                expect(in1.status).toBe(201);
+                expect(in1.body.attendance.is_open_session).toBe(true);
+
+                const in2 = await request(app)
+                    .post('/api/attendance/clock-in')
+                    .set('Authorization', `Bearer ${empTokenP1}`);
+                expect(in2.status).toBe(400);
+                expect(in2.body.message).toBe('Cannot clock in while a session is open. Please clock out first.');
+            } finally {
+                await Attendance.deleteMany({ employee_id: empP1.id });
+            }
+        });
+
+        // 2. Reject check-out when no session is open with 400
+        it('2. Reject check-out when no session is open with 400', async () => {
+            await Attendance.deleteMany({ employee_id: empP1.id });
+            const out = await request(app)
+                .post('/api/attendance/clock-out')
+                .set('Authorization', `Bearer ${empTokenP1}`);
+            expect(out.status).toBe(400);
+            expect(out.body.message).toBe('No open clock-in session found to clock out from.');
+        });
+
+        // 3. Two completed sessions in one day sum correctly and open_session is false
+        it('3. Two completed sessions in one day sum correctly and open_session is false', async () => {
+            await Attendance.deleteMany({ employee_id: empP1.id });
+            const testDateStr = '2026-06-15';
+            const s1In = new Date('2026-06-15T09:00:00.000Z');
+            const s1Out = new Date('2026-06-15T12:00:00.000Z'); // 3 hours
+            const s2In = new Date('2026-06-15T13:00:00.000Z');
+            const s2Out = new Date('2026-06-15T17:00:00.000Z'); // 4 hours
+
+            try {
+                await Attendance.create([
+                    {
+                        employee_id: empP1.id,
+                        date: s1In,
+                        check_in: s1In,
+                        check_out: s1Out,
+                        work_hours: 3,
+                        status: 'present',
+                        is_open_session: false
+                    },
+                    {
+                        employee_id: empP1.id,
+                        date: s2In,
+                        check_in: s2In,
+                        check_out: s2Out,
+                        work_hours: 4,
+                        status: 'present',
+                        is_open_session: false
+                    }
+                ]);
+
+                const res = await request(app)
+                    .get(`/api/attendance/logs?employee_id=${empP1.id}&from=${testDateStr}&to=${testDateStr}`)
+                    .set('Authorization', `Bearer ${adminTokenP1}`);
+
+                expect(res.status).toBe(200);
+                expect(res.body.logs.length).toBe(1);
+                const dayLog = res.body.logs[0];
+                expect(dayLog.worked_hours).toBe(7);
+                expect(dayLog.open_session).toBe(false);
+                expect(new Date(dayLog.first_check_in).toISOString()).toBe(s1In.toISOString());
+                expect(new Date(dayLog.last_check_out).toISOString()).toBe(s2Out.toISOString());
+            } finally {
+                await Attendance.deleteMany({ employee_id: empP1.id });
+            }
+        });
+
+        // 4. An open session is flagged and excluded from total hours
+        it('4. An open session is flagged and excluded from total hours', async () => {
+            await Attendance.deleteMany({ employee_id: empP1.id });
+            const testDateStr = '2026-06-16';
+            const s1In = new Date('2026-06-16T09:00:00.000Z');
+            const s1Out = new Date('2026-06-16T13:00:00.000Z'); // 4 hours
+            const s2In = new Date('2026-06-16T14:00:00.000Z'); // open session
+
+            try {
+                await Attendance.create([
+                    {
+                        employee_id: empP1.id,
+                        date: s1In,
+                        check_in: s1In,
+                        check_out: s1Out,
+                        work_hours: 4,
+                        status: 'present',
+                        is_open_session: false
+                    },
+                    {
+                        employee_id: empP1.id,
+                        date: s2In,
+                        check_in: s2In,
+                        status: 'present',
+                        is_open_session: true,
+                        work_hours: 0
+                    }
+                ]);
+
+                const res = await request(app)
+                    .get(`/api/attendance/logs?employee_id=${empP1.id}&from=${testDateStr}&to=${testDateStr}`)
+                    .set('Authorization', `Bearer ${adminTokenP1}`);
+
+                expect(res.status).toBe(200);
+                expect(res.body.logs.length).toBe(1);
+                const dayLog = res.body.logs[0];
+                expect(dayLog.worked_hours).toBe(4);
+                expect(dayLog.open_session).toBe(true);
+            } finally {
+                await Attendance.deleteMany({ employee_id: empP1.id });
+            }
+        });
+
+        // 5. IST midnight boundary: session near UTC midnight correctly maps to IST calendar date
+        it('5. Attendance on IST midnight boundary maps to correct IST date', async () => {
+            await Attendance.deleteMany({ employee_id: empP1.id });
+            // 2026-06-17 19:00:00 UTC = 2026-06-18 00:30:00 IST
+            const boundaryDate = new Date('2026-06-17T19:00:00.000Z');
+            const istDateStr = toISTDateString(boundaryDate);
+            expect(istDateStr).toBe('2026-06-18');
+
+            try {
+                await Attendance.create({
+                    employee_id: empP1.id,
+                    date: boundaryDate,
+                    check_in: boundaryDate,
+                    check_out: new Date('2026-06-17T21:00:00.000Z'),
+                    work_hours: 2,
+                    status: 'present',
+                    is_open_session: false
+                });
+
+                const res18 = await request(app)
+                    .get(`/api/attendance/logs?employee_id=${empP1.id}&from=2026-06-18&to=2026-06-18`)
+                    .set('Authorization', `Bearer ${adminTokenP1}`);
+
+                expect(res18.status).toBe(200);
+                expect(res18.body.logs.length).toBe(1);
+                expect(res18.body.logs[0].date).toBe('2026-06-18');
+
+                const res17 = await request(app)
+                    .get(`/api/attendance/logs?employee_id=${empP1.id}&from=2026-06-17&to=2026-06-17`)
+                    .set('Authorization', `Bearer ${adminTokenP1}`);
+
+                expect(res17.status).toBe(200);
+                expect(res17.body.logs.length).toBe(0);
+            } finally {
+                await Attendance.deleteMany({ employee_id: empP1.id });
+            }
+        });
+
+        // 6. SuperAdmin can create a holiday (POST /api/holidays -> 201) and fans out notifications
+        it('6. SuperAdmin can create a holiday (201) and fan-out notifications to active employees', async () => {
+            const hDate = '2026-12-25';
+            await Holiday.deleteOne({ date: hDate });
+            await Notification.deleteMany({ type: 'holiday' });
+
+            try {
+                const res = await request(app)
+                    .post('/api/holidays')
+                    .set('Authorization', `Bearer ${adminTokenP1}`)
+                    .send({ date: hDate, name: 'Christmas Day' });
+
+                expect(res.status).toBe(201);
+                expect(res.body.success).toBe(true);
+                expect(res.body.holiday.date).toBe(hDate);
+                expect(res.body.holiday.name).toBe('Christmas Day');
+
+                const inDb = await Holiday.findOne({ date: hDate });
+                expect(inDb).not.toBeNull();
+
+                // Fan-out notifications to active employees
+                const notifs = await Notification.find({ type: 'holiday' });
+                expect(notifs.length).toBeGreaterThan(0);
+                const empNotif = notifs.find(n => n.recipient.toString() === empP1._id.toString());
+                expect(empNotif).toBeDefined();
+                expect(empNotif.title).toBe('New Holiday Announced');
+            } finally {
+                await Holiday.deleteOne({ date: hDate });
+                await Notification.deleteMany({ type: 'holiday' });
+            }
+        });
+
+        // 7. Non-admin roles (manager, team_lead, employee) get 403 on POST /api/holidays
+        it('7. Non-admin roles (manager, team_lead, employee) get 403 on POST /api/holidays', async () => {
+            const mgrRes = await request(app)
+                .post('/api/holidays')
+                .set('Authorization', `Bearer ${mgrTokenP1}`)
+                .send({ date: '2026-11-14', name: 'Diwali' });
+            expect(mgrRes.status).toBe(403);
+
+            const tlRes = await request(app)
+                .post('/api/holidays')
+                .set('Authorization', `Bearer ${tlTokenP1}`)
+                .send({ date: '2026-11-14', name: 'Diwali' });
+            expect(tlRes.status).toBe(403);
+
+            const empRes = await request(app)
+                .post('/api/holidays')
+                .set('Authorization', `Bearer ${empTokenP1}`)
+                .send({ date: '2026-11-14', name: 'Diwali' });
+            expect(empRes.status).toBe(403);
+        });
+
+        // 8. Non-admin roles get 403 on POST /api/attendance/mark-holiday
+        it('8. Non-admin roles get 403 on POST /api/attendance/mark-holiday', async () => {
+            const mgrRes = await request(app)
+                .post('/api/attendance/mark-holiday')
+                .set('Authorization', `Bearer ${mgrTokenP1}`)
+                .send({ startDate: '2026-11-14' });
+            expect(mgrRes.status).toBe(403);
+
+            const tlRes = await request(app)
+                .post('/api/attendance/mark-holiday')
+                .set('Authorization', `Bearer ${tlTokenP1}`)
+                .send({ startDate: '2026-11-14' });
+            expect(tlRes.status).toBe(403);
+
+            const empRes = await request(app)
+                .post('/api/attendance/mark-holiday')
+                .set('Authorization', `Bearer ${empTokenP1}`)
+                .send({ startDate: '2026-11-14' });
+            expect(empRes.status).toBe(403);
+
+            // Verify controller-level check directly
+            const { markHoliday } = require('../controllers/attendanceController');
+            let mockStatus = 0;
+            let mockJson = null;
+            const mockRes = {
+                status: (code) => { mockStatus = code; return mockRes; },
+                json: (data) => { mockJson = data; return mockRes; }
+            };
+            await markHoliday({ user: { role: 'manager' }, body: { startDate: '2026-11-14' } }, mockRes);
+            expect(mockStatus).toBe(403);
+            expect(mockJson.message).toBe('Forbidden. Only Super Admins can mark holidays.');
+        });
+
+        // 9. GET /api/holidays/upcoming returns future holidays for any authenticated role
+        it('9. GET /api/holidays/upcoming returns future holidays for all roles', async () => {
+            const futureDate = '2099-01-01';
+            await Holiday.deleteOne({ date: futureDate });
+            try {
+                await Holiday.create({
+                    date: futureDate,
+                    name: 'New Century Day',
+                    createdBy: adminP1.id
+                });
+
+                const res = await request(app)
+                    .get('/api/holidays/upcoming')
+                    .set('Authorization', `Bearer ${empTokenP1}`);
+
+                expect(res.status).toBe(200);
+                expect(res.body.success).toBe(true);
+                const dates = (res.body.holidays || []).map(h => h.date);
+                expect(dates).toContain(futureDate);
+            } finally {
+                await Holiday.deleteOne({ date: futureDate });
+            }
+        });
+
+        // 10. Dashboard overview displays sick leave this month count matching limit logic
+        it('10. Dashboard overview displays sick leave this month count matching limit logic', async () => {
+            await Leave.deleteMany({ employee_id: empP1.id });
+            const now = new Date();
+            // Start date in current month
+            const leaveStart = new Date(now.getFullYear(), now.getMonth(), 10);
+            const leaveEnd = new Date(now.getFullYear(), now.getMonth(), 11);
+
+            try {
+                await Leave.create({
+                    employee_id: empP1.id,
+                    leave_type: 'sick',
+                    status: 'pending',
+                    start_date: leaveStart,
+                    end_date: leaveEnd,
+                    total_days: 2,
+                    reason: 'Flu symptoms'
+                });
+
+                const res = await request(app)
+                    .get('/api/employees/dashboard-overview')
+                    .set('Authorization', `Bearer ${empTokenP1}`);
+
+                expect(res.status).toBe(200);
+                expect(res.body.success).toBe(true);
+                expect(res.body.dashboard.leave.sickLeaveThisMonth).toBeDefined();
+                expect(res.body.dashboard.leave.sickLeaveThisMonth.used).toBe(1);
+                expect(res.body.dashboard.leave.sickLeaveThisMonth.total).toBe(1);
+                expect(res.body.dashboard.leave.sickLeaveThisMonth.text).toBe('Sick leave this month: 1 of 1 used');
+            } finally {
+                await Leave.deleteMany({ employee_id: empP1.id });
+            }
+        });
+
+        // 11. Non-admin cannot create or update Event with type holiday (403)
+        it('11. Non-admin cannot create or update Event with type holiday (403)', async () => {
+            // Manager tries to create Event with type holiday
+            const createRes = await request(app)
+                .post('/api/events')
+                .set('Authorization', `Bearer ${mgrTokenP1}`)
+                .send({
+                    title: 'Manager Holiday',
+                    date: new Date(),
+                    startTime: '09:00',
+                    endTime: '17:00',
+                    type: 'holiday'
+                });
+            expect(createRes.status).toBe(403);
+            expect(createRes.body.message).toMatch(/Forbidden/i);
+
+            // Admin creates a normal event
+            const adminEvent = await Event.create({
+                title: 'Admin Normal Event',
+                date: new Date(),
+                startTime: '09:00',
+                endTime: '17:00',
+                type: 'meeting',
+                createdBy: adminP1._id
+            });
+
+            try {
+                // Manager tries to update type to holiday
+                const updateRes = await request(app)
+                    .put(`/api/events/${adminEvent._id}`)
+                    .set('Authorization', `Bearer ${mgrTokenP1}`)
+                    .send({ type: 'holiday' });
+                expect(updateRes.status).toBe(403);
+                expect(updateRes.body.message).toMatch(/Forbidden/i);
+            } finally {
+                await Event.deleteOne({ _id: adminEvent._id });
+            }
+        });
+
+        // 12. Upcoming holidays and dashboard overview deduplicate Event and Holiday on the same date
+        it('12. Upcoming holidays and dashboard overview deduplicate Event and Holiday on the same date', async () => {
+            const dupDateStr = '2099-05-15';
+            const dupDateObj = new Date(`${dupDateStr}T09:00:00Z`);
+
+            await Holiday.deleteOne({ date: dupDateStr });
+            await Event.deleteMany({ title: 'Duplicate Event Holiday' });
+
+            try {
+                // Create both a Holiday model record and an Event model record on the same date
+                await Holiday.create({
+                    date: dupDateStr,
+                    name: 'Duplicate Model Holiday',
+                    createdBy: adminP1.id
+                });
+                await Event.create({
+                    title: 'Duplicate Event Holiday',
+                    date: dupDateObj,
+                    startTime: '00:00',
+                    endTime: '23:59',
+                    type: 'holiday',
+                    createdBy: adminP1._id
+                });
+
+                // Test GET /api/holidays/upcoming
+                const resHolidays = await request(app)
+                    .get('/api/holidays/upcoming')
+                    .set('Authorization', `Bearer ${empTokenP1}`);
+
+                expect(resHolidays.status).toBe(200);
+                const matchingHolidays = (resHolidays.body.holidays || []).filter(h => h.date === dupDateStr);
+                // Must be exactly 1, not 2
+                expect(matchingHolidays.length).toBe(1);
+
+                // Test GET /api/employees/dashboard-overview
+                const resDashboard = await request(app)
+                    .get('/api/employees/dashboard-overview')
+                    .set('Authorization', `Bearer ${empTokenP1}`);
+
+                expect(resDashboard.status).toBe(200);
+                const dashboardMatching = (resDashboard.body.dashboard?.upcomingHolidays || []).filter(h => h.date === dupDateStr);
+                expect(dashboardMatching.length).toBe(1);
+            } finally {
+                await Holiday.deleteOne({ date: dupDateStr });
+                await Event.deleteMany({ title: 'Duplicate Event Holiday' });
+            }
+        });
+
+        // 13. SuperAdmin creates a holiday Event, and active employees receive a holiday notification
+        it('13. SuperAdmin creates a holiday Event, and active employees receive a holiday notification', async () => {
+            const hDate = new Date('2027-01-01T09:00:00Z');
+            await Event.deleteMany({ title: 'TEST_SUPERADMIN_HOLIDAY_EVENT' });
+            await Notification.deleteMany({ title: 'New Holiday Announced' });
+
+            try {
+                const res = await request(app)
+                    .post('/api/events')
+                    .set('Authorization', `Bearer ${adminTokenP1}`)
+                    .send({
+                        title: 'TEST_SUPERADMIN_HOLIDAY_EVENT',
+                        date: hDate,
+                        startTime: '00:00',
+                        endTime: '23:59',
+                        type: 'holiday'
+                    });
+
+                expect(res.status).toBe(201);
+                expect(res.body.success).toBe(true);
+
+                const notifs = await Notification.find({ type: 'holiday', title: 'New Holiday Announced' });
+                expect(notifs.length).toBeGreaterThan(0);
+                const empNotif = notifs.find(n => n.recipient.toString() === empP1._id.toString());
+                expect(empNotif).toBeDefined();
+                expect(empNotif.message).toContain('TEST_SUPERADMIN_HOLIDAY_EVENT');
+            } finally {
+                await Event.deleteMany({ title: 'TEST_SUPERADMIN_HOLIDAY_EVENT' });
+                await Notification.deleteMany({ title: 'New Holiday Announced' });
+            }
+        });
+
+        // 14. Open session from yesterday blocks clock-in with date in message
+        it('14. Open session from yesterday blocks clock-in with date in message', async () => {
+            await Attendance.deleteMany({ employee_id: empP1.id });
+            const yesterday = new Date();
+            yesterday.setDate(yesterday.getDate() - 1);
+            const yIST = toISTDateString(yesterday);
+            const [y, m, d] = yIST.split('-');
+            const formattedDate = `${d}/${m}/${y}`;
+
+            try {
+                await Attendance.create({
+                    employee_id: empP1.id,
+                    date: yesterday,
+                    check_in: yesterday,
+                    status: 'present',
+                    is_open_session: true
+                });
+
+                const res = await request(app)
+                    .post('/api/attendance/clock-in')
+                    .set('Authorization', `Bearer ${empTokenP1}`);
+
+                expect(res.status).toBe(400);
+                expect(res.body.message).toBe(`You have an open session from ${formattedDate}. Clock out first.`);
+            } finally {
+                await Attendance.deleteMany({ employee_id: empP1.id });
+            }
+        });
+
+        // 15. Clock-out closes open session from yesterday and sets needs_review true
+        it('15. Clock-out closes open session from yesterday and sets needs_review true', async () => {
+            await Attendance.deleteMany({ employee_id: empP1.id });
+            const yesterday = new Date();
+            yesterday.setDate(yesterday.getDate() - 1);
+
+            try {
+                const openRec = await Attendance.create({
+                    employee_id: empP1.id,
+                    date: yesterday,
+                    check_in: yesterday,
+                    status: 'present',
+                    is_open_session: true
+                });
+
+                const res = await request(app)
+                    .post('/api/attendance/clock-out')
+                    .set('Authorization', `Bearer ${empTokenP1}`);
+
+                expect(res.status).toBe(200);
+                expect(res.body.success).toBe(true);
+                expect(res.body.attendance.is_open_session).toBe(false);
+                expect(res.body.attendance.needs_review).toBe(true);
+
+                const inDb = await Attendance.findById(openRec._id);
+                expect(inDb.is_open_session).toBe(false);
+                expect(inDb.needs_review).toBe(true);
+                expect(inDb.check_out).toBeDefined();
+            } finally {
+                await Attendance.deleteMany({ employee_id: empP1.id });
+            }
+        });
+
+        // 16. Clock-in succeeds after open session from yesterday is closed
+        it('16. Clock-in succeeds after open session from yesterday is closed', async () => {
+            await Attendance.deleteMany({ employee_id: empP1.id });
+            const yesterday = new Date();
+            yesterday.setDate(yesterday.getDate() - 1);
+
+            try {
+                await Attendance.create({
+                    employee_id: empP1.id,
+                    date: yesterday,
+                    check_in: yesterday,
+                    status: 'present',
+                    is_open_session: true
+                });
+
+                // Clock out to close it
+                const outRes = await request(app)
+                    .post('/api/attendance/clock-out')
+                    .set('Authorization', `Bearer ${empTokenP1}`);
+                expect(outRes.status).toBe(200);
+
+                // Now clock-in succeeds
+                const inRes = await request(app)
+                    .post('/api/attendance/clock-in')
+                    .set('Authorization', `Bearer ${empTokenP1}`);
+                expect(inRes.status).toBe(201);
+                expect(inRes.body.attendance.is_open_session).toBe(true);
+            } finally {
+                await Attendance.deleteMany({ employee_id: empP1.id });
+            }
+        });
+
+        // 17. Employee receiving a holiday notification sees it in GET /api/notifications with their token
+        it('17. Employee receiving a holiday notification sees it in GET /api/notifications with their token', async () => {
+            const holidayDate = '2028-11-20';
+            await Holiday.deleteOne({ date: holidayDate });
+            await Notification.deleteMany({ type: 'holiday', title: 'New Holiday Announced' });
+
+            try {
+                const createRes = await request(app)
+                    .post('/api/holidays')
+                    .set('Authorization', `Bearer ${adminTokenP1}`)
+                    .send({ date: holidayDate, name: 'Diwali Festival' });
+
+                expect(createRes.status).toBe(201);
+
+                const notifRes = await request(app)
+                    .get('/api/notifications')
+                    .set('Authorization', `Bearer ${empTokenP1}`);
+
+                expect(notifRes.status).toBe(200);
+                expect(notifRes.body.success).toBe(true);
+                const myNotifs = notifRes.body.notifications || [];
+                const found = myNotifs.find(n => n.type === 'holiday' && n.message.includes('Diwali Festival'));
+                expect(found).toBeDefined();
+            } finally {
+                await Holiday.deleteOne({ date: holidayDate });
+                await Notification.deleteMany({ type: 'holiday', title: 'New Holiday Announced' });
+            }
+        });
+
+        // 18. A needs_review record is returned with needs_review: true and its hours are not counted
+        it('18. A needs_review record is returned with needs_review: true and its hours are not counted', async () => {
+            await Attendance.deleteMany({ employee_id: empP1.id });
+            const testDate = new Date();
+            testDate.setHours(9, 0, 0, 0);
+            const dateStr = testDate.toISOString().split('T')[0];
+
+            try {
+                // One completed normal session (3 hours)
+                await Attendance.create({
+                    employee_id: empP1.id,
+                    date: testDate,
+                    check_in: new Date(testDate.getTime()),
+                    check_out: new Date(testDate.getTime() + 3 * 60 * 60 * 1000),
+                    status: 'present',
+                    work_hours: 3,
+                    is_open_session: false,
+                    needs_review: false
+                });
+
+                // One needs_review session (e.g. spanning multiple days, marked needs_review: true)
+                await Attendance.create({
+                    employee_id: empP1.id,
+                    date: testDate,
+                    check_in: new Date(testDate.getTime() + 4 * 60 * 60 * 1000),
+                    check_out: new Date(testDate.getTime() + 28 * 60 * 60 * 1000),
+                    status: 'present',
+                    work_hours: 0,
+                    is_open_session: false,
+                    needs_review: true
+                });
+
+                const res = await request(app)
+                    .get(`/api/attendance/${empP1.id}?month=${testDate.getMonth() + 1}&year=${testDate.getFullYear()}`)
+                    .set('Authorization', `Bearer ${adminTokenP1}`);
+
+                expect(res.status).toBe(200);
+                expect(res.body.success).toBe(true);
+
+                const dayRecord = res.body.attendance.find(a => new Date(a.date).toISOString().split('T')[0] === dateStr);
+                expect(dayRecord).toBeDefined();
+                expect(dayRecord.needs_review).toBe(true);
+                // Worked hours should only count the 3 hours from the valid session
+                expect(dayRecord.work_hours).toBe(3);
+            } finally {
+                await Attendance.deleteMany({ employee_id: empP1.id });
+            }
+        });
+
+        // 19. createHoliday creates Attendance records with status 'holiday' for employees without records, preserving existing records
+        it('19. createHoliday marks attendance status holiday for employees without records, preserving existing records', async () => {
+            const hDate = '2029-08-15';
+            const hStart = getISTDayStart(hDate);
+            const hEnd = getISTDayEnd(hDate);
+
+            await Holiday.deleteOne({ date: hDate });
+            await Attendance.deleteMany({ date: { $gte: hStart, $lt: hEnd } });
+            await Notification.deleteMany({ type: 'holiday', title: 'New Holiday Announced' });
+
+            try {
+                await Employee.updateOne({ id: tlP1.id }, { $set: { date_of_joining: new Date('2029-01-01') } });
+
+                // empP1 already clocked in on that date
+                const existingRec = await Attendance.create({
+                    employee_id: empP1.id,
+                    date: hStart,
+                    check_in: hStart,
+                    status: 'present',
+                    is_open_session: true
+                });
+
+                // tlP1 has no attendance record on that date
+                // Non-admin POST /api/holidays returns 403
+                const forbiddenRes = await request(app)
+                    .post('/api/holidays')
+                    .set('Authorization', `Bearer ${empTokenP1}`)
+                    .send({ date: hDate, name: 'Independence Day' });
+                expect(forbiddenRes.status).toBe(403);
+
+                // Admin creates holiday
+                const createRes = await request(app)
+                    .post('/api/holidays')
+                    .set('Authorization', `Bearer ${adminTokenP1}`)
+                    .send({ date: hDate, name: 'Independence Day' });
+                expect(createRes.status).toBe(201);
+
+                // (1) Employee with no record (tlP1) gets status 'holiday'
+                const tlRec = await Attendance.findOne({
+                    employee_id: tlP1.id,
+                    date: { $gte: hStart, $lt: hEnd }
+                });
+                expect(tlRec).toBeDefined();
+                expect(tlRec.status).toBe('holiday');
+                expect(tlRec.work_hours).toBe(0);
+
+                // (2) Employee who checked in keeps their record unchanged
+                const empRec = await Attendance.findOne({
+                    employee_id: empP1.id,
+                    date: { $gte: hStart, $lt: hEnd }
+                });
+                expect(empRec).toBeDefined();
+                expect(empRec._id.toString()).toBe(existingRec._id.toString());
+                expect(empRec.status).toBe('present');
+                expect(empRec.is_open_session).toBe(true);
+
+                // (3) Notifications still go to all active employees
+                const notifs = await Notification.find({ type: 'holiday', title: 'New Holiday Announced' });
+                const recips = notifs.map(n => n.recipient.toString());
+                expect(recips).toContain(empP1._id.toString());
+                expect(recips).toContain(tlP1._id.toString());
+            } finally {
+                await Holiday.deleteOne({ date: hDate });
+                await Attendance.deleteMany({ date: { $gte: hStart, $lt: hEnd } });
+                await Notification.deleteMany({ type: 'holiday', title: 'New Holiday Announced' });
+            }
+        });
+
+        // 20. Employee whose date_of_joining is after the holiday date gets NO attendance record, while employee who joined on or before gets status 'holiday'
+        it('20. Employee whose date_of_joining is after the holiday date gets NO attendance record, while employee who joined on or before gets status holiday', async () => {
+            const hDate = '2030-01-26';
+            const hStart = getISTDayStart(hDate);
+            const hEnd = getISTDayEnd(hDate);
+
+            // Employee 1 joined before holiday
+            const joinedBefore = await Employee.create({
+                id: 'TEST_JOIN_BEFORE_EMP',
+                name: 'Join Before Emp',
+                email: 'joinbefore@zograhatechnologies.test',
+                password_hash: 'hash',
+                role: 'employee',
+                status: 'active',
+                date_of_joining: new Date('2030-01-01T00:00:00.000Z')
+            });
+
+            // Employee 2 joined after holiday
+            const joinedAfter = await Employee.create({
+                id: 'TEST_JOIN_AFTER_EMP',
+                name: 'Join After Emp',
+                email: 'joinafter@zograhatechnologies.test',
+                password_hash: 'hash',
+                role: 'employee',
+                status: 'active',
+                date_of_joining: new Date('2030-02-01T00:00:00.000Z')
+            });
+
+            await Holiday.deleteOne({ date: hDate });
+            await Attendance.deleteMany({ date: { $gte: hStart, $lt: hEnd } });
+            await Notification.deleteMany({ type: 'holiday', title: 'New Holiday Announced' });
+
+            try {
+                const res = await request(app)
+                    .post('/api/holidays')
+                    .set('Authorization', `Bearer ${adminTokenP1}`)
+                    .send({ date: hDate, name: 'Republic Day' });
+
+                expect(res.status).toBe(201);
+
+                // Joined before -> gets status 'holiday'
+                const recBefore = await Attendance.findOne({
+                    employee_id: joinedBefore.id,
+                    date: { $gte: hStart, $lt: hEnd }
+                });
+                expect(recBefore).toBeDefined();
+                expect(recBefore.status).toBe('holiday');
+                expect(recBefore.work_hours).toBe(0);
+
+                // Joined after -> gets NO attendance record
+                const recAfter = await Attendance.findOne({
+                    employee_id: joinedAfter.id,
+                    date: { $gte: hStart, $lt: hEnd }
+                });
+                expect(recAfter).toBeNull();
+
+                // But notifications still go to all active employees regardless of joining date
+                const notifs = await Notification.find({ type: 'holiday', title: 'New Holiday Announced' });
+                const recips = notifs.map(n => n.recipient.toString());
+                expect(recips).toContain(joinedBefore._id.toString());
+                expect(recips).toContain(joinedAfter._id.toString());
+            } finally {
+                await Employee.deleteMany({ id: { $in: ['TEST_JOIN_BEFORE_EMP', 'TEST_JOIN_AFTER_EMP'] } });
+                await Holiday.deleteOne({ date: hDate });
+                await Attendance.deleteMany({ date: { $gte: hStart, $lt: hEnd } });
+                await Notification.deleteMany({ type: 'holiday', title: 'New Holiday Announced' });
+            }
+        });
+
+        // 21. Open session dated tomorrow: clockOut closes it, sets needs_review true, work_hours 0
+        it('21. Open session dated tomorrow: clockOut closes it, sets needs_review true, work_hours 0', async () => {
+            await Attendance.deleteMany({ employee_id: empP1.id });
+            const tomorrow = new Date();
+            tomorrow.setDate(tomorrow.getDate() + 1);
+
+            try {
+                const openRec = await Attendance.create({
+                    employee_id: empP1.id,
+                    date: tomorrow,
+                    check_in: tomorrow,
+                    status: 'present',
+                    is_open_session: true
+                });
+
+                const res = await request(app)
+                    .post('/api/attendance/clock-out')
+                    .set('Authorization', `Bearer ${empTokenP1}`);
+
+                expect(res.status).toBe(200);
+                expect(res.body.success).toBe(true);
+                expect(res.body.attendance.is_open_session).toBe(false);
+                expect(res.body.attendance.needs_review).toBe(true);
+                expect(res.body.attendance.work_hours).toBe(0);
+
+                const inDb = await Attendance.findById(openRec._id);
+                expect(inDb.is_open_session).toBe(false);
+                expect(inDb.needs_review).toBe(true);
+                expect(inDb.work_hours).toBe(0);
+                expect(inDb.check_out).toBeDefined();
+            } finally {
+                await Attendance.deleteMany({ employee_id: empP1.id });
+            }
+        });
+
+        // 22. Button state: getTodayStatus returns open_session non-null when an open session exists from a prior day
+        it('22. Button state: getTodayStatus returns open_session non-null when an open session exists from a prior day', async () => {
+            await Attendance.deleteMany({ employee_id: empP1.id });
+            const yesterday = new Date();
+            yesterday.setDate(yesterday.getDate() - 2);
+
+            try {
+                await Attendance.create({
+                    employee_id: empP1.id,
+                    date: yesterday,
+                    check_in: yesterday,
+                    status: 'present',
+                    is_open_session: true
+                });
+
+                const res = await request(app)
+                    .get('/api/attendance/today')
+                    .set('Authorization', `Bearer ${empTokenP1}`);
+
+                expect(res.status).toBe(200);
+                expect(res.body.success).toBe(true);
+                expect(res.body.open_session).not.toBeNull();
+                expect(res.body.open_session.check_in).toBeDefined();
+            } finally {
+                await Attendance.deleteMany({ employee_id: empP1.id });
+            }
+        });
+
+        // 23. clockIn blocked while open_session exists; succeeds after clockOut
+        it('23. clockIn blocked while open_session exists; succeeds after clockOut', async () => {
+            await Attendance.deleteMany({ employee_id: empP1.id });
+            const pastDate = new Date();
+            pastDate.setMinutes(pastDate.getMinutes() - 30);
+
+            try {
+                await Attendance.create({
+                    employee_id: empP1.id,
+                    date: pastDate,
+                    check_in: pastDate,
+                    status: 'present',
+                    is_open_session: true
+                });
+
+                // Attempt to clock in should fail
+                const blockedRes = await request(app)
+                    .post('/api/attendance/clock-in')
+                    .set('Authorization', `Bearer ${empTokenP1}`);
+                expect(blockedRes.status).toBe(400);
+
+                // Clock out closes the session
+                const outRes = await request(app)
+                    .post('/api/attendance/clock-out')
+                    .set('Authorization', `Bearer ${empTokenP1}`);
+                expect(outRes.status).toBe(200);
+
+                // Now clock-in succeeds
+                const inRes = await request(app)
+                    .post('/api/attendance/clock-in')
+                    .set('Authorization', `Bearer ${empTokenP1}`);
+                expect(inRes.status).toBe(201);
+                expect(inRes.body.attendance.is_open_session).toBe(true);
+            } finally {
+                await Attendance.deleteMany({ employee_id: empP1.id });
+            }
+        });
+
+        // 24. (a) A holiday placeholder row (no check_in, status 'holiday') is ignored by findOpenSession. clockIn succeeds when only placeholders exist.
+        it('24. A holiday placeholder row is ignored by findOpenSession; clockIn succeeds when only placeholders exist', async () => {
+            await Attendance.deleteMany({ employee_id: empP1.id });
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+
+            try {
+                // Holiday placeholder row (e.g. from an earlier holiday)
+                await Attendance.create({
+                    employee_id: empP1.id,
+                    date: new Date('2025-01-01T00:00:00.000Z'),
+                    status: 'holiday',
+                    work_hours: 0,
+                    is_open_session: false
+                });
+
+                const res = await request(app)
+                    .post('/api/attendance/clock-in')
+                    .set('Authorization', `Bearer ${empTokenP1}`);
+
+                expect(res.status).toBe(201);
+                expect(res.body.success).toBe(true);
+                expect(res.body.attendance.is_open_session).toBe(true);
+                expect(['present', 'late']).toContain(res.body.attendance.status);
+            } finally {
+                await Attendance.deleteMany({ employee_id: empP1.id });
+            }
+        });
+
+        // 25. (b) clockOut with a real open session closes it and leaves a holiday placeholder row unchanged
+        it('25. clockOut with a real open session closes it and leaves a holiday placeholder row unchanged', async () => {
+            await Attendance.deleteMany({ employee_id: empP1.id });
+            const hDate = new Date('2025-08-15T00:00:00.000Z');
+            const sessionIn = new Date();
+            sessionIn.setMinutes(sessionIn.getMinutes() - 15);
+
+            try {
+                const placeholder = await Attendance.create({
+                    employee_id: empP1.id,
+                    date: hDate,
+                    status: 'holiday',
+                    work_hours: 0,
+                    is_open_session: false
+                });
+
+                const openSession = await Attendance.create({
+                    employee_id: empP1.id,
+                    date: sessionIn,
+                    check_in: sessionIn,
+                    status: 'present',
+                    is_open_session: true
+                });
+
+                const outRes = await request(app)
+                    .post('/api/attendance/clock-out')
+                    .set('Authorization', `Bearer ${empTokenP1}`);
+
+                expect(outRes.status).toBe(200);
+                expect(outRes.body.success).toBe(true);
+                expect(outRes.body.attendance._id.toString()).toBe(openSession._id.toString());
+                expect(outRes.body.attendance.check_out).toBeDefined();
+
+                // Placeholder must remain untouched
+                const phInDb = await Attendance.findById(placeholder._id);
+                expect(phInDb.status).toBe('holiday');
+                expect(phInDb.check_out).toBeUndefined();
+            } finally {
+                await Attendance.deleteMany({ employee_id: empP1.id });
+            }
+        });
+
+        // 26. (c) A record with check_out earlier than check_in shows open_session false and needs_review true
+        it('26. A record with check_out earlier than check_in shows open_session false and needs_review true', async () => {
+            await Attendance.deleteMany({ employee_id: empP1.id });
+            const testDate = new Date();
+            testDate.setHours(9, 0, 0, 0);
+            const dateStr = testDate.toISOString().split('T')[0];
+
+            try {
+                // Inverted session: check_in 10:00, check_out 08:00
+                const inTime = new Date(testDate.getTime() + 10 * 3600 * 1000);
+                const outTime = new Date(testDate.getTime() + 8 * 3600 * 1000);
+
+                await Attendance.create({
+                    employee_id: empP1.id,
+                    date: testDate,
+                    check_in: inTime,
+                    check_out: outTime,
+                    status: 'present',
+                    work_hours: 0,
+                    is_open_session: false,
+                    needs_review: true
+                });
+
+                const res = await request(app)
+                    .get(`/api/attendance/${empP1.id}?month=${testDate.getMonth() + 1}&year=${testDate.getFullYear()}`)
+                    .set('Authorization', `Bearer ${adminTokenP1}`);
+
+                expect(res.status).toBe(200);
+                const dayRecord = res.body.attendance.find(a => new Date(a.date).toISOString().split('T')[0] === dateStr);
+                expect(dayRecord).toBeDefined();
+                expect(dayRecord.is_open_session).toBe(false);
+                expect(dayRecord.needs_review).toBe(true);
+                expect(dayRecord.work_hours).toBe(0);
+            } finally {
+                await Attendance.deleteMany({ employee_id: empP1.id });
+            }
+        });
+
+        // 27. (d) clockOut on an employee with only placeholder rows returns 400 and writes nothing
+        it('27. clockOut on an employee with only placeholder rows returns 400 and writes nothing', async () => {
+            await Attendance.deleteMany({ employee_id: empP1.id });
+            const hDate = new Date('2025-10-02T00:00:00.000Z');
+
+            try {
+                const placeholder = await Attendance.create({
+                    employee_id: empP1.id,
+                    date: hDate,
+                    status: 'holiday',
+                    work_hours: 0,
+                    is_open_session: false
+                });
+
+                const outRes = await request(app)
+                    .post('/api/attendance/clock-out')
+                    .set('Authorization', `Bearer ${empTokenP1}`);
+
+                expect(outRes.status).toBe(400);
+                expect(['No open session to clock out.', 'No open clock-in session found to clock out from.']).toContain(outRes.body.message);
+
+                const phInDb = await Attendance.findById(placeholder._id);
+                expect(phInDb.status).toBe('holiday');
+                expect(phInDb.check_out).toBeUndefined();
+                expect(phInDb.work_hours).toBe(0);
+            } finally {
+                await Attendance.deleteMany({ employee_id: empP1.id });
+            }
+        });
+
+        // 28. A record with check_in and check_out set and is_open_session true is returned with open_session false
+        it('28. A record with check_in and check_out set and is_open_session true is returned with open_session false', async () => {
+            await Attendance.deleteMany({ employee_id: empP1.id });
+            const testDate = new Date();
+            testDate.setHours(9, 0, 0, 0);
+            const dateStr = testDate.toISOString().split('T')[0];
+
+            try {
+                const inTime = new Date(testDate.getTime());
+                const outTime = new Date(testDate.getTime() + 4 * 3600 * 1000);
+
+                await Attendance.create({
+                    employee_id: empP1.id,
+                    date: testDate,
+                    check_in: inTime,
+                    check_out: outTime,
+                    status: 'present',
+                    work_hours: 4,
+                    is_open_session: true // stored as true in DB
+                });
+
+                // Check employee attendance endpoint
+                const empRes = await request(app)
+                    .get(`/api/attendance/${empP1.id}?month=${testDate.getMonth() + 1}&year=${testDate.getFullYear()}`)
+                    .set('Authorization', `Bearer ${adminTokenP1}`);
+
+                expect(empRes.status).toBe(200);
+                const dayRecord = empRes.body.attendance.find(a => new Date(a.date).toISOString().split('T')[0] === dateStr);
+                expect(dayRecord).toBeDefined();
+                expect(dayRecord.is_open_session).toBe(false);
+
+                // Check logs endpoint
+                const logsRes = await request(app)
+                    .get(`/api/attendance/logs?employee_id=${empP1.id}&from=${dateStr}&to=${dateStr}`)
+                    .set('Authorization', `Bearer ${adminTokenP1}`);
+
+                expect(logsRes.status).toBe(200);
+                expect(logsRes.body.logs.length).toBe(1);
+                expect(logsRes.body.logs[0].open_session).toBe(false);
+            } finally {
+                await Attendance.deleteMany({ employee_id: empP1.id });
+            }
+        });
+    });
 });
 
 

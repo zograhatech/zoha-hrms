@@ -163,6 +163,7 @@ app.use('/api/fun', require('./routes/funRoutes'));
 app.use('/api/zoom', require('./modules/zoom/zoom.routes')); // Added Zoom Module
 app.use('/api/notifications', require('./routes/notificationRoutes')); // Notification Module
 app.use('/api/events', require('./routes/eventRoutes')); // Event Module
+app.use('/api/holidays', require('./routes/holidayRoutes')); // Holiday Module
 app.use('/api/payments', require('./routes/paymentRoutes')); // Payment/Marketplace Module
 app.use('/api/notes', require('./routes/noteRoutes')); // Personal Notes
 app.use('/api/resignations', require('./routes/resignationRoutes')); // Exit Management

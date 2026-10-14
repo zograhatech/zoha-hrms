@@ -9,7 +9,7 @@ import {
 
 import CustomDatePicker from '../../components/CustomDatePicker';
 import { formatDate } from '../../utils/dateFormatter';
-import { isManagerRole } from '../../utils/roleHelper';
+import { isManagerRole, isSuperAdmin } from '../../utils/roleHelper';
 
 export default function Events() {
     const { user } = useAuth();
@@ -172,7 +172,7 @@ export default function Events() {
                                         setForm({ ...form, type, color: getTypeColor(type) });
                                     }}>
                                         <option value="meeting">Meeting</option>
-                                        <option value="holiday">Holiday</option>
+                                        {isSuperAdmin(user) && <option value="holiday">Holiday</option>}
                                         <option value="workshop">Workshop</option>
                                         <option value="deadline">Deadline</option>
                                         <option value="other">Other</option>

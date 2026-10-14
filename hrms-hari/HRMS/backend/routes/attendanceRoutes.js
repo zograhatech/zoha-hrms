@@ -16,7 +16,7 @@ router.get('/team', auth(['manage_attendance', 'attendance_report', 'manager', '
 router.get('/logs', auth(), getAttendanceLogs);
 router.get('/export', auth(['manage_attendance', 'attendance_report', 'manager', 'team_lead']), exportAttendance);
 router.put('/update-manual', auth(['manage_attendance', 'attendance_report', 'manager', 'team_lead']), updateAttendanceManual);
-router.post('/mark-holiday', auth(['manage_attendance', 'attendance_report', 'manager', 'team_lead']), markHoliday);
+router.post('/mark-holiday', auth(['admin']), markHoliday);
 
 router.get('/:employeeId', auth(), getEmployeeAttendance);
 

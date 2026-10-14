@@ -44,13 +44,16 @@ export default function AttendanceWidget() {
         if (!time) return '';
         const date = new Date(time);
         if (isNaN(date.getTime())) return time;
-        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const isToday = new Date().toDateString() === date.toDateString();
+        const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        return isToday ? timeStr : `${formatDate(date)} ${timeStr}`;
     };
 
     if (loading) return <div className="card">Loading...</div>;
 
     const attRec = status?.attendance;
-    const isClockedIn = attRec?.check_in && !attRec?.check_out;
+    const isClockedIn = Boolean(status?.open_session ?? (attRec?.check_in && !attRec?.check_out));
+    const checkInTime = status?.open_session?.check_in || attRec?.check_in;
     const isHoliday = status?.isHoliday;
     const isOnLeave = status?.isOnLeave;
 
@@ -76,7 +79,7 @@ export default function AttendanceWidget() {
                 </div>
             ) : isClockedIn ? (
                 <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: '0.9rem', marginBottom: 12, fontWeight: 600 }}>Clocked in at: {formatTime(attRec.check_in)}</div>
+                    <div style={{ fontSize: '0.9rem', marginBottom: 12, fontWeight: 600 }}>Clocked in at: {formatTime(checkInTime)}</div>
                     <button onClick={handleClockOut} className="btn btn-outline" style={{ color: 'var(--accent-red)', borderColor: 'var(--accent-red)', fontWeight: 700, padding: '10px 24px', borderRadius: 30, display: 'flex', alignItems: 'center', gap: 8 }}>
                         <FiLogOut /> Clock Out
                     </button>
@@ -89,8 +92,9 @@ export default function AttendanceWidget() {
             ) : (
                 <div style={{ textAlign: 'center' }}>
                     {attRec?.check_out && (
-                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 10 }}>
-                            Last session: {formatTime(attRec.check_in)} - {formatTime(attRec.check_out)} ({attRec.work_hours || 0} hrs)
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, flexWrap: 'wrap' }}>
+                            <span>Last session: {formatTime(attRec.check_in)} - {formatTime(attRec.check_out)} ({attRec.work_hours || 0} hrs)</span>
+                            {attRec.needs_review && <span className="badge badge-danger">Needs review</span>}
                         </div>
                     )}
                     <button onClick={handleClockIn} className="btn" style={{ background: 'var(--accent-primary)', color: 'white', fontWeight: 700, padding: '10px 24px', borderRadius: 30, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
