@@ -1,7 +1,6 @@
 const jwt = require('jsonwebtoken');
 const Setting = require('../models/Setting');
 const Employee = require('../models/Employee');
-const { isSecurityFlagOn } = require('../utils/securityFlags');
 
 /**
  * Authorization Middleware
@@ -33,16 +32,6 @@ const auth = (rolesOrPermissions = []) => {
 
             if (!employee) return res.status(404).json({ success: false, message: 'Employee profile not found.' });
             if (employee.status !== 'active') return res.status(403).json({ success: false, message: 'Your account is deactivated.' });
-
-            // Block unverified non-admin users from non-auth routes when flag is ON
-            const isAuthRoute = req.baseUrl === '/api/auth' || (req.originalUrl && req.originalUrl.startsWith('/api/auth'));
-            if (!isAuthRoute && isSecurityFlagOn(settings, 'require_email_verification', decoded.id) && !employee.emailVerified) {
-                return res.status(403).json({
-                    success: false,
-                    email_verification_required: true,
-                    message: 'Email verification required. Please verify your email to access this resource.'
-                });
-            }
 
             // 3. Resolve requested permissions
             if (!rolesOrPermissions || rolesOrPermissions.length === 0) return next();

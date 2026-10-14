@@ -72,7 +72,6 @@ export default function Settings() {
         security_pilot_employee_ids: []
     });
 
-    const [pilotIdsInput, setPilotIdsInput] = useState('');
     const [shifts, setShifts] = useState([]);
     const [showShiftModal, setShowShiftModal] = useState(false);
     const [activeTab, setActiveTab] = useState('company');
@@ -128,10 +127,10 @@ export default function Settings() {
                 const s = resSet.data.settings;
                 // Ensure roles_permissions is always an object
                 if (!s.roles_permissions) s.roles_permissions = { hr_manager: [], hr: [], employee: [] };
-                setSettings(s);
-                if (s.security_pilot_employee_ids && Array.isArray(s.security_pilot_employee_ids)) {
-                    setPilotIdsInput(s.security_pilot_employee_ids.join(', '));
+                if (!Array.isArray(s.security_pilot_employee_ids)) {
+                    s.security_pilot_employee_ids = [];
                 }
+                setSettings(s);
             }
             if (resShi && resShi.data.shifts) setShifts(resShi.data.shifts);
             setLoading(false);
@@ -207,10 +206,10 @@ export default function Settings() {
 
             if (res.data.success) {
                 if (res.data.settings) {
-                    setSettings(res.data.settings);
-                    if (res.data.settings.security_pilot_employee_ids && Array.isArray(res.data.settings.security_pilot_employee_ids)) {
-                        setPilotIdsInput(res.data.settings.security_pilot_employee_ids.join(', '));
+                    if (!Array.isArray(res.data.settings.security_pilot_employee_ids)) {
+                        res.data.settings.security_pilot_employee_ids = [];
                     }
+                    setSettings(res.data.settings);
                 }
                 setMsg({ text: 'Settings saved successfully!', type: 'success' });
                 if (refreshBranding) refreshBranding();
@@ -326,6 +325,74 @@ export default function Settings() {
         } catch (err) {
             showToast(err.response?.data?.message || 'Failed to delete holiday.', 'error');
         }
+    };
+
+    const [allEmployees, setAllEmployees] = useState([]);
+    const [loadingEmployees, setLoadingEmployees] = useState(false);
+    const [pilotSearch, setPilotSearch] = useState('');
+    const [pilotDepartment, setPilotDepartment] = useState('');
+
+    const fetchAllEmployees = async () => {
+        try {
+            setLoadingEmployees(true);
+            let page = 1;
+            let totalPages = 1;
+            let collected = [];
+            do {
+                const res = await API.get('/employees', { params: { page, limit: 100 } });
+                if (res.data && res.data.success) {
+                    const emps = res.data.employees || [];
+                    collected = collected.concat(emps);
+                    totalPages = res.data.pagination?.pages || 1;
+                } else {
+                    break;
+                }
+                page++;
+            } while (page <= totalPages);
+            setAllEmployees(collected);
+        } catch (err) {
+            console.error('Failed to load employees for pilot picker', err);
+        } finally {
+            setLoadingEmployees(false);
+        }
+    };
+
+    useEffect(() => {
+        if (activeTab === 'security' && isSuperAdmin(user) && allEmployees.length === 0) {
+            fetchAllEmployees();
+        }
+    }, [activeTab, user]);
+
+    const distinctDepartments = Array.from(
+        new Set(allEmployees.map(emp => emp.department_name).filter(Boolean))
+    ).sort();
+
+    const filteredEmployees = allEmployees.filter(emp => {
+        const query = pilotSearch.trim().toLowerCase();
+        const matchesSearch = !query ||
+            (emp.name && emp.name.toLowerCase().includes(query)) ||
+            (emp.id && String(emp.id).toLowerCase().includes(query));
+        const matchesDept = !pilotDepartment || emp.department_name === pilotDepartment;
+        return matchesSearch && matchesDept;
+    });
+
+    const selectedPilotIds = settings.security_pilot_employee_ids || [];
+
+    const togglePilotEmployee = (empId) => {
+        setSettings(prev => {
+            const current = prev.security_pilot_employee_ids || [];
+            const next = current.includes(empId)
+                ? current.filter(id => id !== empId)
+                : [...current, empId];
+            return { ...prev, security_pilot_employee_ids: next };
+        });
+    };
+
+    const removePilotEmployee = (empId) => {
+        setSettings(prev => ({
+            ...prev,
+            security_pilot_employee_ids: (prev.security_pilot_employee_ids || []).filter(id => id !== empId)
+        }));
     };
 
     if (loading) return <div className="page-loader"><div className="loading-spinner" /></div>;
@@ -865,7 +932,7 @@ export default function Settings() {
 
                     <form onSubmit={handleSave}>
                         <div className="card-body">
-                            <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px', background: 'var(--bg-secondary, #f8fafc)', borderRadius: '8px', marginBottom: '16px' }}>
+                            <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px', background: 'var(--bg-secondary, #f8fafc)', borderRadius: '8px', marginBottom: '24px' }}>
                                 <div>
                                     <div style={{ fontWeight: 600, fontSize: '0.95rem', color: 'var(--text-primary)' }}>Require Email Verification</div>
                                     <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Require employees to verify their email address before accessing features.</div>
@@ -890,47 +957,131 @@ export default function Settings() {
                                 </label>
                             </div>
 
-                            <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px', background: 'var(--bg-secondary, #f8fafc)', borderRadius: '8px', marginBottom: '24px' }}>
-                                <div>
-                                    <div style={{ fontWeight: 600, fontSize: '0.95rem', color: 'var(--text-primary)' }}>Require Two-Factor Authentication (2FA)</div>
-                                    <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Require 6-digit email OTP verification upon sign-in.</div>
-                                </div>
-                                <label className="switch" style={{ position: 'relative', display: 'inline-block', width: 44, height: 24 }}>
-                                    <input
-                                        type="checkbox"
-                                        checked={Boolean(settings.require_2fa)}
-                                        onChange={e => setSettings(prev => ({ ...prev, require_2fa: e.target.checked }))}
-                                        style={{ opacity: 0, width: 0, height: 0 }}
-                                    />
-                                    <span style={{
-                                        position: 'absolute', cursor: 'pointer', top: 0, left: 0, right: 0, bottom: 0,
-                                        backgroundColor: settings.require_2fa ? 'var(--accent-primary, #6366f1)' : '#cbd5e1',
-                                        borderRadius: 24, transition: '.3s'
-                                    }}>
-                                        <span style={{
-                                            position: 'absolute', height: 18, width: 18, left: settings.require_2fa ? 23 : 3, bottom: 3,
-                                            backgroundColor: '#fff', borderRadius: '50%', transition: '.3s'
-                                        }} />
-                                    </span>
-                                </label>
-                            </div>
-
                             <div className="form-group">
-                                <label className="form-label" style={{ fontWeight: 600 }}>Security Pilot Employee IDs (Comma-Separated)</label>
-                                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: 8 }}>
-                                    Employees listed here will have 2FA and email verification enabled even if the global toggles above are turned OFF.
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                                    <label className="form-label" style={{ fontWeight: 600, margin: 0 }}>Security Pilot Employees</label>
+                                    <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--accent-primary, #6366f1)' }}>
+                                        {selectedPilotIds.length} selected
+                                    </span>
+                                </div>
+                                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: 12 }}>
+                                    Pilot users get 2FA/verification even when global toggles are off.
                                 </p>
-                                <input
-                                    type="text"
-                                    className="form-input"
-                                    placeholder="e.g. EMP001, EMP002, 6acefc95c4d6bb5fc2e45010"
-                                    value={pilotIdsInput}
-                                    onChange={e => {
-                                        setPilotIdsInput(e.target.value);
-                                        const ids = e.target.value.split(',').map(s => s.trim()).filter(Boolean);
-                                        setSettings(prev => ({ ...prev, security_pilot_employee_ids: ids }));
+
+                                {selectedPilotIds.length > 0 && (
+                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+                                        {selectedPilotIds.map(empId => {
+                                            const emp = allEmployees.find(e => e.id === empId);
+                                            const label = emp ? `${emp.name} (${emp.id})` : empId;
+                                            return (
+                                                <span
+                                                    key={empId}
+                                                    style={{
+                                                        display: 'inline-flex',
+                                                        alignItems: 'center',
+                                                        gap: 6,
+                                                        padding: '4px 10px',
+                                                        backgroundColor: '#eef2ff',
+                                                        border: '1px solid #c7d2fe',
+                                                        color: '#3730a3',
+                                                        borderRadius: 16,
+                                                        fontSize: '0.82rem',
+                                                        fontWeight: 500
+                                                    }}
+                                                >
+                                                    <span>{label}</span>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => removePilotEmployee(empId)}
+                                                        style={{
+                                                            background: 'transparent',
+                                                            border: 'none',
+                                                            cursor: 'pointer',
+                                                            padding: 0,
+                                                            display: 'flex',
+                                                            alignItems: 'center',
+                                                            color: '#4f46e5'
+                                                        }}
+                                                        title={`Remove ${label}`}
+                                                    >
+                                                        <FiX size={14} />
+                                                    </button>
+                                                </span>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+
+                                <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
+                                    <input
+                                        type="text"
+                                        className="form-input"
+                                        placeholder="Search by name or id..."
+                                        value={pilotSearch}
+                                        onChange={e => setPilotSearch(e.target.value)}
+                                        style={{ flex: 1 }}
+                                    />
+                                    <select
+                                        className="form-input"
+                                        value={pilotDepartment}
+                                        onChange={e => setPilotDepartment(e.target.value)}
+                                        style={{ width: '200px' }}
+                                    >
+                                        <option value="">All Departments</option>
+                                        {distinctDepartments.map(dept => (
+                                            <option key={dept} value={dept}>{dept}</option>
+                                        ))}
+                                    </select>
+                                </div>
+
+                                <div
+                                    style={{
+                                        maxHeight: 240,
+                                        overflowY: 'auto',
+                                        border: '1px solid var(--border-color, #e2e8f0)',
+                                        borderRadius: 8,
+                                        padding: '8px 12px',
+                                        backgroundColor: 'var(--bg-secondary, #f8fafc)'
                                     }}
-                                />
+                                >
+                                    {loadingEmployees ? (
+                                        <div style={{ padding: '12px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                                            Loading employees...
+                                        </div>
+                                    ) : filteredEmployees.length === 0 ? (
+                                        <div style={{ padding: '12px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                                            No employees found.
+                                        </div>
+                                    ) : (
+                                        filteredEmployees.map(emp => {
+                                            const checked = selectedPilotIds.includes(emp.id);
+                                            return (
+                                                <label
+                                                    key={emp.id}
+                                                    style={{
+                                                        display: 'flex',
+                                                        alignItems: 'center',
+                                                        gap: 10,
+                                                        padding: '6px 4px',
+                                                        cursor: 'pointer',
+                                                        fontSize: '0.88rem',
+                                                        borderBottom: '1px solid var(--border-color, #f1f5f9)'
+                                                    }}
+                                                >
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={checked}
+                                                        onChange={() => togglePilotEmployee(emp.id)}
+                                                        style={{ cursor: 'pointer' }}
+                                                    />
+                                                    <span>
+                                                        {emp.name} ({emp.id}) - {emp.department_name || 'No Department'}
+                                                    </span>
+                                                </label>
+                                            );
+                                        })
+                                    )}
+                                </div>
                             </div>
                         </div>
 

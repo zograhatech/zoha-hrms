@@ -113,9 +113,21 @@ const login = async (req, res) => {
 
         const settings = await Setting.findOne();
 
-        // Check 2FA requirement
-        const is2faActive = isSecurityFlagOn(settings, 'require_2fa', employee.id) || isSecurityFlagOn(settings, 'require_2fa', employee._id);
-        if (is2faActive) {
+        // 1. If emailVerified is true: return the normal token. No code, ever.
+        if (employee.emailVerified) {
+            const authData = await generateAuthPayload(employee, rememberMe, settings);
+            return res.json({
+                success: true,
+                message: 'Login successful',
+                token: authData.token,
+                refreshToken: authData.refreshToken,
+                user: authData.user
+            });
+        }
+
+        // 2. If emailVerified is false AND (require_email_verification is on OR employee is in security_pilot_employee_ids):
+        const isEmailVerifActive = isSecurityFlagOn(settings, 'require_email_verification', employee.id) || isSecurityFlagOn(settings, 'require_email_verification', employee._id);
+        if (isEmailVerifActive) {
             const code = Math.floor(100000 + Math.random() * 900000).toString();
             employee.twofaCodeHash = hashSha256(code);
             employee.twofaCodeExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
@@ -125,18 +137,19 @@ const login = async (req, res) => {
             try {
                 emailSent = await sendEmail({
                     to: employee.email,
-                    subject: 'Your Two-Factor Authentication (2FA) Code',
+                    subject: 'Your Login Verification Code',
+                    code,
                     text: `Your login verification code is: ${code}. It expires in 10 minutes.`
                 });
             } catch (e) {
-                console.error('[login 2FA] sendEmail failed:', e.message);
+                console.error('[login verification] sendEmail failed:', e.message);
                 emailSent = false;
             }
 
             if (!emailSent) {
                 return res.status(500).json({
                     success: false,
-                    message: 'Failed to send 2FA verification code. Please try again later.'
+                    message: 'Failed to send verification code. Please try again later.'
                 });
             }
 
@@ -146,22 +159,18 @@ const login = async (req, res) => {
                 requires2fa: true,
                 requires_2fa: true,
                 employee_id: employee.id,
-                message: '2FA code sent to your email.'
+                message: 'Verification code sent to your email.'
             });
         }
 
+        // 3. Otherwise: normal login.
         const authData = await generateAuthPayload(employee, rememberMe, settings);
-        const isEmailVerifActive = isSecurityFlagOn(settings, 'require_email_verification', employee.id) || isSecurityFlagOn(settings, 'require_email_verification', employee._id);
-        const needsEmailVerification = isEmailVerifActive && !employee.emailVerified && employee.role !== 'admin';
-
-        res.json({
+        return res.json({
             success: true,
             message: 'Login successful',
             token: authData.token,
             refreshToken: authData.refreshToken,
-            user: authData.user,
-            email_verification_required: needsEmailVerification ? true : undefined,
-            verify_email_prompt: needsEmailVerification ? true : undefined
+            user: authData.user
         });
 
     } catch (err) {
@@ -567,6 +576,7 @@ const verify2fa = async (req, res) => {
         }
 
         // Code matched
+        employee.emailVerified = true;
         employee.twofaCodeHash = null;
         employee.twofaCodeExpiry = null;
         employee.twofaAttempts = 0;
@@ -575,17 +585,13 @@ const verify2fa = async (req, res) => {
 
         const settings = await Setting.findOne();
         const authData = await generateAuthPayload(employee, rememberMe, settings);
-        const isEmailVerifActive = isSecurityFlagOn(settings, 'require_email_verification', employee.id) || isSecurityFlagOn(settings, 'require_email_verification', employee._id);
-        const needsEmailVerification = isEmailVerifActive && !employee.emailVerified && employee.role !== 'admin';
 
         return res.json({
             success: true,
-            message: '2FA verification successful',
+            message: 'Verification successful',
             token: authData.token,
             refreshToken: authData.refreshToken,
-            user: authData.user,
-            email_verification_required: needsEmailVerification ? true : undefined,
-            verify_email_prompt: needsEmailVerification ? true : undefined
+            user: authData.user
         });
     } catch (err) {
         console.error('2FA verify error:', err);
@@ -655,6 +661,7 @@ const resend2fa = async (req, res) => {
             await sendEmail({
                 to: employee.email,
                 subject: 'Your Two-Factor Authentication (2FA) Code',
+                code,
                 text: `Your login verification code is: ${code}. It expires in 10 minutes.`
             });
         } catch (e) {

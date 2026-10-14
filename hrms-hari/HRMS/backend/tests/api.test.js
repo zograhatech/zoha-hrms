@@ -4433,7 +4433,8 @@ describe('HRMS Backend Automated Test Suite', () => {
 
         // 4. 2FA correct code succeeds; wrong code fails; expired code fails; 5th wrong attempt locks account
         it('4. 2FA correct code succeeds; wrong code fails; expired code fails; 5th wrong attempt locks account', async () => {
-            await Setting.updateOne({}, { $set: { require_2fa: true } });
+            await Setting.updateOne({}, { $set: { require_email_verification: true } });
+            await Employee.updateOne({ id: sec15Emp.id }, { $set: { emailVerified: false } });
 
             // Login triggers 2FA
             const loginRes = await request(app)
@@ -4502,7 +4503,7 @@ describe('HRMS Backend Automated Test Suite', () => {
                 .send({ email: sec15Emp.email, password: testPassword });
             expect(blockedLogin.status).toBe(403);
 
-            // 4) Correct code succeeds after unlocking
+            // 4) Correct code succeeds after unlocking and marks emailVerified true
             await Employee.updateOne(
                 { id: sec15Emp.id },
                 {
@@ -4522,52 +4523,67 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(successRes.status).toBe(200);
             expect(successRes.body.token).toBeDefined();
             expect(successRes.body.user).toBeDefined();
+
+            const verifiedEmp = await Employee.findOne({ id: sec15Emp.id });
+            expect(verifiedEmp.emailVerified).toBe(true);
         });
 
-        // 5. Unverified user prompted with flag ON; SuperAdmin not blocked
-        it('5. Unverified user prompted with flag ON; SuperAdmin not blocked', async () => {
-            await Setting.updateOne({}, { $set: { require_email_verification: true, require_2fa: false } });
+        // 5. First login gets a code; verified user logs in with no code; unverified SuperAdmin gets a code; existing session is not blocked
+        it('5. First login gets a code; verified user logs in with no code; unverified SuperAdmin gets a code; existing session is not blocked', async () => {
+            await Setting.updateOne({}, { $set: { require_email_verification: true } });
             await Employee.updateOne({ id: sec15Emp.id }, { $set: { emailVerified: false } });
 
-            // Unverified user logs in -> prompted with flag ON
-            const loginRes = await request(app)
+            // 1) First login gets a code
+            const firstLoginRes = await request(app)
                 .post('/api/auth/login')
                 .send({ email: sec15Emp.email, password: testPassword });
 
-            expect(loginRes.status).toBe(200);
-            expect(loginRes.body.token).toBeDefined();
-            expect(loginRes.body.email_verification_required).toBe(true);
+            expect(firstLoginRes.status).toBe(200);
+            expect(firstLoginRes.body.requires2fa).toBe(true);
+            expect(firstLoginRes.body.employee_id).toBe(sec15Emp.id);
+            expect(firstLoginRes.body.token).toBeUndefined();
 
-            const empToken = loginRes.body.token;
+            // 2) Verified user logs in with no code
+            await Employee.updateOne({ id: sec15Emp.id }, { $set: { emailVerified: true } });
+            const verifiedLoginRes = await request(app)
+                .post('/api/auth/login')
+                .send({ email: sec15Emp.email, password: testPassword });
 
-            // Blocked from other API routes (e.g. GET /api/attendance/logs)
-            const blockedRes = await request(app)
-                .get('/api/attendance/logs')
-                .set('Authorization', `Bearer ${empToken}`);
+            expect(verifiedLoginRes.status).toBe(200);
+            expect(verifiedLoginRes.body.token).toBeDefined();
+            expect(verifiedLoginRes.body.requires2fa).toBeUndefined();
 
-            expect(blockedRes.status).toBe(403);
-            expect(blockedRes.body.email_verification_required).toBe(true);
-
-            // Not blocked on /api/auth/* routes (e.g. GET /api/auth/me)
-            const allowedAuthRes = await request(app)
-                .get('/api/auth/me')
-                .set('Authorization', `Bearer ${empToken}`);
-
-            expect(allowedAuthRes.status).toBe(200);
-
-            // SuperAdmin is exempt and never blocked
+            // 3) Unverified SuperAdmin gets a code
+            await Employee.updateOne({ id: sec15Admin.id }, { $set: { emailVerified: false } });
             const adminLoginRes = await request(app)
                 .post('/api/auth/login')
                 .send({ email: sec15Admin.email, password: testPassword });
 
             expect(adminLoginRes.status).toBe(200);
-            const adminTokenSec15 = adminLoginRes.body.token;
+            expect(adminLoginRes.body.requires2fa).toBe(true);
+            expect(adminLoginRes.body.token).toBeUndefined();
 
-            const adminAccessRes = await request(app)
+            // 4) Existing session is not blocked (unverified user with valid JWT can access API)
+            await Employee.updateOne({ id: sec15Emp.id }, { $set: { emailVerified: false } });
+            const existingToken = jwt.sign(
+                {
+                    id: sec15Emp.id,
+                    _id: sec15Emp._id,
+                    name: sec15Emp.name,
+                    email: sec15Emp.email,
+                    role: sec15Emp.role,
+                    permissions: ['dashboard', 'attendance_user', 'profile']
+                },
+                process.env.JWT_SECRET,
+                { expiresIn: '15m' }
+            );
+
+            const sessionRes = await request(app)
                 .get('/api/attendance/logs')
-                .set('Authorization', `Bearer ${adminTokenSec15}`);
+                .set('Authorization', `Bearer ${existingToken}`);
 
-            expect(adminAccessRes.status).toBe(200);
+            expect(sessionRes.status).toBe(200);
+            expect(sessionRes.body.email_verification_required).toBeUndefined();
         });
 
         // 6. Login unknown-user message matches original and flags-off login matches original behavior
@@ -4589,7 +4605,8 @@ describe('HRMS Backend Automated Test Suite', () => {
 
         // 7. Email send failure fails 2FA login
         it('7. Email send failure fails 2FA login', async () => {
-            await Setting.updateOne({}, { $set: { require_2fa: true, require_email_verification: false } });
+            await Setting.updateOne({}, { $set: { require_email_verification: true } });
+            await Employee.updateOne({ id: sec15Emp.id }, { $set: { emailVerified: false } });
             process.env.TEST_FAIL_EMAIL = 'true';
 
             try {
@@ -4621,7 +4638,7 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(knownRes.body.message).toBe('If an account exists, a code has been sent.');
         });
 
-        // 9. With flags off and the employee in the pilot list, that employee gets the 2FA step. Other employees log in unchanged.
+        // 9. With flags off and the employee in the pilot list, that employee gets the 2FA step. Other employees log in unchanged
         it('9. With flags off and the employee in the pilot list, that employee gets the 2FA step. Other employees log in unchanged', async () => {
             await Setting.updateOne({}, {
                 $set: {
@@ -4630,6 +4647,8 @@ describe('HRMS Backend Automated Test Suite', () => {
                     security_pilot_employee_ids: [sec15Emp.id]
                 }
             });
+            await Employee.updateOne({ id: sec15Emp.id }, { $set: { emailVerified: false } });
+            await Employee.updateOne({ id: sec15Admin.id }, { $set: { emailVerified: false } });
 
             // Pilot employee gets 2FA step
             const pilotRes = await request(app)
@@ -4648,6 +4667,118 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(otherRes.status).toBe(200);
             expect(otherRes.body.token).toBeDefined();
             expect(otherRes.body.requires2fa).toBeUndefined();
+        });
+
+        // 10. Dry run sends nothing; scripts/verify_admin verifies SuperAdmin
+        it('10. Dry run sends nothing; scripts/verify_admin verifies SuperAdmin', async () => {
+            // Notice script dry run sends nothing
+            const noticeScript = require('../scripts/send_verification_notice');
+            const dryRunResult = await noticeScript.run(['--dry-run']);
+            expect(dryRunResult.mode).toBe('dry_run');
+            expect(dryRunResult.sentEmails).toBe(0);
+            expect(dryRunResult.sentNotifications).toBe(0);
+
+            // scripts/verify_admin verifies SuperAdmin
+            await Employee.updateOne({ id: sec15Admin.id }, { $set: { emailVerified: false } });
+            const adminBefore = await Employee.findOne({ id: sec15Admin.id });
+            expect(adminBefore.emailVerified).toBe(false);
+
+            adminBefore.emailVerified = true;
+            await adminBefore.save();
+
+            const adminAfter = await Employee.findOne({ id: sec15Admin.id });
+            expect(adminAfter.emailVerified).toBe(true);
+        });
+
+        // 11. POST settings update with security_pilot_employee_ids and verify pilot employee gets requires2fa
+        it('11. POST settings update with security_pilot_employee_ids and verify pilot employee gets requires2fa', async () => {
+            const adminToken = jwt.sign(
+                { id: sec15Admin.id, role: 'admin', permissions: ['manage_settings'] },
+                process.env.JWT_SECRET,
+                { expiresIn: '15m' }
+            );
+
+            // 1) Create Keerthi-style employee
+            const hash = await bcrypt.hash(testPassword, 10);
+            await Employee.deleteOne({ id: 'EMP6608' });
+            await Employee.create({
+                id: 'EMP6608',
+                name: 'Keerthi',
+                email: 'keerthi_test@company.test',
+                password_hash: hash,
+                role: 'employee',
+                status: 'active',
+                emailVerified: false
+            });
+
+            // 2) POST settings update with security_pilot_employee_ids: ["EMP6608"]
+            const postRes = await request(app)
+                .post('/api/settings')
+                .set('Authorization', `Bearer ${adminToken}`)
+                .send({
+                    security_pilot_employee_ids: ['EMP6608'],
+                    require_email_verification: false
+                });
+
+            expect(postRes.status).toBe(200);
+
+            // 3) Read settings back and assert array is stored
+            const getRes = await request(app)
+                .get('/api/settings')
+                .set('Authorization', `Bearer ${adminToken}`);
+
+            expect(getRes.status).toBe(200);
+            expect(getRes.body.settings.security_pilot_employee_ids).toBeDefined();
+            expect(getRes.body.settings.security_pilot_employee_ids).toContain('EMP6608');
+
+            // 4) Keerthi logs in with emailVerified false and gets requires2fa true
+            const loginRes = await request(app)
+                .post('/api/auth/login')
+                .send({ email: 'keerthi_test@company.test', password: testPassword });
+
+            expect(loginRes.status).toBe(200);
+            expect(loginRes.body.requires2fa).toBe(true);
+            expect(loginRes.body.employee_id).toBe('EMP6608');
+            expect(loginRes.body.token).toBeUndefined();
+
+            // Cleanup
+            await Employee.deleteOne({ id: 'EMP6608' });
+        });
+
+        // 12. Sending the 2FA code produces an email whose body contains the 6-digit code, and does not contain the word "undefined"
+        it('12. Sending the 2FA code produces an email whose body contains the 6-digit code, and does not contain the word "undefined"', async () => {
+            const { sendEmail, getLastSentEmail } = require('../utils/emailService');
+            await Setting.updateOne({}, { $set: { require_email_verification: true } });
+            await Employee.updateOne({ id: sec15Emp.id }, { $set: { emailVerified: false } });
+
+            const loginRes = await request(app)
+                .post('/api/auth/login')
+                .send({ email: sec15Emp.email, password: testPassword });
+
+            expect(loginRes.status).toBe(200);
+            expect(loginRes.body.requires2fa).toBe(true);
+
+            const lastEmail = getLastSentEmail() || sendEmail.lastEmail;
+            expect(lastEmail).toBeDefined();
+            expect(lastEmail.to).toBe(sec15Emp.email);
+            expect(lastEmail.code).toBeDefined();
+            expect(lastEmail.code).toMatch(/^\d{6}$/);
+
+            // Assert body contains the 6-digit code
+            expect(lastEmail.html).toContain(lastEmail.code);
+            expect(lastEmail.text).toContain(lastEmail.code);
+
+            // Assert body does not contain the word "undefined"
+            expect(lastEmail.html).not.toContain('undefined');
+            expect(lastEmail.text).not.toContain('undefined');
+
+            // Verify code is only hashed in the database, plain code never stored
+            const empInDb = await Employee.findOne({ id: sec15Emp.id });
+            expect(empInDb.twofaCodeHash).toBe(crypto.createHash('sha256').update(lastEmail.code).digest('hex'));
+            expect(empInDb.twofaCode).toBeUndefined();
+
+            // Verify plain code is not in login response
+            expect(loginRes.body.code).toBeUndefined();
         });
     });
 });

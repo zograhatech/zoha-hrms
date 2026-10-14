@@ -166,14 +166,20 @@ const updateSettings = async (req, res) => {
         let twofaFlagChanged = false;
         let pilotListChanged = false;
 
-        if (updateData.require_email_verification !== undefined && Boolean(updateData.require_email_verification) !== settings.require_email_verification) {
-            settings.require_email_verification = Boolean(updateData.require_email_verification);
-            emailVerificationFlagChanged = true;
+        if (updateData.require_email_verification !== undefined) {
+            const nextVal = Boolean(updateData.require_email_verification);
+            if (nextVal !== settings.require_email_verification) {
+                emailVerificationFlagChanged = true;
+            }
+            settings.require_email_verification = nextVal;
         }
 
-        if (updateData.require_2fa !== undefined && Boolean(updateData.require_2fa) !== settings.require_2fa) {
-            settings.require_2fa = Boolean(updateData.require_2fa);
-            twofaFlagChanged = true;
+        if (updateData.require_2fa !== undefined) {
+            const nextVal = Boolean(updateData.require_2fa);
+            if (nextVal !== settings.require_2fa) {
+                twofaFlagChanged = true;
+            }
+            settings.require_2fa = nextVal;
         }
 
         if (updateData.security_pilot_employee_ids !== undefined) {
