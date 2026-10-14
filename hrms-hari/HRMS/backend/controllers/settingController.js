@@ -1,6 +1,9 @@
 const Setting = require('../models/Setting');
 const LeaveBalance = require('../models/LeaveBalance');
 const Leave = require('../models/Leave');
+const Employee = require('../models/Employee');
+const Notification = require('../models/Notification');
+const { sendEmail } = require('../utils/emailService');
 const nodemailer = require('nodemailer');
 
 const getSettings = async (req, res) => {
@@ -159,8 +162,81 @@ const updateSettings = async (req, res) => {
             settings.markModified('module_pricing');
         }
 
+        let emailVerificationFlagChanged = false;
+        let twofaFlagChanged = false;
+
+        if (updateData.require_email_verification !== undefined && Boolean(updateData.require_email_verification) !== settings.require_email_verification) {
+            settings.require_email_verification = Boolean(updateData.require_email_verification);
+            emailVerificationFlagChanged = true;
+        }
+
+        if (updateData.require_2fa !== undefined && Boolean(updateData.require_2fa) !== settings.require_2fa) {
+            settings.require_2fa = Boolean(updateData.require_2fa);
+            twofaFlagChanged = true;
+        }
+
         const savedSettings = await settings.save();
         console.log('[updateSettings] Saved roles in DB:', Object.keys(savedSettings.roles_permissions || {}));
+
+        // Send notifications and emails if feature flags were changed
+        if (emailVerificationFlagChanged || twofaFlagChanged) {
+            (async () => {
+                try {
+                    const activeEmployees = await Employee.find({ status: 'active' }).select('_id email name emailVerified').lean();
+                    const flagChanges = [];
+                    if (emailVerificationFlagChanged) {
+                        flagChanges.push(`Email Verification requirement is now ${savedSettings.require_email_verification ? 'ENABLED' : 'DISABLED'}`);
+                    }
+                    if (twofaFlagChanged) {
+                        flagChanges.push(`Two-Factor Authentication (2FA) requirement is now ${savedSettings.require_2fa ? 'ENABLED' : 'DISABLED'}`);
+                    }
+                    const summaryText = flagChanges.join('; ');
+
+                    for (const emp of activeEmployees) {
+                        // In-app notification
+                        try {
+                            await Notification.create({
+                                recipient: emp._id,
+                                type: 'general',
+                                title: 'Security Settings Updated',
+                                message: summaryText
+                            });
+                        } catch (notifErr) {
+                            console.error('[updateSettings] In-app notification error for', emp._id, notifErr.message);
+                        }
+
+                        // Also: when require_email_verification is turned ON, unverified users get an in-app Notification for verification required
+                        if (emailVerificationFlagChanged && savedSettings.require_email_verification && !emp.emailVerified) {
+                            try {
+                                await Notification.create({
+                                    recipient: emp._id,
+                                    type: 'general',
+                                    title: 'Email Verification Required',
+                                    message: 'Please verify your email address to continue accessing your account features.'
+                                });
+                            } catch (e) {
+                                console.error('[updateSettings] Unverified user notification error:', e.message);
+                            }
+                        }
+
+                        // Email notification
+                        if (emp.email) {
+                            try {
+                                await sendEmail({
+                                    to: emp.email,
+                                    subject: 'Security Settings Updated',
+                                    text: `Hello ${emp.name || ''},\n\nSecurity settings have been updated:\n${summaryText}\n\nRegards,\n${savedSettings.company_name || 'HRMS'}`
+                                });
+                            } catch (mailErr) {
+                                console.error('[updateSettings] Email error for', emp.email, mailErr.message);
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.error('[updateSettings] Flag change notification error:', e);
+                }
+            })();
+        }
 
         res.json({ success: true, message: 'Settings updated successfully.', settings: savedSettings });
     } catch (err) {

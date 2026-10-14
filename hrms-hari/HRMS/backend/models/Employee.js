@@ -49,6 +49,23 @@ const employeeSchema = new mongoose.Schema({
     reset_otp_expiry: { type: Date },
     push_subscription: { type: Object, default: null },
     permissions: { type: [String], default: null },
+    // Email verification fields
+    emailVerified: { type: Boolean, default: false },
+    emailVerificationTokenHash: { type: String, default: null },
+    emailVerificationExpiry: { type: Date, default: null },
+    verificationSentCount: { type: Number, default: 0 },
+    verificationWindowStart: { type: Date, default: null },
+    lastVerificationSentAt: { type: Date, default: null },
+    // 2FA fields
+    twofaCodeHash: { type: String, default: null },
+    twofaCodeExpiry: { type: Date, default: null },
+    twofaAttempts: { type: Number, default: 0 },
+    twofaLockedUntil: { type: Date, default: null },
+    twofaSendWindow: {
+        sentCount: { type: Number, default: 0 },
+        windowStart: { type: Date, default: null },
+        lastSentAt: { type: Date, default: null }
+    }
 }, { timestamps: true });
 
 employeeSchema.index({ status: 1 });

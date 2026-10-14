@@ -62,7 +62,9 @@ const settingSchema = new mongoose.Schema({
         is_paid: { type: Boolean, default: false }
     },
     payment_qr_code: { type: String, default: '' },
-    module_pricing: { type: mongoose.Schema.Types.Mixed, default: {} }
+    module_pricing: { type: mongoose.Schema.Types.Mixed, default: {} },
+    require_email_verification: { type: Boolean, default: false },
+    require_2fa: { type: Boolean, default: false }
 }, { timestamps: true });
 
 module.exports = mongoose.models.Setting || mongoose.model('Setting', settingSchema);

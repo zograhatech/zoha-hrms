@@ -7,6 +7,9 @@ const Setting = require('../models/Setting');
  */
 const sendEmail = async ({ to, subject, text, html }) => {
     if (process.env.NODE_ENV === 'test') {
+        if (process.env.TEST_FAIL_EMAIL === 'true') {
+            return false;
+        }
         return true;
     }
     try {

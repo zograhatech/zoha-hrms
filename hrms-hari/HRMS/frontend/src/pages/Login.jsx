@@ -21,9 +21,22 @@ export default function Login() {
     const [rememberMe, setRememberMe] = useState(false);
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
-    const { login } = useAuth();
+    const { login, complete2fa } = useAuth();
     const { branding } = useBranding();
     const navigate = useNavigate();
+
+    // 2FA States
+    const [show2fa, setShow2fa] = useState(false);
+    const [twofaCode, setTwofaCode] = useState('');
+    const [twofaEmployeeId, setTwofaEmployeeId] = useState('');
+    const [twofaLoading, setTwofaLoading] = useState(false);
+    const [twofaResending, setTwofaResending] = useState(false);
+
+    // Unverified Email States
+    const [showUnverified, setShowUnverified] = useState(false);
+    const [unverifiedEmail, setUnverifiedEmail] = useState('');
+    const [resendVerifLoading, setResendVerifLoading] = useState(false);
+    const [resendVerifSuccess, setResendVerifSuccess] = useState('');
 
     // Forgot Password States
     const [showForgot, setShowForgot] = useState(false);
@@ -38,15 +51,101 @@ export default function Login() {
     const handleLogin = async (e) => {
         e.preventDefault();
         setError('');
+        setResendVerifSuccess('');
         setLoading(true);
         try {
-            await login(email, password, rememberMe);
+            const res = await login(email, password, rememberMe);
+            if (res?.requires2fa || res?.requires_2fa) {
+                setTwofaEmployeeId(res.employee_id || email);
+                setShow2fa(true);
+                showToast(res.message || '2FA code sent to your email.', 'info');
+                return;
+            }
+            if (res?.email_verification_required) {
+                setUnverifiedEmail(email);
+                setShowUnverified(true);
+                return;
+            }
             showToast('Welcome back!', 'success');
             navigate('/dashboard');
         } catch (err) {
-            setError(err.response?.data?.message || err.message || 'Login failed. Please try again.');
+            const msg = err.response?.data?.message || err.message || '';
+            const isUnverified = err.response?.status === 403 && (
+                err.response?.data?.email_verification_required ||
+                msg.toLowerCase().includes('verification')
+            );
+
+            if (isUnverified) {
+                setUnverifiedEmail(email);
+                setShowUnverified(true);
+            } else {
+                setError(msg || 'Login failed. Please try again.');
+            }
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handle2faVerify = async (e) => {
+        e.preventDefault();
+        setError('');
+        setTwofaLoading(true);
+        try {
+            const { data } = await API.post('/auth/2fa/verify', {
+                employee_id: twofaEmployeeId,
+                code: twofaCode,
+                rememberMe
+            });
+            if (data.success) {
+                complete2fa(data);
+                showToast('Welcome back!', 'success');
+                navigate('/dashboard');
+            } else {
+                setError(data.message || 'Verification failed');
+            }
+        } catch (err) {
+            const msg = err.response?.data?.message || err.message || '';
+            if (err.response?.status === 403 && (err.response?.data?.email_verification_required || msg.toLowerCase().includes('verification'))) {
+                setShow2fa(false);
+                setUnverifiedEmail(email);
+                setShowUnverified(true);
+            } else {
+                setError(msg || 'Failed to verify 2FA code.');
+            }
+        } finally {
+            setTwofaLoading(false);
+        }
+    };
+
+    const handle2faResend = async () => {
+        setTwofaResending(true);
+        setError('');
+        try {
+            const { data } = await API.post('/auth/2fa/resend', {
+                employee_id: twofaEmployeeId,
+                email
+            });
+            showToast(data.message || 'If an account exists, a code has been sent.', 'info');
+        } catch (err) {
+            showToast(err.response?.data?.message || 'Failed to resend 2FA code', 'error');
+        } finally {
+            setTwofaResending(false);
+        }
+    };
+
+    const handleResendVerification = async () => {
+        setResendVerifLoading(true);
+        setResendVerifSuccess('');
+        setError('');
+        try {
+            const targetEmail = unverifiedEmail || email;
+            const { data } = await API.post('/auth/resend-verification', { email: targetEmail });
+            setResendVerifSuccess(data.message || 'If an account exists, a verification link has been sent.');
+            showToast(data.message || 'Verification link sent', 'success');
+        } catch (err) {
+            setError(err.response?.data?.message || 'Failed to resend verification link');
+        } finally {
+            setResendVerifLoading(false);
         }
     };
 
@@ -152,64 +251,140 @@ export default function Login() {
                                 )}
                                 <span className="form-company-name">{branding.company_name}</span>
                             </div>
-                            <h2>Sign In</h2>
-                            <p>Enter your credentials to access the HRMS</p>
+                            {show2fa ? (
+                                <>
+                                    <h2>Two-Factor Authentication</h2>
+                                    <p>Enter the 6-digit verification code sent to your email</p>
+                                </>
+                            ) : showUnverified ? (
+                                <>
+                                    <h2>Verify Your Email</h2>
+                                    <p>Email verification is required to access your account</p>
+                                </>
+                            ) : (
+                                <>
+                                    <h2>Sign In</h2>
+                                    <p>Enter your credentials to access the HRMS</p>
+                                </>
+                            )}
                         </div>
 
                         {error && <div className="alert alert-error">{error}</div>}
+                        {resendVerifSuccess && <div className="alert alert-success">{resendVerifSuccess}</div>}
 
-                        <form onSubmit={handleLogin}>
-                            <div className="form-group">
-                                <label className="form-label">Email or Employee ID</label>
-                                <input
-                                    type="text"
-                                    className="form-input"
-                                    placeholder="your email or Employee ID"
-                                    value={email}
-                                    onChange={e => setEmail(e.target.value)}
-                                    required
-                                />
-                            </div>
-                            <div className="form-group">
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                                    <label className="form-label" style={{ margin: 0 }}>Password</label>
-                                    <button type="button" onClick={() => { setShowForgot(true); setForgotStep(1); setForgotError(''); setForgotSuccess(''); }} style={{ background: 'none', border: 'none', color: 'var(--accent-light)', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer' }}>
-                                        Forgot Password?
-                                    </button>
-                                </div>
-                                <div style={{ position: 'relative' }}>
+                        {show2fa ? (
+                            <form onSubmit={handle2faVerify}>
+                                <div className="form-group">
+                                    <label className="form-label">Verification Code</label>
                                     <input
-                                        type={showPassword ? 'text' : 'password'}
+                                        type="text"
                                         className="form-input"
-                                        placeholder="••••••••"
-                                        value={password}
-                                        onChange={e => setPassword(e.target.value)}
+                                        placeholder="123456"
+                                        value={twofaCode}
+                                        onChange={e => setTwofaCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                                        maxLength={6}
                                         required
-                                        style={{ paddingRight: '40px' }}
+                                        autoFocus
+                                        style={{ letterSpacing: '8px', fontSize: '1.25rem', textAlign: 'center', fontWeight: 'bold' }}
                                     />
+                                </div>
+                                <button type="submit" className="btn btn-primary w-full btn-lg" disabled={twofaLoading} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 12 }}>
+                                    {twofaLoading ? <><span className="loading-spinner" style={{ width: 18, height: 18, borderWidth: 2 }} /> Verifying...</> : <><FiShield /> Verify Code</>}
+                                </button>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 16 }}>
                                     <button
                                         type="button"
-                                        onClick={() => setShowPassword(!showPassword)}
-                                        style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                                        onClick={handle2faResend}
+                                        disabled={twofaResending}
+                                        style={{ background: 'none', border: 'none', color: 'var(--accent-light)', fontSize: '0.85rem', fontWeight: 600, cursor: 'pointer' }}
                                     >
-                                        {showPassword ? <FiEyeOff size={18} /> : <FiEye size={18} />}
+                                        {twofaResending ? 'Resending...' : 'Resend Code'}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => { setShow2fa(false); setTwofaCode(''); setError(''); }}
+                                        style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '0.85rem', cursor: 'pointer' }}
+                                    >
+                                        Back to Sign In
                                     </button>
                                 </div>
+                            </form>
+                        ) : showUnverified ? (
+                            <div style={{ textAlign: 'center' }}>
+                                <p style={{ color: 'var(--text-secondary)', marginBottom: 20, fontSize: '0.9rem', lineHeight: 1.5 }}>
+                                    Your email address needs to be verified before accessing the system. Please check your inbox for the verification link.
+                                </p>
+                                <button
+                                    type="button"
+                                    onClick={handleResendVerification}
+                                    disabled={resendVerifLoading}
+                                    className="btn btn-primary w-full btn-lg"
+                                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 16 }}
+                                >
+                                    {resendVerifLoading ? 'Sending...' : 'Resend Verification Email'}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => { setShowUnverified(false); setError(''); setResendVerifSuccess(''); }}
+                                    style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '0.85rem', cursor: 'pointer' }}
+                                >
+                                    Back to Sign In
+                                </button>
                             </div>
-                            <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', marginTop: '-10px', marginBottom: '20px' }}>
-                                <input 
-                                    type="checkbox" 
-                                    id="remember" 
-                                    checked={rememberMe} 
-                                    onChange={e => setRememberMe(e.target.checked)} 
-                                    style={{ width: '16px', height: '16px', marginRight: '8px', cursor: 'pointer', accentColor: 'var(--accent-primary)' }} 
-                                />
-                                <label htmlFor="remember" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', cursor: 'pointer', fontWeight: 500, userSelect: 'none' }}>Stay logged in</label>
-                            </div>
-                            <button type="submit" className="btn btn-primary w-full btn-lg" disabled={loading} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
-                                {loading ? <><span className="loading-spinner" style={{ width: 18, height: 18, borderWidth: 2 }} /> Signing in...</> : <><FiLogIn /> Sign In</>}
-                            </button>
-                        </form>
+                        ) : (
+                            <form onSubmit={handleLogin}>
+                                <div className="form-group">
+                                    <label className="form-label">Email or Employee ID</label>
+                                    <input
+                                        type="text"
+                                        className="form-input"
+                                        placeholder="your email or Employee ID"
+                                        value={email}
+                                        onChange={e => setEmail(e.target.value)}
+                                        required
+                                    />
+                                </div>
+                                <div className="form-group">
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                                        <label className="form-label" style={{ margin: 0 }}>Password</label>
+                                        <button type="button" onClick={() => { setShowForgot(true); setForgotStep(1); setForgotError(''); setForgotSuccess(''); }} style={{ background: 'none', border: 'none', color: 'var(--accent-light)', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer' }}>
+                                            Forgot Password?
+                                        </button>
+                                    </div>
+                                    <div style={{ position: 'relative' }}>
+                                        <input
+                                            type={showPassword ? 'text' : 'password'}
+                                            className="form-input"
+                                            placeholder="••••••••"
+                                            value={password}
+                                            onChange={e => setPassword(e.target.value)}
+                                            required
+                                            style={{ paddingRight: '40px' }}
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowPassword(!showPassword)}
+                                            style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                                        >
+                                            {showPassword ? <FiEyeOff size={18} /> : <FiEye size={18} />}
+                                        </button>
+                                    </div>
+                                </div>
+                                <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', marginTop: '-10px', marginBottom: '20px' }}>
+                                    <input 
+                                        type="checkbox" 
+                                        id="remember" 
+                                        checked={rememberMe} 
+                                        onChange={e => setRememberMe(e.target.checked)} 
+                                        style={{ width: '16px', height: '16px', marginRight: '8px', cursor: 'pointer', accentColor: 'var(--accent-primary)' }} 
+                                    />
+                                    <label htmlFor="remember" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', cursor: 'pointer', fontWeight: 500, userSelect: 'none' }}>Stay logged in</label>
+                                </div>
+                                <button type="submit" className="btn btn-primary w-full btn-lg" disabled={loading} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
+                                    {loading ? <><span className="loading-spinner" style={{ width: 18, height: 18, borderWidth: 2 }} /> Signing in...</> : <><FiLogIn /> Sign In</>}
+                                </button>
+                            </form>
+                        )}
                     </div>
                 </div>
             </div>

@@ -4254,6 +4254,373 @@ describe('HRMS Backend Automated Test Suite', () => {
             }
         });
     });
+
+    // =========================================================================
+    // 15. Phase 2 Email Verification and Two-Factor Authentication Tests
+    // =========================================================================
+    describe('15. Phase 2 Email Verification and Two-Factor Authentication Tests', () => {
+        const Employee = require('../models/Employee');
+        const Setting = require('../models/Setting');
+        const crypto = require('crypto');
+        let sec15Emp;
+        let sec15Admin;
+        const testPassword = 'Password123!';
+
+        beforeAll(async () => {
+            const passwordHash = await bcrypt.hash(testPassword, 10);
+            sec15Emp = await Employee.create({
+                id: 'EMP_SEC15_01',
+                name: 'Sec15 Employee',
+                email: 'sec15_emp@testcompany.test',
+                password_hash: passwordHash,
+                role: 'employee',
+                department_id: testDeptId,
+                status: 'active',
+                emailVerified: false
+            });
+
+            sec15Admin = await Employee.create({
+                id: 'ADM_SEC15_01',
+                name: 'Sec15 Admin',
+                email: 'sec15_admin@testcompany.test',
+                password_hash: passwordHash,
+                role: 'admin',
+                department_id: testDeptId,
+                status: 'active',
+                emailVerified: false
+            });
+        });
+
+        afterAll(async () => {
+            await Employee.deleteMany({ id: { $in: ['EMP_SEC15_01', 'ADM_SEC15_01'] } });
+            await Setting.updateOne({}, { $set: { require_email_verification: false, require_2fa: false } });
+        });
+
+        beforeEach(async () => {
+            // Reset flags and user state
+            await Setting.updateOne({}, { $set: { require_email_verification: false, require_2fa: false } });
+            await Employee.updateOne({ id: 'EMP_SEC15_01' }, {
+                $set: {
+                    emailVerified: false,
+                    emailVerificationTokenHash: null,
+                    emailVerificationExpiry: null,
+                    verificationSentCount: 0,
+                    verificationWindowStart: null,
+                    lastVerificationSentAt: null,
+                    twofaCodeHash: null,
+                    twofaCodeExpiry: null,
+                    twofaAttempts: 0,
+                    twofaLockedUntil: null,
+                    twofaSendWindow: { sentCount: 0, windowStart: null, lastSentAt: null }
+                }
+            });
+        });
+
+        // 1. Flags OFF: login unchanged
+        it('1. Flags OFF: login unchanged', async () => {
+            const res = await request(app)
+                .post('/api/auth/login')
+                .send({ email: sec15Emp.email, password: testPassword });
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+            expect(res.body.token).toBeDefined();
+            expect(res.body.refreshToken).toBeDefined();
+            expect(res.body.requires2fa).toBeUndefined();
+            expect(res.body.email_verification_required).toBeUndefined();
+        });
+
+        // 2. Correct verification token verifies; reuse fails; expired token fails
+        it('2. Correct verification token verifies; reuse fails; expired token fails', async () => {
+            const rawToken = crypto.randomBytes(32).toString('hex');
+            const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+
+            await Employee.updateOne(
+                { id: sec15Emp.id },
+                {
+                    $set: {
+                        emailVerificationTokenHash: tokenHash,
+                        emailVerificationExpiry: new Date(Date.now() + 24 * 60 * 60 * 1000)
+                    }
+                }
+            );
+
+            // 1) Correct verification token verifies
+            const verifyRes1 = await request(app)
+                .post('/api/auth/verify-email')
+                .send({ token: rawToken });
+
+            expect(verifyRes1.status).toBe(200);
+            expect(verifyRes1.body.success).toBe(true);
+
+            const updatedEmp = await Employee.findOne({ id: sec15Emp.id });
+            expect(updatedEmp.emailVerified).toBe(true);
+            expect(updatedEmp.emailVerificationTokenHash).toBeNull();
+
+            // 2) Reuse fails
+            const verifyRes2 = await request(app)
+                .post('/api/auth/verify-email')
+                .send({ token: rawToken });
+
+            expect(verifyRes2.status).toBe(400);
+
+            // 3) Expired token fails
+            const expiredToken = crypto.randomBytes(32).toString('hex');
+            const expiredHash = crypto.createHash('sha256').update(expiredToken).digest('hex');
+            await Employee.updateOne(
+                { id: sec15Emp.id },
+                {
+                    $set: {
+                        emailVerificationTokenHash: expiredHash,
+                        emailVerificationExpiry: new Date(Date.now() - 3600 * 1000) // expired 1 hr ago
+                    }
+                }
+            );
+
+            const verifyRes3 = await request(app)
+                .post('/api/auth/verify-email')
+                .send({ token: expiredToken });
+
+            expect(verifyRes3.status).toBe(400);
+        });
+
+        // 3. Resend limits enforced
+        it('3. Resend limits enforced', async () => {
+            // First resend succeeds
+            const res1 = await request(app)
+                .post('/api/auth/resend-verification')
+                .send({ email: sec15Emp.email });
+
+            expect(res1.status).toBe(200);
+            expect(res1.body.success).toBe(true);
+
+            // Immediate second resend fails (rate limited: 1 per 5 minutes)
+            const res2 = await request(app)
+                .post('/api/auth/resend-verification')
+                .send({ email: sec15Emp.email });
+
+            expect(res2.status).toBe(429);
+
+            // Simulate elapsed 5 minutes for send 2 and 3
+            await Employee.updateOne(
+                { id: sec15Emp.id },
+                { $set: { lastVerificationSentAt: new Date(Date.now() - 6 * 60 * 1000) } }
+            );
+            const res3 = await request(app)
+                .post('/api/auth/resend-verification')
+                .send({ email: sec15Emp.email });
+            expect(res3.status).toBe(200);
+
+            await Employee.updateOne(
+                { id: sec15Emp.id },
+                { $set: { lastVerificationSentAt: new Date(Date.now() - 6 * 60 * 1000) } }
+            );
+            const res4 = await request(app)
+                .post('/api/auth/resend-verification')
+                .send({ email: sec15Emp.email });
+            expect(res4.status).toBe(200);
+
+            // 4th send within 24h fails (max 3 per 24 hours)
+            await Employee.updateOne(
+                { id: sec15Emp.id },
+                { $set: { lastVerificationSentAt: new Date(Date.now() - 6 * 60 * 1000) } }
+            );
+            const res5 = await request(app)
+                .post('/api/auth/resend-verification')
+                .send({ email: sec15Emp.email });
+            expect(res5.status).toBe(429);
+        });
+
+        // 4. 2FA correct code succeeds; wrong code fails; expired code fails; 5th wrong attempt locks account
+        it('4. 2FA correct code succeeds; wrong code fails; expired code fails; 5th wrong attempt locks account', async () => {
+            await Setting.updateOne({}, { $set: { require_2fa: true } });
+
+            // Login triggers 2FA
+            const loginRes = await request(app)
+                .post('/api/auth/login')
+                .send({ email: sec15Emp.email, password: testPassword });
+
+            expect(loginRes.status).toBe(200);
+            expect(loginRes.body.requires2fa).toBe(true);
+            expect(loginRes.body.token).toBeUndefined();
+
+            // Set fixed code '123456' for predictable testing
+            const testCode = '123456';
+            const codeHash = crypto.createHash('sha256').update(testCode).digest('hex');
+            await Employee.updateOne(
+                { id: sec15Emp.id },
+                {
+                    $set: {
+                        twofaCodeHash: codeHash,
+                        twofaCodeExpiry: new Date(Date.now() + 10 * 60 * 1000),
+                        twofaAttempts: 0
+                    }
+                }
+            );
+
+            // 1) Wrong code fails
+            const wrongRes = await request(app)
+                .post('/api/auth/2fa/verify')
+                .send({ employee_id: sec15Emp.id, code: '000000' });
+
+            expect(wrongRes.status).toBe(400);
+
+            // 2) Expired code fails
+            await Employee.updateOne(
+                { id: sec15Emp.id },
+                { $set: { twofaCodeExpiry: new Date(Date.now() - 1000) } }
+            );
+            const expiredRes = await request(app)
+                .post('/api/auth/2fa/verify')
+                .send({ employee_id: sec15Emp.id, code: testCode });
+
+            expect(expiredRes.status).toBe(400);
+
+            // 3) 5th wrong attempt locks account
+            await Employee.updateOne(
+                { id: sec15Emp.id },
+                {
+                    $set: {
+                        twofaCodeExpiry: new Date(Date.now() + 10 * 60 * 1000),
+                        twofaAttempts: 4 // Already 4 failed attempts
+                    }
+                }
+            );
+            const lockRes = await request(app)
+                .post('/api/auth/2fa/verify')
+                .send({ employee_id: sec15Emp.id, code: '999999' });
+
+            expect(lockRes.status).toBe(403);
+
+            const lockedEmp = await Employee.findOne({ id: sec15Emp.id });
+            expect(lockedEmp.twofaLockedUntil).toBeDefined();
+            expect(new Date(lockedEmp.twofaLockedUntil) > new Date()).toBe(true);
+
+            // Verify login is also blocked while locked
+            const blockedLogin = await request(app)
+                .post('/api/auth/login')
+                .send({ email: sec15Emp.email, password: testPassword });
+            expect(blockedLogin.status).toBe(403);
+
+            // 4) Correct code succeeds after unlocking
+            await Employee.updateOne(
+                { id: sec15Emp.id },
+                {
+                    $set: {
+                        twofaLockedUntil: null,
+                        twofaAttempts: 0,
+                        twofaCodeHash: codeHash,
+                        twofaCodeExpiry: new Date(Date.now() + 10 * 60 * 1000)
+                    }
+                }
+            );
+
+            const successRes = await request(app)
+                .post('/api/auth/2fa/verify')
+                .send({ employee_id: sec15Emp.id, code: testCode });
+
+            expect(successRes.status).toBe(200);
+            expect(successRes.body.token).toBeDefined();
+            expect(successRes.body.user).toBeDefined();
+        });
+
+        // 5. Unverified user prompted with flag ON; SuperAdmin not blocked
+        it('5. Unverified user prompted with flag ON; SuperAdmin not blocked', async () => {
+            await Setting.updateOne({}, { $set: { require_email_verification: true, require_2fa: false } });
+            await Employee.updateOne({ id: sec15Emp.id }, { $set: { emailVerified: false } });
+
+            // Unverified user logs in -> prompted with flag ON
+            const loginRes = await request(app)
+                .post('/api/auth/login')
+                .send({ email: sec15Emp.email, password: testPassword });
+
+            expect(loginRes.status).toBe(200);
+            expect(loginRes.body.token).toBeDefined();
+            expect(loginRes.body.email_verification_required).toBe(true);
+
+            const empToken = loginRes.body.token;
+
+            // Blocked from other API routes (e.g. GET /api/attendance/logs)
+            const blockedRes = await request(app)
+                .get('/api/attendance/logs')
+                .set('Authorization', `Bearer ${empToken}`);
+
+            expect(blockedRes.status).toBe(403);
+            expect(blockedRes.body.email_verification_required).toBe(true);
+
+            // Not blocked on /api/auth/* routes (e.g. GET /api/auth/me)
+            const allowedAuthRes = await request(app)
+                .get('/api/auth/me')
+                .set('Authorization', `Bearer ${empToken}`);
+
+            expect(allowedAuthRes.status).toBe(200);
+
+            // SuperAdmin is exempt and never blocked
+            const adminLoginRes = await request(app)
+                .post('/api/auth/login')
+                .send({ email: sec15Admin.email, password: testPassword });
+
+            expect(adminLoginRes.status).toBe(200);
+            const adminTokenSec15 = adminLoginRes.body.token;
+
+            const adminAccessRes = await request(app)
+                .get('/api/attendance/logs')
+                .set('Authorization', `Bearer ${adminTokenSec15}`);
+
+            expect(adminAccessRes.status).toBe(200);
+        });
+
+        // 6. Login unknown-user message matches original and flags-off login matches original behavior
+        it('6. Login unknown-user message matches original and flags-off login matches original behavior', async () => {
+            const unknownRes = await request(app)
+                .post('/api/auth/login')
+                .send({ email: 'nonexistent_user_99999@test.test', password: 'SomePassword123!' });
+
+            expect(unknownRes.status).toBe(401);
+            expect(unknownRes.body.message).toBe('Invalid ID/Email or password.');
+
+            const wrongPassRes = await request(app)
+                .post('/api/auth/login')
+                .send({ email: sec15Emp.email, password: 'WrongPassword999!' });
+
+            expect(wrongPassRes.status).toBe(401);
+            expect(wrongPassRes.body.message).toBe('Invalid email or password.');
+        });
+
+        // 7. Email send failure fails 2FA login
+        it('7. Email send failure fails 2FA login', async () => {
+            await Setting.updateOne({}, { $set: { require_2fa: true, require_email_verification: false } });
+            process.env.TEST_FAIL_EMAIL = 'true';
+
+            try {
+                const failRes = await request(app)
+                    .post('/api/auth/login')
+                    .send({ email: sec15Emp.email, password: testPassword });
+
+                expect(failRes.status).toBe(500);
+                expect(failRes.body.success).toBe(false);
+                expect(failRes.body.token).toBeUndefined();
+            } finally {
+                delete process.env.TEST_FAIL_EMAIL;
+            }
+        });
+
+        // 8. POST /api/auth/2fa/resend returns identical status and body for unknown and known emails
+        it('8. POST /api/auth/2fa/resend returns identical status and body for unknown and known emails', async () => {
+            const knownRes = await request(app)
+                .post('/api/auth/2fa/resend')
+                .send({ email: sec15Emp.email });
+
+            const unknownRes = await request(app)
+                .post('/api/auth/2fa/resend')
+                .send({ email: 'unknown_employee_xyz@testcompany.test' });
+
+            expect(knownRes.status).toBe(200);
+            expect(unknownRes.status).toBe(200);
+            expect(knownRes.body).toEqual(unknownRes.body);
+            expect(knownRes.body.message).toBe('If an account exists, a code has been sent.');
+        });
+    });
 });
 
 

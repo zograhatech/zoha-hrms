@@ -16,6 +16,9 @@ export const AuthProvider = ({ children }) => {
 
     const login = async (email, password, rememberMe = false) => {
         const { data } = await API.post('/auth/login', { email, password, rememberMe });
+        if (data.requires2fa || data.requires_2fa) {
+            return data;
+        }
         if (data.success) {
             localStorage.setItem('hrms_token', data.token);
             localStorage.setItem('hrms_refresh_token', data.refreshToken);
@@ -25,6 +28,15 @@ export const AuthProvider = ({ children }) => {
             return data.user;
         }
         throw new Error(data.message);
+    };
+
+    const complete2fa = (data) => {
+        localStorage.setItem('hrms_token', data.token);
+        localStorage.setItem('hrms_refresh_token', data.refreshToken);
+        localStorage.setItem('hrms_user', JSON.stringify(data.user));
+        setToken(data.token);
+        setUser(data.user);
+        return data.user;
     };
 
     const refreshUser = async () => {
@@ -54,7 +66,7 @@ export const AuthProvider = ({ children }) => {
     };
 
     return (
-        <AuthContext.Provider value={{ user, token, loading: false, login, logout, refreshUser, isAuthenticated: !!token }}>
+        <AuthContext.Provider value={{ user, token, loading: false, login, complete2fa, logout, refreshUser, isAuthenticated: !!token }}>
             {children}
         </AuthContext.Provider>
     );

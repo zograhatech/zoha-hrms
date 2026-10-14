@@ -24,6 +24,7 @@ const Login = safeLazy(() => import('./pages/Login'));
 const Dashboard = safeLazy(() => import('./pages/Dashboard'));
 const PublicJobApplication = safeLazy(() => import('./pages/PublicJobApplication'));
 const PublicVerification = safeLazy(() => import('./pages/PublicVerification'));
+const VerifyEmail = safeLazy(() => import('./pages/VerifyEmail'));
 
 import './index.css';
 
@@ -50,6 +51,7 @@ const AppRoutes = () => {
     <Suspense fallback={<PremiumLoader />}>
       <Routes>
         <Route path="/login" element={isAuthenticated ? <Navigate to="/dashboard" /> : <Login />} />
+        <Route path="/verify-email" element={<VerifyEmail />} />
         <Route path="/apply/:jobId" element={<PublicJobApplication />} />
         <Route path="/verify" element={<PublicVerification />} />
         <Route path="/dashboard/*" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />

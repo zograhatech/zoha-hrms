@@ -24,17 +24,27 @@ const auth = (rolesOrPermissions = []) => {
             const roleLower = (decoded.role || '').toLowerCase().replace(/\s+/g, '');
             if (roleLower === 'admin') return next();
 
-            // 1. Resolve requested permissions
-            if (!rolesOrPermissions || rolesOrPermissions.length === 0) return next();
-
             // 2. Fetch required identity data in parallel for speed
             const [employee, settings] = await Promise.all([
-                Employee.findOne({ id: decoded.id }).select('permissions role status').lean(),
+                Employee.findOne({ id: decoded.id }).select('permissions role status emailVerified').lean(),
                 Setting.findOne().lean()
             ]);
 
             if (!employee) return res.status(404).json({ success: false, message: 'Employee profile not found.' });
             if (employee.status !== 'active') return res.status(403).json({ success: false, message: 'Your account is deactivated.' });
+
+            // Block unverified non-admin users from non-auth routes when flag is ON
+            const isAuthRoute = req.baseUrl === '/api/auth' || (req.originalUrl && req.originalUrl.startsWith('/api/auth'));
+            if (!isAuthRoute && settings?.require_email_verification && !employee.emailVerified) {
+                return res.status(403).json({
+                    success: false,
+                    email_verification_required: true,
+                    message: 'Email verification required. Please verify your email to access this resource.'
+                });
+            }
+
+            // 3. Resolve requested permissions
+            if (!rolesOrPermissions || rolesOrPermissions.length === 0) return next();
 
             // Helper to normalize legacy roles
             const normalizeRole = (role) => {
