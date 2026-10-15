@@ -6127,6 +6127,165 @@ describe('HRMS Backend Automated Test Suite', () => {
             setting = await Setting.findOne();
             expect(setting.enable_browser_push).toBe(true);
         });
+
+        it('a notification for an enabled user calls the push sender; a disabled or unsubscribed user does not', async () => {
+            const webpush = require('web-push');
+            const sendSpy = jest.spyOn(webpush, 'sendNotification').mockImplementation(() => Promise.resolve());
+
+            try {
+                // Ensure global push is enabled
+                await Setting.updateOne({}, { $set: { enable_browser_push: true } }, { upsert: true });
+
+                // User 1: Active and subscribed
+                await Employee.updateOne(
+                    { _id: testEmp._id },
+                    {
+                        $set: {
+                            status: 'active',
+                            push_subscriptions: [{
+                                endpoint: 'https://fcm.googleapis.com/fcm/send/enabled-user-endpoint',
+                                keys: { p256dh: 'k1', auth: 'a1' }
+                            }]
+                        }
+                    }
+                );
+
+                // User 2: Active but unsubscribed (no push_subscriptions)
+                await Employee.updateOne(
+                    { _id: secondEmp._id },
+                    {
+                        $set: {
+                            status: 'active',
+                            push_subscription: null,
+                            push_subscriptions: []
+                        }
+                    }
+                );
+
+                // 1. Notification for enabled & subscribed user -> triggers push
+                sendSpy.mockClear();
+                await Notification.create({
+                    recipient: testEmp._id,
+                    title: 'Enabled User Alert',
+                    message: 'You have a new update.'
+                });
+                await new Promise(r => setTimeout(r, 60));
+                expect(sendSpy).toHaveBeenCalledTimes(1);
+                expect(sendSpy.mock.calls[0][0].endpoint).toBe('https://fcm.googleapis.com/fcm/send/enabled-user-endpoint');
+
+                // 2. Notification for unsubscribed user -> does NOT trigger push
+                sendSpy.mockClear();
+                await Notification.create({
+                    recipient: secondEmp._id,
+                    title: 'Unsubscribed User Alert',
+                    message: 'No push should be sent.'
+                });
+                await new Promise(r => setTimeout(r, 60));
+                expect(sendSpy).not.toHaveBeenCalled();
+
+                // 3. Notification when employee is inactive (disabled user) -> does NOT trigger push
+                await Employee.updateOne({ _id: testEmp._id }, { $set: { status: 'inactive' } });
+                sendSpy.mockClear();
+                await Notification.create({
+                    recipient: testEmp._id,
+                    title: 'Inactive User Alert',
+                    message: 'No push should be sent.'
+                });
+                await new Promise(r => setTimeout(r, 60));
+                expect(sendSpy).not.toHaveBeenCalled();
+
+                // 4. Notification when global push is disabled -> does NOT trigger push
+                await Employee.updateOne({ _id: testEmp._id }, { $set: { status: 'active' } });
+                await Setting.updateOne({}, { $set: { enable_browser_push: false } });
+                sendSpy.mockClear();
+                await Notification.create({
+                    recipient: testEmp._id,
+                    title: 'Globally Disabled Push Alert',
+                    message: 'No push should be sent.'
+                });
+                await new Promise(r => setTimeout(r, 60));
+                expect(sendSpy).not.toHaveBeenCalled();
+            } finally {
+                sendSpy.mockRestore();
+                await Employee.updateOne({ _id: testEmp._id }, { $set: { status: 'active' } });
+                await Setting.updateOne({}, { $set: { enable_browser_push: true } });
+            }
+        });
+
+        it('an insertMany of notifications for an enabled, subscribed employee calls the push sender once per recipient, and a failing push sender does not fail the insert', async () => {
+            const webpush = require('web-push');
+            const sendSpy = jest.spyOn(webpush, 'sendNotification').mockImplementation(() => Promise.resolve());
+
+            try {
+                await Setting.updateOne({}, { $set: { enable_browser_push: true } }, { upsert: true });
+
+                // Seed testEmp and secondEmp as active with push subscriptions
+                await Employee.updateOne(
+                    { _id: testEmp._id },
+                    {
+                        $set: {
+                            status: 'active',
+                            push_subscriptions: [{
+                                endpoint: 'https://fcm.googleapis.com/fcm/send/insertmany-emp1',
+                                keys: { p256dh: 'k1', auth: 'a1' }
+                            }]
+                        }
+                    }
+                );
+                await Employee.updateOne(
+                    { _id: secondEmp._id },
+                    {
+                        $set: {
+                            status: 'active',
+                            push_subscriptions: [{
+                                endpoint: 'https://fcm.googleapis.com/fcm/send/insertmany-emp2',
+                                keys: { p256dh: 'k2', auth: 'a2' }
+                            }]
+                        }
+                    }
+                );
+
+                // 1. insertMany with successful push sends
+                sendSpy.mockClear();
+                const inserted = await Notification.insertMany([
+                    { recipient: testEmp._id, title: 'Batch Alert 1', message: 'Message 1' },
+                    { recipient: secondEmp._id, title: 'Batch Alert 2', message: 'Message 2' }
+                ]);
+                expect(inserted.length).toBe(2);
+                expect(sendSpy).toHaveBeenCalledTimes(2);
+
+                const endpointsCalled = sendSpy.mock.calls.map(c => c[0].endpoint);
+                expect(endpointsCalled).toContain('https://fcm.googleapis.com/fcm/send/insertmany-emp1');
+                expect(endpointsCalled).toContain('https://fcm.googleapis.com/fcm/send/insertmany-emp2');
+
+                // 2. insertMany when push sender fails (rejects) -> insert still succeeds
+                sendSpy.mockImplementation(() => Promise.reject(new Error('FCM delivery failed')));
+                sendSpy.mockClear();
+
+                let errorThrown = null;
+                let failBatchInserted = null;
+                try {
+                    failBatchInserted = await Notification.insertMany([
+                        { recipient: testEmp._id, title: 'Error Tolerant Alert 1', message: 'Message fail 1' },
+                        { recipient: secondEmp._id, title: 'Error Tolerant Alert 2', message: 'Message fail 2' }
+                    ]);
+                } catch (err) {
+                    errorThrown = err;
+                }
+
+                expect(errorThrown).toBeNull();
+                expect(failBatchInserted).toBeDefined();
+                expect(failBatchInserted.length).toBe(2);
+
+                // Confirm records were indeed inserted into the database
+                const foundInDb = await Notification.find({
+                    _id: { $in: failBatchInserted.map(d => d._id) }
+                });
+                expect(foundInDb.length).toBe(2);
+            } finally {
+                sendSpy.mockRestore();
+            }
+        });
     });
 });
 

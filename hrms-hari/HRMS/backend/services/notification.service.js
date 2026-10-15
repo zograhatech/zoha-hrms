@@ -1,6 +1,6 @@
 const Notification = require('../models/Notification');
 const { getIO } = require('../socket');
-const { sendPushNotification } = require('./push.service');
+const { sendPushToEmployee } = require('../utils/pushService');
 
 /**
  * Send a notification to a specific user
@@ -53,10 +53,9 @@ const sendNotification = async ({ recipient, title, message, type = 'info', data
 
         // 3. Send Push Notification (Browser level)
         try {
-            await sendPushNotification(recipientId, {
+            await sendPushToEmployee(recipientId, {
                 title,
                 body: message,
-                icon: '/logo.png', // Replace with dynamic if needed
                 data: {
                     url: data.link || '/',
                     ...data

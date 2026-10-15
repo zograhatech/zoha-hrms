@@ -3,14 +3,30 @@ const mongoose = require('mongoose');
 const Employee = require('../models/Employee');
 const Setting = require('../models/Setting');
 
-// Initialize web-push with VAPID keys if configured
-if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
-    webpush.setVapidDetails(
-        process.env.VAPID_EMAIL || 'mailto:admin@example.com',
-        process.env.VAPID_PUBLIC_KEY,
-        process.env.VAPID_PRIVATE_KEY
-    );
-}
+const ensureVapidDetails = () => {
+    if (!process.env.VAPID_PUBLIC_KEY || !process.env.VAPID_PRIVATE_KEY) {
+        console.error('[PushService] VAPID keys not configured in environment variables');
+        return false;
+    }
+    let email = process.env.VAPID_EMAIL || 'admin@example.com';
+    if (!email.startsWith('mailto:') && !email.startsWith('https://')) {
+        email = `mailto:${email}`;
+    }
+    try {
+        webpush.setVapidDetails(
+            email,
+            process.env.VAPID_PUBLIC_KEY,
+            process.env.VAPID_PRIVATE_KEY
+        );
+        return true;
+    } catch (vapidErr) {
+        console.error('[PushService] webpush.setVapidDetails error:', vapidErr.message);
+        return false;
+    }
+};
+
+// Initialize web-push if keys are present
+ensureVapidDetails();
 
 /**
  * Sends web push notification to an employee across all their active device subscriptions.
@@ -23,7 +39,10 @@ if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
  */
 const sendPushToEmployee = async (employeeId, payload = {}) => {
     try {
-        if (!employeeId) return { success: false, reason: 'No employeeId provided' };
+        if (!employeeId) {
+            console.error('[PushService] Skipped: No employeeId provided');
+            return { success: false, reason: 'No employeeId provided' };
+        }
 
         const settings = await Setting.findOne();
         
@@ -35,13 +54,18 @@ const sendPushToEmployee = async (employeeId, payload = {}) => {
             ]
         }).select('+push_subscriptions +push_subscription');
 
-        if (!employee) return { success: false, reason: 'Employee not found' };
+        if (!employee) {
+            console.error(`[PushService] Skipped: Employee not found for identifier: ${employeeId}`);
+            return { success: false, reason: 'Employee not found' };
+        }
 
         // Check feature flag and employee status
         if (settings && settings.enable_browser_push === false) {
+            console.log(`[PushService] Skipped: enable_browser_push is false for employee ${employee.id}`);
             return { success: false, reason: 'Browser push notifications are disabled by the administrator' };
         }
         if (employee.status !== 'active') {
+            console.log(`[PushService] Skipped: Employee ${employee.id} status is not active (${employee.status})`);
             return { success: false, reason: 'Employee is not active' };
         }
 
@@ -56,7 +80,13 @@ const sendPushToEmployee = async (employeeId, payload = {}) => {
         }
 
         if (subscriptions.length === 0) {
+            console.log(`[PushService] Skipped: No push subscriptions found for employee ${employee.id}`);
             return { success: false, reason: 'No push subscriptions found' };
+        }
+
+        if (!ensureVapidDetails()) {
+            console.error('[PushService] Cannot send: VAPID keys not configured on server');
+            return { success: false, reason: 'VAPID keys not configured on server' };
         }
 
         // Build and cap payload to title, body, url (capped at 4KB)

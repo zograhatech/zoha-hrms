@@ -37,16 +37,14 @@ const notificationSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // Post save hook for single notification create
-notificationSchema.post('save', function (doc) {
+notificationSchema.post('save', async function (doc) {
     if (!doc || !doc.recipient) return;
     try {
         const { sendPushToEmployee } = require('../utils/pushService');
-        sendPushToEmployee(doc.recipient, {
+        await sendPushToEmployee(doc.recipient, {
             title: doc.title,
             body: doc.message,
             url: doc.data?.link || '/'
-        }).catch(err => {
-            console.error('[Notification post-save push error]', err?.message);
         });
     } catch (e) {
         console.error('[Notification post-save push error]', e?.message);
@@ -54,21 +52,25 @@ notificationSchema.post('save', function (doc) {
 });
 
 // Post insertMany hook for batch notifications
-notificationSchema.post('insertMany', function (docs) {
+notificationSchema.post('insertMany', async function (docs) {
     if (!Array.isArray(docs)) return;
     try {
         const { sendPushToEmployee } = require('../utils/pushService');
-        docs.forEach(doc => {
-            if (doc && doc.recipient) {
-                sendPushToEmployee(doc.recipient, {
-                    title: doc.title,
-                    body: doc.message,
-                    url: doc.data?.link || '/'
-                }).catch(err => {
-                    console.error('[Notification post-insertMany push error]', err?.message);
-                });
-            }
-        });
+        await Promise.all(
+            docs.map(async doc => {
+                if (doc && doc.recipient) {
+                    try {
+                        await sendPushToEmployee(doc.recipient, {
+                            title: doc.title,
+                            body: doc.message,
+                            url: doc.data?.link || '/'
+                        });
+                    } catch (pushErr) {
+                        console.error('[Notification post-insertMany push error for recipient]', pushErr?.message);
+                    }
+                }
+            })
+        );
     } catch (e) {
         console.error('[Notification post-insertMany push error]', e?.message);
     }
