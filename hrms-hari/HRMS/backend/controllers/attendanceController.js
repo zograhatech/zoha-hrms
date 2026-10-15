@@ -1042,6 +1042,40 @@ const getIdlePolicy = async (req, res) => {
 const autoClockOut = async (req, res) => {
     try {
         const { idle_seconds, reported_at } = req.body;
+
+        // Device token validation for reported_at: reject if missing, invalid, >5m old or in future
+        if (req.user?.is_device_token) {
+            if (!reported_at) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'reported_at timestamp is required for device tokens.'
+                });
+            }
+            const reportedDate = new Date(reported_at);
+            if (isNaN(reportedDate.getTime())) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'reported_at is not a valid date string.'
+                });
+            }
+            const nowTime = Date.now();
+            const repTime = reportedDate.getTime();
+            // More than 5 minutes old (300,000 ms)
+            if (nowTime - repTime > 5 * 60 * 1000) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'reported_at is older than 5 minutes.'
+                });
+            }
+            // In the future by more than 1 minute (allow 60s clock skew)
+            if (repTime - nowTime > 60 * 1000) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'reported_at cannot be in the future.'
+                });
+            }
+        }
+
         const Setting = require('../models/Setting');
         const settings = await Setting.findOne();
 

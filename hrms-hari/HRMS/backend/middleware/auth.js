@@ -16,6 +16,74 @@ const auth = (rolesOrPermissions = []) => {
 
         const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
 
+        // ── Device Token Handling (for Idle Companion) ───────────────
+        if (token.startsWith('dev_')) {
+            const crypto = require('crypto');
+            const DeviceToken = require('../models/DeviceToken');
+
+            // Whitelist: strictly GET /api/attendance/idle-policy and POST /api/attendance/auto-clock-out
+            const cleanPath = (req.baseUrl || '') + (req.path || '');
+            const method = req.method.toUpperCase();
+
+            const isIdlePolicy = method === 'GET' && cleanPath === '/api/attendance/idle-policy';
+            const isAutoClockOut = method === 'POST' && cleanPath === '/api/attendance/auto-clock-out';
+
+            if (!isIdlePolicy && !isAutoClockOut) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Device token unauthorized for this route.'
+                });
+            }
+
+            const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+            const now = new Date();
+
+            const deviceTokenDoc = await DeviceToken.findOne({
+                token_hash: tokenHash,
+                revoked: false,
+                expires_at: { $gt: now }
+            });
+
+            if (!deviceTokenDoc) {
+                return res.status(401).json({
+                    success: false,
+                    message: 'Invalid, revoked, or expired device token.'
+                });
+            }
+
+            // Load employee, require status active
+            const employee = await Employee.findOne({ id: deviceTokenDoc.employee_id }).select('role status').lean();
+            if (!employee || employee.status !== 'active') {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Your account is deactivated or not found.'
+                });
+            }
+
+            // Keep the existing IP check
+            const { checkIpAccess } = require('./ipAccess');
+            const ipAllowed = await checkIpAccess(req, res, employee.role);
+            if (!ipAllowed) return;
+
+            // Set req.user
+            req.user = {
+                id: deviceTokenDoc.employee_id,
+                _id: employee._id,
+                role: employee.role,
+                is_device_token: true
+            };
+
+            // Update last_used_at at most once per hour
+            const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+            if (!deviceTokenDoc.last_used_at || deviceTokenDoc.last_used_at < oneHourAgo) {
+                DeviceToken.updateOne({ _id: deviceTokenDoc._id }, { $set: { last_used_at: new Date() } }).catch(err => {
+                    console.error('[auth] Failed to update device token last_used_at:', err);
+                });
+            }
+
+            return next();
+        }
+
         try {
             const decoded = jwt.verify(token, process.env.JWT_SECRET);
             req.user = decoded;

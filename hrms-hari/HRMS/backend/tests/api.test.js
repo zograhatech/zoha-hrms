@@ -6707,7 +6707,254 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(resValid.body.settings.idle_exempt_app_names).toEqual(['zoom.exe', 'teams.exe']);
         });
     });
+
+    describe('Device Token for Idle Companion Tests', () => {
+        let devEmp;
+        let devEmpToken;
+        let plainDevToken;
+        let devDocId;
+
+        beforeAll(async () => {
+            const Employee = require('../models/Employee');
+            const Shift = require('../models/Shift');
+
+            let shift = await Shift.findOne({ is_default: true });
+            if (!shift) {
+                shift = await Shift.create({
+                    name: 'General Shift',
+                    start_time: '09:00',
+                    end_time: '18:00',
+                    is_default: true
+                });
+            }
+
+            devEmp = await Employee.create({
+                id: 'EMP_DEV_01',
+                name: 'Device Token Employee',
+                email: 'dev_test@example.com',
+                password_hash: await bcrypt.hash('Secret123!', 10),
+                role: 'employee',
+                status: 'active',
+                department_id: testDeptId,
+                shift_id: shift._id
+            });
+            devEmpToken = jwt.sign(
+                { id: devEmp.id, _id: devEmp._id, role: devEmp.role, permissions: [] },
+                process.env.JWT_SECRET
+            );
+        });
+
+        beforeEach(async () => {
+            const Setting = require('../models/Setting');
+            const Attendance = require('../models/Attendance');
+
+            await Attendance.deleteMany({ employee_id: devEmp.id });
+
+            // Ensure idle auto clockout is enabled with full day hours
+            await Setting.updateOne(
+                {},
+                {
+                    $set: {
+                        idle_auto_clockout_enabled: true,
+                        idle_timeout_minutes: 10,
+                        idle_exempt_employee_ids: [],
+                        idle_exempt_app_names: [],
+                        attendance_settings: {
+                            office_start_time: '00:00',
+                            office_end_time: '23:59',
+                            grace_period: 15,
+                            half_day_min_hours: 4,
+                            full_day_min_hours: 8
+                        }
+                    }
+                },
+                { upsert: true }
+            );
+
+            // Issue a fresh device token for each test
+            const res = await request(app)
+                .post('/api/devices/tokens')
+                .set('Authorization', `Bearer ${adminToken}`)
+                .send({
+                    employee_id: devEmp.id,
+                    device_name: 'Keerthi Laptop'
+                });
+
+            expect(res.status).toBe(201);
+            plainDevToken = res.body.token;
+            devDocId = res.body.device.id;
+        });
+
+        it('device token can call idle-policy and auto-clock-out', async () => {
+            const Attendance = require('../models/Attendance');
+
+            // 1. Call idle-policy
+            const resPolicy = await request(app)
+                .get('/api/attendance/idle-policy')
+                .set('Authorization', `Bearer ${plainDevToken}`);
+
+            expect(resPolicy.status).toBe(200);
+            expect(resPolicy.body.success).toBe(true);
+            expect(resPolicy.body.enabled).toBe(true);
+
+            // 2. Open attendance session
+            const checkInTime = new Date(Date.now() - 25 * 60 * 1000);
+            await Attendance.create({
+                employee_id: devEmp.id,
+                date: checkInTime,
+                check_in: checkInTime,
+                status: 'present',
+                is_open_session: true,
+                work_hours: 0
+            });
+
+            // 3. Call auto-clock-out
+            const resClockOut = await request(app)
+                .post('/api/attendance/auto-clock-out')
+                .set('Authorization', `Bearer ${plainDevToken}`)
+                .send({
+                    idle_seconds: 600,
+                    reported_at: new Date().toISOString()
+                });
+
+            expect(resClockOut.status).toBe(200);
+            expect(resClockOut.body.success).toBe(true);
+            expect(resClockOut.body.attendance.auto_clock_out).toBe(true);
+        });
+
+        it('device token gets 403 on GET /api/employees, GET /api/auth/me, and POST /api/attendance/clock-in', async () => {
+            // GET /api/employees
+            const res1 = await request(app)
+                .get('/api/employees')
+                .set('Authorization', `Bearer ${plainDevToken}`);
+            expect(res1.status).toBe(403);
+            expect(res1.body.message).toMatch(/Device token unauthorized for this route/i);
+
+            // GET /api/auth/me
+            const res2 = await request(app)
+                .get('/api/auth/me')
+                .set('Authorization', `Bearer ${plainDevToken}`);
+            expect(res2.status).toBe(403);
+            expect(res2.body.message).toMatch(/Device token unauthorized for this route/i);
+
+            // POST /api/attendance/clock-in
+            const res3 = await request(app)
+                .post('/api/attendance/clock-in')
+                .set('Authorization', `Bearer ${plainDevToken}`);
+            expect(res3.status).toBe(403);
+            expect(res3.body.message).toMatch(/Device token unauthorized for this route/i);
+        });
+
+        it('revoked token gets 401', async () => {
+            const DeviceToken = require('../models/DeviceToken');
+            await DeviceToken.updateOne({ _id: devDocId }, { $set: { revoked: true } });
+
+            const res = await request(app)
+                .get('/api/attendance/idle-policy')
+                .set('Authorization', `Bearer ${plainDevToken}`);
+
+            expect(res.status).toBe(401);
+            expect(res.body.message).toMatch(/Invalid, revoked, or expired/i);
+        });
+
+        it('expired token gets 401', async () => {
+            const DeviceToken = require('../models/DeviceToken');
+            await DeviceToken.updateOne(
+                { _id: devDocId },
+                { $set: { expires_at: new Date(Date.now() - 24 * 60 * 60 * 1000) } } // expired yesterday
+            );
+
+            const res = await request(app)
+                .get('/api/attendance/idle-policy')
+                .set('Authorization', `Bearer ${plainDevToken}`);
+
+            expect(res.status).toBe(401);
+            expect(res.body.message).toMatch(/Invalid, revoked, or expired/i);
+        });
+
+        it('token from a deactivated employee gets 401 or 403', async () => {
+            const Employee = require('../models/Employee');
+            await Employee.updateOne({ id: devEmp.id }, { $set: { status: 'inactive' } });
+
+            const res = await request(app)
+                .get('/api/attendance/idle-policy')
+                .set('Authorization', `Bearer ${plainDevToken}`);
+
+            expect([401, 403]).toContain(res.status);
+            expect(res.body.message).toMatch(/deactivated/i);
+
+            // Restore status
+            await Employee.updateOne({ id: devEmp.id }, { $set: { status: 'active' } });
+        });
+
+        it('stored record contains a hash, not the token', async () => {
+            const DeviceToken = require('../models/DeviceToken');
+            const crypto = require('crypto');
+
+            const doc = await DeviceToken.findById(devDocId);
+            expect(doc).toBeDefined();
+            // Stored value should NOT equal plainDevToken
+            expect(doc.token_hash).not.toBe(plainDevToken);
+            // It should be the sha256 hash of plainDevToken
+            const expectedHash = crypto.createHash('sha256').update(plainDevToken).digest('hex');
+            expect(doc.token_hash).toBe(expectedHash);
+        });
+
+        it('stale reported_at gets 400', async () => {
+            // More than 5 minutes old
+            const oldTime = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+
+            const resOld = await request(app)
+                .post('/api/attendance/auto-clock-out')
+                .set('Authorization', `Bearer ${plainDevToken}`)
+                .send({
+                    idle_seconds: 600,
+                    reported_at: oldTime
+                });
+
+            expect(resOld.status).toBe(400);
+            expect(resOld.body.message).toMatch(/older than 5 minutes/i);
+
+            // In the future (>1m)
+            const futureTime = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+            const resFuture = await request(app)
+                .post('/api/attendance/auto-clock-out')
+                .set('Authorization', `Bearer ${plainDevToken}`)
+                .send({
+                    idle_seconds: 600,
+                    reported_at: futureTime
+                });
+
+            expect(resFuture.status).toBe(400);
+            expect(resFuture.body.message).toMatch(/cannot be in the future/i);
+        });
+
+        it('non-admin cannot issue or revoke (403)', async () => {
+            // Issue attempt by employee
+            const resIssue = await request(app)
+                .post('/api/devices/tokens')
+                .set('Authorization', `Bearer ${devEmpToken}`)
+                .send({
+                    employee_id: devEmp.id,
+                    device_name: 'Hack Attempt'
+                });
+            expect(resIssue.status).toBe(403);
+
+            // Revoke attempt by employee
+            const resRevoke = await request(app)
+                .delete(`/api/devices/tokens/${devDocId}`)
+                .set('Authorization', `Bearer ${devEmpToken}`);
+            expect(resRevoke.status).toBe(403);
+
+            // List attempt by employee
+            const resList = await request(app)
+                .get('/api/devices/tokens')
+                .set('Authorization', `Bearer ${devEmpToken}`);
+            expect(resList.status).toBe(403);
+        });
+    });
 });
+
 
 
 

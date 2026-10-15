@@ -187,6 +187,7 @@ app.use('/api/verification', require('./routes/verificationRoutes'));
 app.use('/api/reports', require('./routes/reportsRoutes'));
 app.use('/api/access-settings', require('./routes/accessSettingsRoutes'));
 app.use('/api/remote-access', require('./routes/remoteAccessRoutes'));
+app.use('/api/devices', require('./routes/deviceRoutes'));
 
 
 // ── Routes ─────────────────────────────────────────────
