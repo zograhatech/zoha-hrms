@@ -95,6 +95,7 @@ export default function AttendanceWidget() {
                         <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, flexWrap: 'wrap' }}>
                             <span>Last session: {formatTime(attRec.check_in)} - {formatTime(attRec.check_out)} ({attRec.work_hours || 0} hrs)</span>
                             {attRec.needs_review && <span className="badge badge-danger">Needs review</span>}
+                            {attRec.auto_clock_out && <span className="badge badge-warning">Auto clock-out</span>}
                         </div>
                     )}
                     <button onClick={handleClockIn} className="btn" style={{ background: 'var(--accent-primary)', color: 'white', fontWeight: 700, padding: '10px 24px', borderRadius: 30, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>

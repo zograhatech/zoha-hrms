@@ -71,7 +71,11 @@ export default function Settings() {
         require_email_verification: false,
         require_2fa: false,
         security_pilot_employee_ids: [],
-        enable_browser_push: true
+        enable_browser_push: true,
+        idle_auto_clockout_enabled: false,
+        idle_timeout_minutes: 10,
+        idle_exempt_employee_ids: [],
+        idle_exempt_app_names: []
     });
 
     const [shifts, setShifts] = useState([]);
@@ -131,6 +135,12 @@ export default function Settings() {
                 if (!s.roles_permissions) s.roles_permissions = { hr_manager: [], hr: [], employee: [] };
                 if (!Array.isArray(s.security_pilot_employee_ids)) {
                     s.security_pilot_employee_ids = [];
+                }
+                if (!Array.isArray(s.idle_exempt_employee_ids)) {
+                    s.idle_exempt_employee_ids = [];
+                }
+                if (!Array.isArray(s.idle_exempt_app_names)) {
+                    s.idle_exempt_app_names = [];
                 }
                 setSettings(s);
             }
@@ -210,6 +220,12 @@ export default function Settings() {
                 if (res.data.settings) {
                     if (!Array.isArray(res.data.settings.security_pilot_employee_ids)) {
                         res.data.settings.security_pilot_employee_ids = [];
+                    }
+                    if (!Array.isArray(res.data.settings.idle_exempt_employee_ids)) {
+                        res.data.settings.idle_exempt_employee_ids = [];
+                    }
+                    if (!Array.isArray(res.data.settings.idle_exempt_app_names)) {
+                        res.data.settings.idle_exempt_app_names = [];
                     }
                     setSettings(res.data.settings);
                 }
@@ -555,6 +571,56 @@ export default function Settings() {
             security_pilot_employee_ids: (prev.security_pilot_employee_ids || []).filter(id => id !== empId)
         }));
     };
+
+    // Idle Auto Clock-out Helpers
+    const [idleExemptSearch, setIdleExemptSearch] = useState('');
+    const [newExemptAppName, setNewExemptAppName] = useState('');
+
+    const selectedIdleExemptIds = settings.idle_exempt_employee_ids || [];
+
+    const toggleIdleExemptEmployee = (empId) => {
+        setSettings(prev => {
+            const current = prev.idle_exempt_employee_ids || [];
+            const next = current.includes(empId)
+                ? current.filter(id => id !== empId)
+                : [...current, empId];
+            return { ...prev, idle_exempt_employee_ids: next };
+        });
+    };
+
+    const removeIdleExemptEmployee = (empId) => {
+        setSettings(prev => ({
+            ...prev,
+            idle_exempt_employee_ids: (prev.idle_exempt_employee_ids || []).filter(id => id !== empId)
+        }));
+    };
+
+    const handleAddExemptApp = () => {
+        const trimmed = newExemptAppName.trim();
+        if (!trimmed) return;
+        const current = settings.idle_exempt_app_names || [];
+        if (!current.includes(trimmed)) {
+            setSettings(prev => ({
+                ...prev,
+                idle_exempt_app_names: [...(prev.idle_exempt_app_names || []), trimmed]
+            }));
+        }
+        setNewExemptAppName('');
+    };
+
+    const handleRemoveExemptApp = (appName) => {
+        setSettings(prev => ({
+            ...prev,
+            idle_exempt_app_names: (prev.idle_exempt_app_names || []).filter(name => name !== appName)
+        }));
+    };
+
+    const filteredIdleEmployees = allEmployees.filter(emp => {
+        const query = idleExemptSearch.trim().toLowerCase();
+        return !query ||
+            (emp.name && emp.name.toLowerCase().includes(query)) ||
+            (emp.id && String(emp.id).toLowerCase().includes(query));
+    });
 
     if (loading) return <div className="page-loader"><div className="loading-spinner" /></div>;
 
@@ -1266,6 +1332,245 @@ export default function Settings() {
                                                 </label>
                                             );
                                         })
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Idle Auto Clock-out Section */}
+                            <div style={{ marginTop: 32, paddingTop: 24, borderTop: '1px solid var(--border-color, #e2e8f0)' }}>
+                                <h4 style={{ fontWeight: 700, fontSize: '1.05rem', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    <FiClock /> Idle Auto Clock-out
+                                </h4>
+                                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: 20 }}>
+                                    Automatically clocks out inactive employees after a configurable idle threshold during office hours.
+                                </p>
+
+                                {/* Master Toggle */}
+                                <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px', background: 'var(--bg-secondary, #f8fafc)', borderRadius: '8px', marginBottom: '20px' }}>
+                                    <div>
+                                        <div style={{ fontWeight: 600, fontSize: '0.95rem', color: 'var(--text-primary)' }}>Enable Idle Auto Clock-out</div>
+                                        <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Global kill switch. Keep OFF until pilot passes.</div>
+                                    </div>
+                                    <label className="switch" style={{ position: 'relative', display: 'inline-block', width: 44, height: 24 }}>
+                                        <input
+                                            type="checkbox"
+                                            checked={Boolean(settings.idle_auto_clockout_enabled)}
+                                            onChange={e => setSettings(prev => ({ ...prev, idle_auto_clockout_enabled: e.target.checked }))}
+                                            style={{ opacity: 0, width: 0, height: 0 }}
+                                        />
+                                        <span style={{
+                                            position: 'absolute', cursor: 'pointer', top: 0, left: 0, right: 0, bottom: 0,
+                                            backgroundColor: settings.idle_auto_clockout_enabled ? 'var(--accent-primary, #6366f1)' : '#cbd5e1',
+                                            borderRadius: 24, transition: '.3s'
+                                        }}>
+                                            <span style={{
+                                                position: 'absolute', height: 18, width: 18, left: settings.idle_auto_clockout_enabled ? 23 : 3, bottom: 3,
+                                                backgroundColor: '#fff', borderRadius: '50%', transition: '.3s'
+                                            }} />
+                                        </span>
+                                    </label>
+                                </div>
+
+                                {/* Timeout Minutes Input */}
+                                <div className="form-group" style={{ marginBottom: 20 }}>
+                                    <label className="form-label" style={{ fontWeight: 600 }}>Inactivity Threshold (Minutes)</label>
+                                    <input
+                                        type="number"
+                                        min="1"
+                                        max="240"
+                                        className="form-input"
+                                        style={{ maxWidth: 220 }}
+                                        value={settings.idle_timeout_minutes ?? 10}
+                                        onChange={e => setSettings(prev => ({ ...prev, idle_timeout_minutes: parseInt(e.target.value) || 1 }))}
+                                    />
+                                    <small style={{ color: 'var(--text-muted)', display: 'block', marginTop: 4 }}>
+                                        Number of idle minutes before auto clock-out triggers (1 - 240 minutes). Default is 10.
+                                    </small>
+                                </div>
+
+                                {/* Exempt Employees Multi-Select */}
+                                <div className="form-group" style={{ marginBottom: 20 }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                                        <label className="form-label" style={{ fontWeight: 600, margin: 0 }}>Exempt Employees</label>
+                                        <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--accent-primary, #6366f1)' }}>
+                                            {selectedIdleExemptIds.length} exempt
+                                        </span>
+                                    </div>
+                                    <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: 12 }}>
+                                        Exempt employees are never automatically clocked out.
+                                    </p>
+
+                                    {selectedIdleExemptIds.length > 0 && (
+                                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+                                            {selectedIdleExemptIds.map(empId => {
+                                                const emp = allEmployees.find(e => e.id === empId);
+                                                const label = emp ? `${emp.name} (${emp.id})` : empId;
+                                                return (
+                                                    <span
+                                                        key={empId}
+                                                        style={{
+                                                            display: 'inline-flex',
+                                                            alignItems: 'center',
+                                                            gap: 6,
+                                                            padding: '4px 10px',
+                                                            backgroundColor: '#fef3c7',
+                                                            border: '1px solid #fde68a',
+                                                            color: '#92400e',
+                                                            borderRadius: 16,
+                                                            fontSize: '0.82rem',
+                                                            fontWeight: 500
+                                                        }}
+                                                    >
+                                                        <span>{label}</span>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => removeIdleExemptEmployee(empId)}
+                                                            style={{
+                                                                background: 'transparent',
+                                                                border: 'none',
+                                                                cursor: 'pointer',
+                                                                padding: 0,
+                                                                display: 'flex',
+                                                                alignItems: 'center',
+                                                                color: '#b45309'
+                                                            }}
+                                                            title={`Remove ${label}`}
+                                                        >
+                                                            <FiX size={14} />
+                                                        </button>
+                                                    </span>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+
+                                    <div style={{ marginBottom: 10 }}>
+                                        <input
+                                            type="text"
+                                            className="form-input"
+                                            placeholder="Search employee to exempt..."
+                                            value={idleExemptSearch}
+                                            onChange={e => setIdleExemptSearch(e.target.value)}
+                                        />
+                                    </div>
+
+                                    <div
+                                        style={{
+                                            maxHeight: 200,
+                                            overflowY: 'auto',
+                                            border: '1px solid var(--border-color, #e2e8f0)',
+                                            borderRadius: 8,
+                                            padding: '8px 12px',
+                                            backgroundColor: 'var(--bg-secondary, #f8fafc)'
+                                        }}
+                                    >
+                                        {loadingEmployees ? (
+                                            <div style={{ padding: '12px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                                                Loading employees...
+                                            </div>
+                                        ) : filteredIdleEmployees.length === 0 ? (
+                                            <div style={{ padding: '12px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                                                No employees found.
+                                            </div>
+                                        ) : (
+                                            filteredIdleEmployees.map(emp => {
+                                                const checked = selectedIdleExemptIds.includes(emp.id);
+                                                return (
+                                                    <label
+                                                        key={emp.id}
+                                                        style={{
+                                                            display: 'flex',
+                                                            alignItems: 'center',
+                                                            gap: 10,
+                                                            padding: '6px 4px',
+                                                            cursor: 'pointer',
+                                                            fontSize: '0.88rem',
+                                                            borderBottom: '1px solid var(--border-color, #f1f5f9)'
+                                                        }}
+                                                    >
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={checked}
+                                                            onChange={() => toggleIdleExemptEmployee(emp.id)}
+                                                            style={{ cursor: 'pointer' }}
+                                                        />
+                                                        <span>
+                                                            {emp.name} ({emp.id}) - {emp.department_name || 'No Department'}
+                                                        </span>
+                                                    </label>
+                                                );
+                                            })
+                                        )}
+                                    </div>
+                                </div>
+
+                                {/* Exempt App Names Text List */}
+                                <div className="form-group" style={{ marginBottom: 20 }}>
+                                    <label className="form-label" style={{ fontWeight: 600 }}>Exempt Application Names</label>
+                                    <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: 8 }}>
+                                        Process names that prevent idle timeout while running in foreground (e.g. zoom.exe, teams.exe).
+                                    </p>
+
+                                    <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
+                                        <input
+                                            type="text"
+                                            className="form-input"
+                                            placeholder="e.g. zoom.exe"
+                                            value={newExemptAppName}
+                                            onChange={e => setNewExemptAppName(e.target.value)}
+                                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddExemptApp(); } }}
+                                            style={{ flex: 1 }}
+                                        />
+                                        <button
+                                            type="button"
+                                            className="btn btn-secondary"
+                                            onClick={handleAddExemptApp}
+                                            style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+                                        >
+                                            <FiPlus /> Add App
+                                        </button>
+                                    </div>
+
+                                    {(settings.idle_exempt_app_names || []).length > 0 ? (
+                                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                                            {(settings.idle_exempt_app_names || []).map(appName => (
+                                                <span
+                                                    key={appName}
+                                                    style={{
+                                                        display: 'inline-flex',
+                                                        alignItems: 'center',
+                                                        gap: 6,
+                                                        padding: '4px 10px',
+                                                        backgroundColor: '#f1f5f9',
+                                                        border: '1px solid #cbd5e1',
+                                                        borderRadius: 16,
+                                                        fontSize: '0.82rem',
+                                                        fontFamily: 'monospace',
+                                                        color: '#334155'
+                                                    }}
+                                                >
+                                                    <span>{appName}</span>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleRemoveExemptApp(appName)}
+                                                        style={{
+                                                            background: 'transparent',
+                                                            border: 'none',
+                                                            cursor: 'pointer',
+                                                            padding: 0,
+                                                            display: 'flex',
+                                                            alignItems: 'center',
+                                                            color: '#64748b'
+                                                        }}
+                                                        title={`Remove ${appName}`}
+                                                    >
+                                                        <FiX size={14} />
+                                                    </button>
+                                                </span>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <small style={{ color: 'var(--text-muted)' }}>No exempt applications configured.</small>
                                     )}
                                 </div>
                             </div>

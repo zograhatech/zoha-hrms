@@ -322,7 +322,10 @@ export default function AttendanceReport() {
                                             <td style={{ fontWeight: 600 }}>{a.name}</td>
                                             <td>{a.department || '—'}</td>
                                             <td>{a.designation || '—'}</td>
-                                            <td><span className={`badge badge-${a.status === 'present' ? 'success' : a.status === 'late' ? 'warning' : 'danger'}`}>{a.status}</span></td>
+                                            <td>
+                                                <span className={`badge badge-${a.status === 'present' ? 'success' : a.status === 'late' ? 'warning' : 'danger'}`}>{a.status}</span>
+                                                {a.auto_clock_out && <span className="badge badge-warning" style={{ marginLeft: 6 }}>Auto clock-out</span>}
+                                            </td>
                                             <td>{formatISTTime(a.check_in)}</td>
                                             <td>{formatISTTime(a.check_out)}</td>
                                             <td>{(a.status === 'holiday' || a.needs_review) ? '—' : formatWorkedHours(a.work_hours, { fromMinutes: false })}</td>

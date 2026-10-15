@@ -159,6 +159,7 @@ export default function Attendance() {
                                     <td>
                                         <span className={`badge badge-${a.status === 'present' ? 'success' : a.status === 'absent' ? 'danger' : a.status === 'late' ? 'warning' : 'info'}`}>{a.status}</span>
                                         {a.needs_review && <span className="badge badge-danger" style={{ marginLeft: 6 }}>Needs review</span>}
+                                        {a.auto_clock_out && <span className="badge badge-warning" style={{ marginLeft: 6 }}>Auto clock-out</span>}
                                     </td>
                                     <td>{formatISTTime(a.check_in)}</td>
                                     <td>{formatISTTime(a.check_out)}</td>
