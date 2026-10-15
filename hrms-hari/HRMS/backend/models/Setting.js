@@ -66,7 +66,7 @@ const settingSchema = new mongoose.Schema({
     require_email_verification: { type: Boolean, default: false },
     require_2fa: { type: Boolean, default: false },
     security_pilot_employee_ids: { type: [String], default: [] },
-    enable_browser_push: { type: Boolean, default: false },
+    enable_browser_push: { type: Boolean, default: true },
     push_pilot_employee_ids: { type: [String], default: [] }
 }, { timestamps: true });
 

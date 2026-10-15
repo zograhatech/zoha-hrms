@@ -70,7 +70,8 @@ export default function Settings() {
         },
         require_email_verification: false,
         require_2fa: false,
-        security_pilot_employee_ids: []
+        security_pilot_employee_ids: [],
+        enable_browser_push: true
     });
 
     const [shifts, setShifts] = useState([]);
@@ -1112,6 +1113,30 @@ export default function Settings() {
                                     }}>
                                         <span style={{
                                             position: 'absolute', height: 18, width: 18, left: settings.require_email_verification ? 23 : 3, bottom: 3,
+                                            backgroundColor: '#fff', borderRadius: '50%', transition: '.3s'
+                                        }} />
+                                    </span>
+                                </label>
+                            </div>
+                            <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px', background: 'var(--bg-secondary, #f8fafc)', borderRadius: '8px', marginBottom: '24px' }}>
+                                <div>
+                                    <div style={{ fontWeight: 600, fontSize: '0.95rem', color: 'var(--text-primary)' }}>Browser desktop alerts (all employees)</div>
+                                    <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Allow all active employees to enable browser push notifications. Disabling acts as a kill switch.</div>
+                                </div>
+                                <label className="switch" style={{ position: 'relative', display: 'inline-block', width: 44, height: 24 }}>
+                                    <input
+                                        type="checkbox"
+                                        checked={settings.enable_browser_push !== false}
+                                        onChange={e => setSettings(prev => ({ ...prev, enable_browser_push: e.target.checked }))}
+                                        style={{ opacity: 0, width: 0, height: 0 }}
+                                    />
+                                    <span style={{
+                                        position: 'absolute', cursor: 'pointer', top: 0, left: 0, right: 0, bottom: 0,
+                                        backgroundColor: settings.enable_browser_push !== false ? 'var(--accent-primary, #6366f1)' : '#cbd5e1',
+                                        borderRadius: 24, transition: '.3s'
+                                    }}>
+                                        <span style={{
+                                            position: 'absolute', height: 18, width: 18, left: settings.enable_browser_push !== false ? 23 : 3, bottom: 3,
                                             backgroundColor: '#fff', borderRadius: '50%', transition: '.3s'
                                         }} />
                                     </span>

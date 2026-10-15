@@ -5867,22 +5867,21 @@ describe('HRMS Backend Automated Test Suite', () => {
 
             try {
                 // Clear any leftover subscriptions on testEmp and secondEmp
-                await Employee.updateOne({ _id: testEmp._id }, { $set: { push_subscription: null, push_subscriptions: [] } });
-                await Employee.updateOne({ _id: secondEmp._id }, { $set: { push_subscription: null, push_subscriptions: [] } });
+                await Employee.updateOne({ _id: testEmp._id }, { $set: { push_subscription: null, push_subscriptions: [], status: 'active' } });
+                await Employee.updateOne({ _id: secondEmp._id }, { $set: { push_subscription: null, push_subscriptions: [], status: 'inactive' } });
 
-                // Disable global push, add only testEmp.id to push_pilot_employee_ids
+                // Global push enabled
                 await Setting.updateOne(
                     {},
                     {
                         $set: {
-                            enable_browser_push: false,
-                            push_pilot_employee_ids: [testEmp.id]
+                            enable_browser_push: true
                         }
                     },
                     { upsert: true }
                 );
 
-                // 1. Ineligible user (secondEmp) attempts to subscribe -> 403
+                // 1. Ineligible user (secondEmp, inactive) attempts to subscribe -> 403
                 const ineligSubRes = await request(app)
                     .post('/api/notifications/subscribe')
                     .set('Authorization', `Bearer ${jwt.sign({ id: secondEmp.id, role: 'employee' }, process.env.JWT_SECRET)}`)
@@ -5892,7 +5891,7 @@ describe('HRMS Backend Automated Test Suite', () => {
                     });
                 expect(ineligSubRes.status).toBe(403);
 
-                // 2. Eligible user (testEmp) subscribes -> 201
+                // 2. Eligible user (testEmp, active) subscribes -> 201
                 const eligSubRes = await request(app)
                     .post('/api/notifications/subscribe')
                     .set('Authorization', `Bearer ${t18EmpToken}`)
@@ -5924,7 +5923,7 @@ describe('HRMS Backend Automated Test Suite', () => {
 
                 sendSpy.mockClear();
 
-                // 4. Notification created for secondEmp (ineligible) -> sendSpy NOT called
+                // 4. Notification created for secondEmp (ineligible, inactive) -> sendSpy NOT called
                 await Notification.create({
                     recipient: secondEmp._id,
                     title: 'Ineligible Push Test',
@@ -5934,6 +5933,7 @@ describe('HRMS Backend Automated Test Suite', () => {
                 expect(sendSpy).not.toHaveBeenCalled();
             } finally {
                 sendSpy.mockRestore();
+                await Employee.updateOne({ _id: secondEmp._id }, { $set: { status: 'active' } });
             }
         });
 
@@ -5958,6 +5958,7 @@ describe('HRMS Backend Automated Test Suite', () => {
                     { _id: testEmp._id },
                     {
                         $set: {
+                            status: 'active',
                             push_subscriptions: [
                                 {
                                     endpoint: 'https://fcm.googleapis.com/fcm/send/alive-endpoint',
@@ -6018,68 +6019,113 @@ describe('HRMS Backend Automated Test Suite', () => {
             }
         });
 
-        it('saving push_pilot_employee_ids ["EMP6608"] persists, and a subscribe from EMP6608 returns 201 while an employee not on the list returns 403', async () => {
-            // Create EMP6608 and non-pilot employee EMP9999
+        it('an active employee who is not on any list can subscribe and gets 201', async () => {
             const hash = await bcrypt.hash('Secret123!', 10);
-            await Employee.deleteMany({ id: { $in: ['EMP6608', 'EMP9999'] } });
+            await Employee.deleteMany({ id: 'EMP_ALL_ACTIVE_01' });
 
-            const pilotEmp = await Employee.create({
-                id: 'EMP6608',
-                name: 'Pilot User 6608',
-                email: 'emp6608@example.test',
+            const emp = await Employee.create({
+                id: 'EMP_ALL_ACTIVE_01',
+                name: 'All Active User',
+                email: 'activeuser@example.test',
                 password_hash: hash,
                 role: 'employee',
                 status: 'active'
             });
 
-            const nonPilotEmp = await Employee.create({
-                id: 'EMP9999',
-                name: 'Non Pilot User 9999',
-                email: 'emp9999@example.test',
-                password_hash: hash,
-                role: 'employee',
-                status: 'active'
-            });
+            await Setting.updateOne({}, { $set: { enable_browser_push: true, push_pilot_employee_ids: [] } }, { upsert: true });
 
-            const pilotToken = jwt.sign({ id: pilotEmp.id, role: 'employee', email: pilotEmp.email }, process.env.JWT_SECRET);
-            const nonPilotToken = jwt.sign({ id: nonPilotEmp.id, role: 'employee', email: nonPilotEmp.email }, process.env.JWT_SECRET);
+            const token = jwt.sign({ id: emp.id, role: 'employee', email: emp.email }, process.env.JWT_SECRET);
+            const res = await request(app)
+                .post('/api/notifications/subscribe')
+                .set('Authorization', `Bearer ${token}`)
+                .send({
+                    endpoint: 'https://fcm.googleapis.com/fcm/send/active-all-endpoint',
+                    keys: { p256dh: 'k', auth: 'a' }
+                });
+            expect(res.status).toBe(201);
+            expect(res.body.success).toBe(true);
+        });
 
-            // 1. Save settings via PUT /api/settings with enable_browser_push: false and push_pilot_employee_ids: [" EMP6608 ", ""]
-            const putRes = await request(app)
+        it('when enable_browser_push is false, subscribe returns 403 with the disabled message', async () => {
+            await Setting.updateOne({}, { $set: { enable_browser_push: false } }, { upsert: true });
+
+            const res = await request(app)
+                .post('/api/notifications/subscribe')
+                .set('Authorization', `Bearer ${t18EmpToken}`)
+                .send({
+                    endpoint: 'https://fcm.googleapis.com/fcm/send/disabled-endpoint',
+                    keys: { p256dh: 'k', auth: 'a' }
+                });
+            expect(res.status).toBe(403);
+            expect(res.body.message).toBe('Browser push notifications are disabled by the administrator.');
+        });
+
+        it('a terminated or inactive employee gets 403', async () => {
+            try {
+                await Setting.updateOne({}, { $set: { enable_browser_push: true } }, { upsert: true });
+
+                // Inactive
+                await Employee.updateOne({ _id: testEmp._id }, { $set: { status: 'inactive' } });
+                const inactRes = await request(app)
+                    .post('/api/notifications/subscribe')
+                    .set('Authorization', `Bearer ${t18EmpToken}`)
+                    .send({
+                        endpoint: 'https://fcm.googleapis.com/fcm/send/inact-endpoint',
+                        keys: { p256dh: 'k', auth: 'a' }
+                    });
+                expect(inactRes.status).toBe(403);
+
+                // Terminated
+                await Employee.updateOne({ _id: testEmp._id }, { $set: { status: 'terminated' } });
+                const termRes = await request(app)
+                    .post('/api/notifications/subscribe')
+                    .set('Authorization', `Bearer ${t18EmpToken}`)
+                    .send({
+                        endpoint: 'https://fcm.googleapis.com/fcm/send/term-endpoint',
+                        keys: { p256dh: 'k', auth: 'a' }
+                    });
+                expect(termRes.status).toBe(403);
+            } finally {
+                // Reset testEmp to active
+                await Employee.updateOne({ _id: testEmp._id }, { $set: { status: 'active' } });
+            }
+        });
+
+        it('when enable_browser_push is missing from the settings document, subscribe returns 201', async () => {
+            await Employee.updateOne({ _id: testEmp._id }, { $set: { status: 'active' } });
+            await Setting.updateOne({}, { $unset: { enable_browser_push: 1 } });
+
+            const res = await request(app)
+                .post('/api/notifications/subscribe')
+                .set('Authorization', `Bearer ${t18EmpToken}`)
+                .send({
+                    endpoint: 'https://fcm.googleapis.com/fcm/send/missing-flag-endpoint',
+                    keys: { p256dh: 'k', auth: 'a' }
+                });
+            expect(res.status).toBe(201);
+            expect(res.body.success).toBe(true);
+        });
+
+        it('a SuperAdmin can save enable_browser_push, and it persists', async () => {
+            // 1. Save as false
+            const resFalse = await request(app)
                 .put('/api/settings')
                 .set('Authorization', `Bearer ${t18AdminToken}`)
-                .send({
-                    enable_browser_push: false,
-                    push_pilot_employee_ids: [' EMP6608 ', '']
-                });
-            expect(putRes.status).toBe(200);
+                .send({ enable_browser_push: false });
+            expect(resFalse.status).toBe(200);
 
-            // Verify persistence in DB (trimmed strings, empty dropped)
-            const savedSetting = await Setting.findOne();
-            expect(savedSetting.push_pilot_employee_ids).toContain('EMP6608');
-            expect(savedSetting.push_pilot_employee_ids).not.toContain('');
+            let setting = await Setting.findOne();
+            expect(setting.enable_browser_push).toBe(false);
 
-            // 2. Subscribe from non-pilot employee -> 403
-            const nonPilotRes = await request(app)
-                .post('/api/notifications/subscribe')
-                .set('Authorization', `Bearer ${nonPilotToken}`)
-                .send({
-                    endpoint: 'https://fcm.googleapis.com/fcm/send/nonpilot-endpoint',
-                    keys: { p256dh: 'k', auth: 'a' }
-                });
-            expect(nonPilotRes.status).toBe(403);
-            expect(nonPilotRes.body.message).toContain('not enabled');
+            // 2. Save as true
+            const resTrue = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${t18AdminToken}`)
+                .send({ enable_browser_push: true });
+            expect(resTrue.status).toBe(200);
 
-            // 3. Subscribe from EMP6608 -> 201
-            const pilotRes = await request(app)
-                .post('/api/notifications/subscribe')
-                .set('Authorization', `Bearer ${pilotToken}`)
-                .send({
-                    endpoint: 'https://fcm.googleapis.com/fcm/send/pilot6608-endpoint',
-                    keys: { p256dh: 'k', auth: 'a' }
-                });
-            expect(pilotRes.status).toBe(201);
-            expect(pilotRes.body.success).toBe(true);
+            setting = await Setting.findOne();
+            expect(setting.enable_browser_push).toBe(true);
         });
     });
 });

@@ -2,7 +2,6 @@ const webpush = require('web-push');
 const mongoose = require('mongoose');
 const Employee = require('../models/Employee');
 const Setting = require('../models/Setting');
-const { isPushEnabled } = require('./securityFlags');
 
 // Initialize web-push with VAPID keys if configured
 if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
@@ -38,10 +37,12 @@ const sendPushToEmployee = async (employeeId, payload = {}) => {
 
         if (!employee) return { success: false, reason: 'Employee not found' };
 
-        // Check feature flag / pilot eligibility
-        const eligible = isPushEnabled(settings, employee.id) || isPushEnabled(settings, employee._id);
-        if (!eligible) {
-            return { success: false, reason: 'Browser push not enabled for this employee' };
+        // Check feature flag and employee status
+        if (settings && settings.enable_browser_push === false) {
+            return { success: false, reason: 'Browser push notifications are disabled by the administrator' };
+        }
+        if (employee.status !== 'active') {
+            return { success: false, reason: 'Employee is not active' };
         }
 
         // Additive migration in code: wrap legacy push_subscription if push_subscriptions is empty

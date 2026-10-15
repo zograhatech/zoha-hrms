@@ -63,11 +63,14 @@ router.get('/vapid-key', auth(), (req, res) => {
 router.post('/subscribe', auth(), async (req, res) => {
     try {
         const Setting = require('../models/Setting');
-        const { isPushEnabled } = require('../utils/securityFlags');
         const settings = await Setting.findOne();
-        const eligible = isPushEnabled(settings, req.user.id) || (req.user._id && isPushEnabled(settings, req.user._id));
-        if (!eligible) {
-            return res.status(403).json({ success: false, message: 'Browser push notifications are not enabled for your account.' });
+        if (settings && settings.enable_browser_push === false) {
+            return res.status(403).json({ success: false, message: 'Browser push notifications are disabled by the administrator.' });
+        }
+
+        const emp = await Employee.findOne({ id: req.user.id }).select('+push_subscriptions +push_subscription');
+        if (!emp || emp.status !== 'active') {
+            return res.status(403).json({ success: false, message: 'Browser push is not available for your account.' });
         }
 
         const sub = req.body;
@@ -95,9 +98,6 @@ router.post('/subscribe', auth(), async (req, res) => {
             },
             createdAt: new Date()
         };
-
-        const emp = await Employee.findOne({ id: req.user.id }).select('+push_subscriptions +push_subscription');
-        if (!emp) return res.status(404).json({ success: false, message: 'Employee not found.' });
 
         const existingSubs = Array.isArray(emp.push_subscriptions) ? emp.push_subscriptions : [];
         const alreadyExists = existingSubs.some(s => s.endpoint === cleanSubscription.endpoint);
