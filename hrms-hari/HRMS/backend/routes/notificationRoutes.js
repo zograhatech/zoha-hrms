@@ -99,15 +99,25 @@ router.post('/subscribe', auth(), async (req, res) => {
             createdAt: new Date()
         };
 
-        const existingSubs = Array.isArray(emp.push_subscriptions) ? emp.push_subscriptions : [];
-        const alreadyExists = existingSubs.some(s => s.endpoint === cleanSubscription.endpoint);
+        // Atomic push if endpoint does not already exist
+        const pushResult = await Employee.updateOne(
+            { id: req.user.id, "push_subscriptions.endpoint": { $ne: cleanSubscription.endpoint } },
+            {
+                $push: { push_subscriptions: cleanSubscription },
+                $set: { push_subscription: cleanSubscription }
+            }
+        );
 
-        if (!alreadyExists) {
+        // If endpoint already existed, refresh its keys and createdAt
+        if (pushResult.matchedCount === 0) {
             await Employee.updateOne(
-                { id: req.user.id },
+                { id: req.user.id, "push_subscriptions.endpoint": cleanSubscription.endpoint },
                 {
-                    $push: { push_subscriptions: cleanSubscription },
-                    $set: { push_subscription: cleanSubscription }
+                    $set: {
+                        "push_subscriptions.$.keys": cleanSubscription.keys,
+                        "push_subscriptions.$.createdAt": cleanSubscription.createdAt,
+                        push_subscription: cleanSubscription
+                    }
                 }
             );
         }

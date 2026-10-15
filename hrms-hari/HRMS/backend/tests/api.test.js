@@ -6286,6 +6286,93 @@ describe('HRMS Backend Automated Test Suite', () => {
                 sendSpy.mockRestore();
             }
         });
+
+        it('a mocked 403 is logged with the status code and does not remove the subscription', async () => {
+            const webpush = require('web-push');
+            const err403 = new Error('Forbidden');
+            err403.statusCode = 403;
+            err403.body = 'Unauthorized registration or VAPID mismatch';
+
+            const sendSpy = jest.spyOn(webpush, 'sendNotification').mockImplementation(() => Promise.reject(err403));
+            const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+            try {
+                await Setting.updateOne({}, { $set: { enable_browser_push: true } }, { upsert: true });
+
+                const targetEndpoint = 'https://fcm.googleapis.com/fcm/send/emp-403-keep-sub';
+                await Employee.updateOne(
+                    { _id: testEmp._id },
+                    {
+                        $set: {
+                            status: 'active',
+                            push_subscriptions: [{
+                                endpoint: targetEndpoint,
+                                keys: { p256dh: 'k403', auth: 'a403' }
+                            }]
+                        }
+                    }
+                );
+
+                await Notification.create({
+                    recipient: testEmp._id,
+                    title: 'VAPID Test',
+                    message: 'Check 403 handling'
+                });
+
+                await new Promise(r => setTimeout(r, 60));
+
+                // 1. Verify 403 was logged with status code and "VAPID rejected (403)"
+                const logged403 = consoleSpy.mock.calls.some(call =>
+                    call.some(arg => typeof arg === 'string' && arg.includes('VAPID rejected (403)') && arg.includes('statusCode=403') && arg.includes('fcm.googleapis.com'))
+                );
+                expect(logged403).toBe(true);
+
+                // 2. Verify subscription was NOT removed from the database
+                const empInDb = await Employee.findOne({ _id: testEmp._id }).select('+push_subscriptions');
+                const endpoints = (empInDb.push_subscriptions || []).map(s => s.endpoint);
+                expect(endpoints).toContain(targetEndpoint);
+            } finally {
+                sendSpy.mockRestore();
+                consoleSpy.mockRestore();
+            }
+        });
+
+        it('subscribing twice with the same endpoint leaves one entry and refreshes keys', async () => {
+            await Setting.updateOne({}, { $set: { enable_browser_push: true } }, { upsert: true });
+
+            // Clear push subscriptions
+            await Employee.updateOne({ _id: testEmp._id }, { $set: { push_subscriptions: [], push_subscription: null, status: 'active' } });
+
+            const endpoint = 'https://fcm.googleapis.com/fcm/send/dedup-test-device-1';
+
+            // First subscription
+            const res1 = await request(app)
+                .post('/api/notifications/subscribe')
+                .set('Authorization', `Bearer ${t18EmpToken}`)
+                .send({
+                    endpoint,
+                    keys: { p256dh: 'initial-key', auth: 'initial-auth' }
+                });
+            expect(res1.status).toBe(201);
+
+            // Second subscription with identical endpoint but updated keys
+            const res2 = await request(app)
+                .post('/api/notifications/subscribe')
+                .set('Authorization', `Bearer ${t18EmpToken}`)
+                .send({
+                    endpoint,
+                    keys: { p256dh: 'updated-key', auth: 'updated-auth' }
+                });
+            expect(res2.status).toBe(201);
+
+            // Verify only one entry exists with the refreshed keys
+            const emp = await Employee.findOne({ _id: testEmp._id }).select('+push_subscriptions +push_subscription');
+            expect(emp.push_subscriptions.length).toBe(1);
+            expect(emp.push_subscriptions[0].endpoint).toBe(endpoint);
+            expect(emp.push_subscriptions[0].keys.p256dh).toBe('updated-key');
+            expect(emp.push_subscriptions[0].keys.auth).toBe('updated-auth');
+            expect(emp.push_subscription.keys.p256dh).toBe('updated-key');
+        });
     });
 });
 

@@ -118,10 +118,22 @@ const sendPushToEmployee = async (employeeId, payload = {}) => {
                     );
                 } catch (pushErr) {
                     const statusCode = pushErr.statusCode || pushErr.status;
-                    if (statusCode === 404 || statusCode === 410) {
+                    let host = 'unknown-host';
+                    try {
+                        host = new URL(sub.endpoint).host;
+                    } catch (_) {}
+
+                    const errBody = typeof pushErr.body === 'string'
+                        ? pushErr.body.slice(0, 200)
+                        : (pushErr.body ? JSON.stringify(pushErr.body).slice(0, 200) : (pushErr.message || '').slice(0, 200));
+
+                    if (statusCode === 403) {
+                        console.error(`[PushService] VAPID rejected (403) for employee ${employee.id} (${host}) statusCode=${statusCode}: ${errBody}`);
+                    } else if (statusCode === 404 || statusCode === 410) {
+                        console.error(`[PushService] Subscription expired for employee ${employee.id} (${host}) statusCode=${statusCode}: ${errBody}`);
                         expiredEndpoints.push(sub.endpoint);
                     } else {
-                        console.error('[PushService] Non-fatal push delivery error:', pushErr.message);
+                        console.error(`[PushService] Push delivery error for employee ${employee.id} (${host}) statusCode=${statusCode}: ${errBody}`);
                     }
                 }
             })
