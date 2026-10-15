@@ -11,7 +11,7 @@ import { useSocket } from '../context/SocketContext';
 import { formatDate } from '../utils/dateFormatter';
 import { isManagerRole, getRoleDisplayLabel, isSuperAdmin } from '../utils/roleHelper';
 
-import { checkPushSupport, subscribeToPushNotifications } from '../utils/pushHelper';
+import { checkPushSupport, subscribeToPushNotifications, getExistingSubscription } from '../utils/pushHelper';
 
 export default function Navbar({ onToggleSidebar }) {
     const { user } = useAuth();
@@ -27,6 +27,26 @@ export default function Navbar({ onToggleSidebar }) {
     const [showNotifs, setShowNotifs] = useState(false);
     const [pushStatus, setPushStatus] = useState(null); // 'subscribed', 'denied', or null
     const pushSupport = checkPushSupport();
+
+    // Check existing browser push subscription on page load
+    useEffect(() => {
+        const initPushStatus = async () => {
+            if (!pushSupport.supported) return;
+            try {
+                if (typeof Notification !== 'undefined' && Notification.permission === 'denied') {
+                    setPushStatus('denied');
+                    return;
+                }
+                const existing = await getExistingSubscription();
+                if (existing) {
+                    setPushStatus('subscribed');
+                }
+            } catch (err) {
+                console.error('Error checking existing push subscription:', err);
+            }
+        };
+        initPushStatus();
+    }, [pushSupport.supported]);
 
     const socket = useSocket();
 

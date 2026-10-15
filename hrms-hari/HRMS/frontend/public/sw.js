@@ -11,11 +11,11 @@ self.addEventListener('push', (event) => {
     }
     
     const options = {
-        body: data.body,
-        icon: data.icon || '/logo192.png',
-        badge: '/badge.png',
+        body: data.body || 'You have a new message.',
+        icon: data.icon || '/company_logo.png',
+        badge: '/company_logo.png',
         data: {
-            url: data.data?.url || '/'
+            url: data.data?.url || data.url || '/'
         },
         vibrate: [100, 50, 100],
         actions: [
@@ -24,7 +24,7 @@ self.addEventListener('push', (event) => {
     };
     
     event.waitUntil(
-        self.registration.showNotification(data.title, options)
+        self.registration.showNotification(data.title || 'HRMS Notification', options)
     );
 });
 
@@ -32,7 +32,7 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
     event.notification.close();
     
-    const urlToOpen = event.notification.data.url;
+    const urlToOpen = event.notification?.data?.url || '/';
     
     event.waitUntil(
         self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {

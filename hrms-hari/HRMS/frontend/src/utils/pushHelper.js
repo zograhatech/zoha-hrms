@@ -23,6 +23,37 @@ export const checkPushSupport = () => {
 };
 
 /**
+ * Registers the Service Worker on page load with scope '/'
+ */
+export const registerServiceWorker = async () => {
+    if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return null;
+    try {
+        const registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+        return registration;
+    } catch (err) {
+        console.error('ServiceWorker registration error:', err);
+        return null;
+    }
+};
+
+/**
+ * Returns current push subscription from PushManager if one exists
+ */
+export const getExistingSubscription = async () => {
+    if (typeof window === 'undefined' || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+        return null;
+    }
+    try {
+        const registration = await navigator.serviceWorker.ready;
+        const subscription = await registration.pushManager.getSubscription();
+        return subscription;
+    } catch (err) {
+        console.error('Failed to get existing push subscription:', err);
+        return null;
+    }
+};
+
+/**
  * Register Service Worker and Subscribe for Push Notifications upon explicit user action
  */
 export const subscribeToPushNotifications = async () => {
@@ -38,8 +69,9 @@ export const subscribeToPushNotifications = async () => {
             return { success: false, reason: 'Permission denied by user' };
         }
 
-        // 2. Register Service Worker
-        const registration = await navigator.serviceWorker.register('/sw.js');
+        // 2. Register Service Worker with scope '/'
+        const registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+        await navigator.serviceWorker.ready;
         
         // 3. Get Public VAPID Key from backend
         const { data } = await API.get('/notifications/vapid-key');
