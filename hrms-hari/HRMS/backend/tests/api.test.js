@@ -5787,8 +5787,11 @@ describe('HRMS Backend Automated Test Suite', () => {
         });
 
         it('subscribe with an invalid shape (missing keys, non-https endpoint, extra oversized field) returns 400 and stores nothing', async () => {
+            // Enable push globally for this test
+            await Setting.updateOne({}, { $set: { enable_browser_push: true } }, { upsert: true });
+
             // Clear testEmp's subscription first
-            await Employee.updateOne({ _id: testEmp._id }, { $set: { push_subscription: null } });
+            await Employee.updateOne({ _id: testEmp._id }, { $set: { push_subscription: null, push_subscriptions: [] } });
 
             // Case A: non-https endpoint
             const resA = await request(app)
@@ -5821,11 +5824,15 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(resC.status).toBe(400);
 
             // Verify nothing stored
-            const emp = await Employee.findOne({ _id: testEmp._id }).select('+push_subscription');
+            const emp = await Employee.findOne({ _id: testEmp._id }).select('+push_subscription +push_subscriptions');
             expect(emp.push_subscription).toBeNull();
+            expect(emp.push_subscriptions.length).toBe(0);
         });
 
-        it('subscribe with a valid shape stores only endpoint and keys', async () => {
+        it('subscribe with a valid shape stores only endpoint and keys in push_subscriptions and push_subscription', async () => {
+            // Enable push globally for this test
+            await Setting.updateOne({}, { $set: { enable_browser_push: true } }, { upsert: true });
+
             const validSub = {
                 endpoint: 'https://fcm.googleapis.com/fcm/send/valid-endpoint',
                 keys: {
@@ -5843,15 +5850,172 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(res.status).toBe(201);
             expect(res.body.success).toBe(true);
 
-            const emp = await Employee.findOne({ _id: testEmp._id }).select('+push_subscription');
-            expect(emp.push_subscription).toBeDefined();
-            expect(emp.push_subscription.endpoint).toBe(validSub.endpoint);
-            expect(emp.push_subscription.keys).toEqual({
+            const emp = await Employee.findOne({ _id: testEmp._id }).select('+push_subscription +push_subscriptions');
+            expect(emp.push_subscriptions.length).toBe(1);
+            expect(emp.push_subscriptions[0].endpoint).toBe(validSub.endpoint);
+            expect(emp.push_subscriptions[0].keys).toEqual({
                 p256dh: validSub.keys.p256dh,
                 auth: validSub.keys.auth
             });
-            expect(emp.push_subscription.extraField).toBeUndefined();
-            expect(emp.push_subscription.nested).toBeUndefined();
+            expect(emp.push_subscriptions[0].extraField).toBeUndefined();
+            expect(emp.push_subscriptions[0].nested).toBeUndefined();
+        });
+
+        it('eligible user subscribes and receives a send call on notification create; ineligible user does not', async () => {
+            const webpush = require('web-push');
+            const sendSpy = jest.spyOn(webpush, 'sendNotification').mockImplementation(() => Promise.resolve());
+
+            try {
+                // Clear any leftover subscriptions on testEmp and secondEmp
+                await Employee.updateOne({ _id: testEmp._id }, { $set: { push_subscription: null, push_subscriptions: [] } });
+                await Employee.updateOne({ _id: secondEmp._id }, { $set: { push_subscription: null, push_subscriptions: [] } });
+
+                // Disable global push, add only testEmp.id to push_pilot_employee_ids
+                await Setting.updateOne(
+                    {},
+                    {
+                        $set: {
+                            enable_browser_push: false,
+                            push_pilot_employee_ids: [testEmp.id]
+                        }
+                    },
+                    { upsert: true }
+                );
+
+                // 1. Ineligible user (secondEmp) attempts to subscribe -> 403
+                const ineligSubRes = await request(app)
+                    .post('/api/notifications/subscribe')
+                    .set('Authorization', `Bearer ${jwt.sign({ id: secondEmp.id, role: 'employee' }, process.env.JWT_SECRET)}`)
+                    .send({
+                        endpoint: 'https://fcm.googleapis.com/fcm/send/second-endpoint',
+                        keys: { p256dh: 'pk', auth: 'auth' }
+                    });
+                expect(ineligSubRes.status).toBe(403);
+
+                // 2. Eligible user (testEmp) subscribes -> 201
+                const eligSubRes = await request(app)
+                    .post('/api/notifications/subscribe')
+                    .set('Authorization', `Bearer ${t18EmpToken}`)
+                    .send({
+                        endpoint: 'https://fcm.googleapis.com/fcm/send/pilot-endpoint',
+                        keys: { p256dh: 'pk', auth: 'auth' }
+                    });
+                expect(eligSubRes.status).toBe(201);
+
+                sendSpy.mockClear();
+
+                // 3. Notification created for testEmp (eligible) -> sendSpy called
+                await Notification.create({
+                    recipient: testEmp._id,
+                    title: 'Push Test Title',
+                    message: 'Push Test Body Message',
+                    data: { link: '/test-link' }
+                });
+
+                // Wait for asynchronous post-save hook
+                await new Promise(r => setTimeout(r, 80));
+                expect(sendSpy).toHaveBeenCalled();
+                const callArgs = sendSpy.mock.calls[0];
+                expect(callArgs[0].endpoint).toBe('https://fcm.googleapis.com/fcm/send/pilot-endpoint');
+                const parsedPayload = JSON.parse(callArgs[1]);
+                expect(parsedPayload.title).toBe('Push Test Title');
+                expect(parsedPayload.body).toBe('Push Test Body Message');
+                expect(parsedPayload.data.url).toBe('/test-link');
+
+                sendSpy.mockClear();
+
+                // 4. Notification created for secondEmp (ineligible) -> sendSpy NOT called
+                await Notification.create({
+                    recipient: secondEmp._id,
+                    title: 'Ineligible Push Test',
+                    message: 'Should not trigger push'
+                });
+                await new Promise(r => setTimeout(r, 80));
+                expect(sendSpy).not.toHaveBeenCalled();
+            } finally {
+                sendSpy.mockRestore();
+            }
+        });
+
+        it('a 410 response removes only that endpoint; payload is capped; push_subscriptions absent from GET employees', async () => {
+            const webpush = require('web-push');
+
+            // 1. Mock 410 error on the dead endpoint
+            const sendSpy = jest.spyOn(webpush, 'sendNotification').mockImplementation((sub) => {
+                if (sub.endpoint.includes('dead-endpoint')) {
+                    const err = new Error('Subscription expired');
+                    err.statusCode = 410;
+                    return Promise.reject(err);
+                }
+                return Promise.resolve();
+            });
+
+            try {
+                await Setting.updateOne({}, { $set: { enable_browser_push: true } }, { upsert: true });
+
+                // Seed testEmp with two endpoints: alive and dead
+                await Employee.updateOne(
+                    { _id: testEmp._id },
+                    {
+                        $set: {
+                            push_subscriptions: [
+                                {
+                                    endpoint: 'https://fcm.googleapis.com/fcm/send/alive-endpoint',
+                                    keys: { p256dh: 'k1', auth: 'a1' }
+                                },
+                                {
+                                    endpoint: 'https://fcm.googleapis.com/fcm/send/dead-endpoint',
+                                    keys: { p256dh: 'k2', auth: 'a2' }
+                                }
+                            ]
+                        }
+                    }
+                );
+
+                // Create notification with huge text to test 4KB cap
+                const longMessage = 'A'.repeat(5000);
+                await Notification.create({
+                    recipient: testEmp._id,
+                    title: 'Long Message Test',
+                    message: longMessage
+                });
+
+                await new Promise(r => setTimeout(r, 100));
+
+                // Verify dead endpoint was pruned and alive endpoint remains
+                const updatedEmp = await Employee.findOne({ _id: testEmp._id }).select('+push_subscriptions');
+                expect(updatedEmp.push_subscriptions.length).toBe(1);
+                expect(updatedEmp.push_subscriptions[0].endpoint).toBe('https://fcm.googleapis.com/fcm/send/alive-endpoint');
+
+                // Verify payload capped under 4KB
+                for (const call of sendSpy.mock.calls) {
+                    const payloadStr = call[1];
+                    expect(Buffer.byteLength(payloadStr, 'utf8')).toBeLessThanOrEqual(4096);
+                }
+
+                // Verify push_subscriptions is absent from GET /api/employees
+                const listRes = await request(app)
+                    .get('/api/employees')
+                    .set('Authorization', `Bearer ${t18AdminToken}`);
+                expect(listRes.status).toBe(200);
+                const found = (listRes.body.employees || []).find(e => e.id === testEmp.id);
+                expect(found).toBeDefined();
+                expect(found.push_subscriptions).toBeUndefined();
+                expect(found.push_subscription).toBeUndefined();
+
+                // Test DELETE /api/notifications/subscribe (Unsubscribe endpoint)
+                const unsubRes = await request(app)
+                    .delete('/api/notifications/subscribe')
+                    .set('Authorization', `Bearer ${t18EmpToken}`)
+                    .send({ endpoint: 'https://fcm.googleapis.com/fcm/send/alive-endpoint' });
+                expect(unsubRes.status).toBe(200);
+                expect(unsubRes.body.success).toBe(true);
+
+                const finalEmp = await Employee.findOne({ _id: testEmp._id }).select('+push_subscriptions');
+                expect(finalEmp.push_subscriptions.length).toBe(0);
+            } finally {
+                sendSpy.mockRestore();
+            }
         });
     });
 });

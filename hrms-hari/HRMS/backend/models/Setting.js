@@ -65,7 +65,9 @@ const settingSchema = new mongoose.Schema({
     module_pricing: { type: mongoose.Schema.Types.Mixed, default: {} },
     require_email_verification: { type: Boolean, default: false },
     require_2fa: { type: Boolean, default: false },
-    security_pilot_employee_ids: { type: [String], default: [] }
+    security_pilot_employee_ids: { type: [String], default: [] },
+    enable_browser_push: { type: Boolean, default: false },
+    push_pilot_employee_ids: { type: [String], default: [] }
 }, { timestamps: true });
 
 module.exports = mongoose.models.Setting || mongoose.model('Setting', settingSchema);

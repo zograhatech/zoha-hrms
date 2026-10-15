@@ -22,8 +22,6 @@ export const SocketProvider = ({ children }) => {
             // Disable socket entirely on Vercel to avoid console error flood.
             if (window.location.hostname.includes('vercel.app')) {
                 console.info('ℹ️ Real-time WebSockets (Socket.io) are disabled on Vercel environment.');
-                console.info('💡 System is falling back to Web Push Notifications provided by Service Worker.');
-                subscribeToPushNotifications();
                 return;
             }
 
@@ -37,7 +35,6 @@ export const SocketProvider = ({ children }) => {
             newSocket.on('connect', () => {
                 console.log('Socket connected:', newSocket.id);
                 newSocket.emit('join', user.id);
-                subscribeToPushNotifications();
             });
 
             newSocket.on('notification', (notif) => {

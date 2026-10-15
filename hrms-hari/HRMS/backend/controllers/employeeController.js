@@ -23,6 +23,7 @@ const withDeptName = async (emp) => {
     }
     delete obj.password_hash;
     delete obj.push_subscription;
+    delete obj.push_subscriptions;
     return obj;
 };
 
@@ -126,7 +127,7 @@ const getEmployee = async (req, res) => {
             const dept = await Department.findById(emp.department_id).select('name');
             department_name = dept?.name || null;
         }
-        const { password_hash, push_subscription, ...rest } = emp;
+        const { password_hash, push_subscription, push_subscriptions, ...rest } = emp;
         res.json({ success: true, employee: { ...rest, department_name } });
     } catch (err) {
         res.status(500).json({ success: false, message: 'Server error.' });
@@ -280,7 +281,7 @@ const createEmployee = async (req, res) => {
             console.error('Failed to initialize leave balance:', balErr);
         }
 
-        const { password_hash: _, push_subscription: _ps, ...rest } = employee.toObject();
+        const { password_hash: _, push_subscription: _ps, push_subscriptions: _pss, ...rest } = employee.toObject();
         const companyName = settings?.company_name || process.env.COMPANY_NAME || 'HRMS';
 
         // Send Welcome Email
@@ -587,6 +588,7 @@ const updateEmployee = async (req, res) => {
 
         const empObj = emp.toObject ? emp.toObject() : { ...emp };
         delete empObj.push_subscription;
+        delete empObj.push_subscriptions;
         delete empObj.password_hash;
 
         res.json({ success: true, message: 'Employee updated successfully.', employee: empObj });
@@ -698,7 +700,7 @@ const setSuperAdminStatus = async (req, res) => {
         }
 
         await emp.save();
-        const { password_hash, push_subscription, ...rest } = emp.toObject();
+        const { password_hash, push_subscription, push_subscriptions, ...rest } = emp.toObject();
         return res.json({ success: true, message: 'Super Admin status updated successfully.', employee: rest });
     } catch (err) {
         console.error('[setSuperAdminStatus]', err);
@@ -1205,7 +1207,7 @@ const updateAssignments = async (req, res) => {
                 targetEmp.team_lead_id = team_lead_id;
             }
             await targetEmp.save();
-            const { password_hash, push_subscription, ...rest } = targetEmp.toObject();
+            const { password_hash, push_subscription, push_subscriptions, ...rest } = targetEmp.toObject();
             return res.json({ success: true, message: 'Assignments updated successfully.', employee: rest });
         }
 
@@ -1252,7 +1254,7 @@ const updateAssignments = async (req, res) => {
             }
             targetEmp.team_lead_id = team_lead_id;
             await targetEmp.save();
-            const { password_hash, push_subscription, ...rest } = targetEmp.toObject();
+            const { password_hash, push_subscription, push_subscriptions, ...rest } = targetEmp.toObject();
             return res.json({ success: true, message: 'Team lead assigned successfully.', employee: rest });
         }
 

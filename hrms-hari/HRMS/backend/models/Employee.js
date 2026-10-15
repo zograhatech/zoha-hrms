@@ -48,6 +48,18 @@ const employeeSchema = new mongoose.Schema({
     reset_otp: { type: String },
     reset_otp_expiry: { type: Date },
     push_subscription: { type: Object, default: null, select: false },
+    push_subscriptions: {
+        type: [{
+            endpoint: { type: String, required: true },
+            keys: {
+                p256dh: { type: String, required: true },
+                auth: { type: String, required: true }
+            },
+            createdAt: { type: Date, default: Date.now }
+        }],
+        default: [],
+        select: false
+    },
     permissions: { type: [String], default: null },
     // Email verification fields
     emailVerified: { type: Boolean, default: false },

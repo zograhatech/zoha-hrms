@@ -1,32 +1,53 @@
 import API from '../api/axios';
 
 /**
- * Register Service Worker and Subscribe for Push Notifications
+ * Checks if browser push notifications are supported and permitted on this device/environment.
+ * Returns { supported: boolean, message?: string }
+ */
+export const checkPushSupport = () => {
+    if (typeof window === 'undefined') return { supported: false, message: 'Push not supported' };
+    
+    // Check basic browser support
+    if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+        return { supported: false, message: 'Push notifications not supported on this browser' };
+    }
+
+    // iOS Safari check: only supported in standalone (PWA installed to Home Screen) mode on iOS 16.4+
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+    const isStandalone = window.navigator.standalone || window.matchMedia('(display-mode: standalone)').matches;
+    if (isIOS && !isStandalone) {
+        return { supported: false, message: 'On iOS, install app to Home Screen to enable alerts' };
+    }
+
+    return { supported: true };
+};
+
+/**
+ * Register Service Worker and Subscribe for Push Notifications upon explicit user action
  */
 export const subscribeToPushNotifications = async () => {
-    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-        console.warn('Push Notifications not supported by this browser.');
-        return;
+    const support = checkPushSupport();
+    if (!support.supported) {
+        return { success: false, reason: support.message };
     }
 
     try {
-        // 1. Register Service Worker
+        // 1. Request Permission explicitly from user gesture
+        const permission = await Notification.requestPermission();
+        if (permission !== 'granted') {
+            return { success: false, reason: 'Permission denied by user' };
+        }
+
+        // 2. Register Service Worker
         const registration = await navigator.serviceWorker.register('/sw.js');
         
-        // 2. Get Public VAPID Key from backend
+        // 3. Get Public VAPID Key from backend
         const { data } = await API.get('/notifications/vapid-key');
         const publicKey = data.publicKey;
         
         if (!publicKey) {
-            console.error('❌ VAPID Public Key not found. Please ensure VAPID_PUBLIC_KEY is set in your Vercel Environment Variables.');
-            return;
-        }
-
-        // 3. Request Permission
-        const permission = await Notification.requestPermission();
-        if (permission !== 'granted') {
-            console.warn('Push Notification permission denied.');
-            return;
+            console.error('❌ VAPID Public Key not found.');
+            return { success: false, reason: 'VAPID key not configured' };
         }
 
         // 4. Subscribe the user
@@ -38,9 +59,10 @@ export const subscribeToPushNotifications = async () => {
         // 5. Send subscription to the backend
         await API.post('/notifications/subscribe', subscription);
         
-        console.log('Push Notification subscription successful.');
+        return { success: true };
     } catch (error) {
         console.error('Push Notification registration failed:', error);
+        return { success: false, error: error.message };
     }
 };
 

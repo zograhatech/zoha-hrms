@@ -65,7 +65,7 @@ const generateAuthPayload = async (employee, rememberMe, settings) => {
     employee.refresh_tokens.push(refreshToken);
     await employee.save();
 
-    const { password_hash, refresh_tokens, push_subscription, ...rest } = employee.toObject();
+    const { password_hash, refresh_tokens, push_subscription, push_subscriptions, ...rest } = employee.toObject();
     return {
         token,
         refreshToken,
@@ -257,7 +257,7 @@ const getMe = async (req, res) => {
             { expiresIn: '15m' }
         );
 
-        const { push_subscription: _ps, ...userObj } = employee.toObject();
+        const { push_subscription: _ps, push_subscriptions: _pss, ...userObj } = employee.toObject();
 
         res.json({ 
             success: true, 

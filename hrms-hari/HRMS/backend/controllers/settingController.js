@@ -194,6 +194,21 @@ const updateSettings = async (req, res) => {
             pilotListChanged = true;
         }
 
+        if (updateData.enable_browser_push !== undefined) {
+            settings.enable_browser_push = Boolean(updateData.enable_browser_push);
+        }
+
+        if (updateData.push_pilot_employee_ids !== undefined) {
+            let pushPilots = [];
+            if (Array.isArray(updateData.push_pilot_employee_ids)) {
+                pushPilots = updateData.push_pilot_employee_ids.map(id => String(id).trim()).filter(Boolean);
+            } else if (typeof updateData.push_pilot_employee_ids === 'string') {
+                pushPilots = updateData.push_pilot_employee_ids.split(',').map(id => id.trim()).filter(Boolean);
+            }
+            settings.push_pilot_employee_ids = pushPilots;
+            settings.markModified('push_pilot_employee_ids');
+        }
+
         const savedSettings = await settings.save();
         console.log('[updateSettings] Saved roles in DB:', Object.keys(savedSettings.roles_permissions || {}));
 

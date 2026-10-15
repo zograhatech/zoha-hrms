@@ -19,5 +19,21 @@ const isSecurityFlagOn = (settings, flag, employeeId) => {
     return false;
 };
 
-module.exports = { isSecurityFlagOn };
+/**
+ * Checks whether browser push notifications are enabled for a given employee.
+ * Returns true if enable_browser_push is true OR employee ID is in push_pilot_employee_ids.
+ */
+const isPushEnabled = (settings, employeeId) => {
+    if (!settings) return false;
+    if (Boolean(settings.enable_browser_push)) return true;
+
+    if (employeeId && Array.isArray(settings.push_pilot_employee_ids)) {
+        const idStr = String(employeeId).trim();
+        return settings.push_pilot_employee_ids.some(pid => String(pid).trim() === idStr);
+    }
+
+    return false;
+};
+
+module.exports = { isSecurityFlagOn, isPushEnabled };
 

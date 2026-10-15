@@ -11,6 +11,8 @@ import { useSocket } from '../context/SocketContext';
 import { formatDate } from '../utils/dateFormatter';
 import { isManagerRole, getRoleDisplayLabel, isSuperAdmin } from '../utils/roleHelper';
 
+import { checkPushSupport, subscribeToPushNotifications } from '../utils/pushHelper';
+
 export default function Navbar({ onToggleSidebar }) {
     const { user } = useAuth();
     const { theme, toggleTheme } = useTheme();
@@ -23,6 +25,8 @@ export default function Navbar({ onToggleSidebar }) {
     const [notifications, setNotifications] = useState([]);
     const [unreadCount, setUnreadCount] = useState(0);
     const [showNotifs, setShowNotifs] = useState(false);
+    const [pushStatus, setPushStatus] = useState(null); // 'subscribed', 'denied', or null
+    const pushSupport = checkPushSupport();
 
     const socket = useSocket();
 
@@ -180,7 +184,28 @@ export default function Navbar({ onToggleSidebar }) {
                         <div className="notif-dropdown zoom-glass-card shadow-dropdown">
                             <div className="notif-header">
                                 <h3>Notifications</h3>
-                                <button onClick={clearAll} className="clear-btn">Clear All</button>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                    {pushSupport.supported ? (
+                                        <button
+                                            onClick={async (e) => {
+                                                e.stopPropagation();
+                                                const res = await subscribeToPushNotifications();
+                                                if (res.success) setPushStatus('subscribed');
+                                                else setPushStatus('denied');
+                                            }}
+                                            className="clear-btn"
+                                            style={{ color: 'var(--accent-indigo)', fontWeight: 600 }}
+                                            title="Enable browser push notifications"
+                                        >
+                                            {pushStatus === 'subscribed' ? '✓ Alerts Enabled' : 'Enable desktop alerts'}
+                                        </button>
+                                    ) : (
+                                        <span style={{ fontSize: '11px', opacity: 0.6 }} title={pushSupport.message}>
+                                            {pushSupport.message}
+                                        </span>
+                                    )}
+                                    <button onClick={clearAll} className="clear-btn">Clear All</button>
+                                </div>
                             </div>
                             <div className="notif-list">
                                 {notifications.length > 0 ? (

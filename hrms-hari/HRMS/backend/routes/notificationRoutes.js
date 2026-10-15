@@ -62,6 +62,14 @@ router.get('/vapid-key', auth(), (req, res) => {
 // @desc    Save push subscription for user
 router.post('/subscribe', auth(), async (req, res) => {
     try {
+        const Setting = require('../models/Setting');
+        const { isPushEnabled } = require('../utils/securityFlags');
+        const settings = await Setting.findOne();
+        const eligible = isPushEnabled(settings, req.user.id) || (req.user._id && isPushEnabled(settings, req.user._id));
+        if (!eligible) {
+            return res.status(403).json({ success: false, message: 'Browser push notifications are not enabled for your account.' });
+        }
+
         const sub = req.body;
         if (
             !sub || typeof sub !== 'object' ||
@@ -84,18 +92,50 @@ router.post('/subscribe', auth(), async (req, res) => {
             keys: {
                 p256dh: sub.keys.p256dh,
                 auth: sub.keys.auth
-            }
+            },
+            createdAt: new Date()
         };
 
-        // Save subscription to the employee record
-        await Employee.findOneAndUpdate(
-            { id: req.user.id },
-            { $set: { push_subscription: cleanSubscription } }
-        );
+        const emp = await Employee.findOne({ id: req.user.id }).select('+push_subscriptions +push_subscription');
+        if (!emp) return res.status(404).json({ success: false, message: 'Employee not found.' });
+
+        const existingSubs = Array.isArray(emp.push_subscriptions) ? emp.push_subscriptions : [];
+        const alreadyExists = existingSubs.some(s => s.endpoint === cleanSubscription.endpoint);
+
+        if (!alreadyExists) {
+            await Employee.updateOne(
+                { id: req.user.id },
+                {
+                    $push: { push_subscriptions: cleanSubscription },
+                    $set: { push_subscription: cleanSubscription }
+                }
+            );
+        }
 
         res.status(201).json({ success: true, message: 'Subscription saved' });
     } catch (err) {
         console.error('Subscription error:', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// @route   DELETE /api/notifications/subscribe
+// @desc    Remove a push subscription endpoint for user
+router.delete('/subscribe', auth(), async (req, res) => {
+    try {
+        const { endpoint } = req.body || {};
+        if (!endpoint || typeof endpoint !== 'string') {
+            return res.status(400).json({ success: false, message: 'Endpoint is required.' });
+        }
+
+        await Employee.updateOne(
+            { id: req.user.id },
+            { $pull: { push_subscriptions: { endpoint } } }
+        );
+
+        res.json({ success: true, message: 'Subscription removed.' });
+    } catch (err) {
+        console.error('Unsubscribe error:', err);
         res.status(500).json({ success: false, message: err.message });
     }
 });
