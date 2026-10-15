@@ -62,14 +62,37 @@ router.get('/vapid-key', auth(), (req, res) => {
 // @desc    Save push subscription for user
 router.post('/subscribe', auth(), async (req, res) => {
     try {
-        const subscription = req.body;
-        
+        const sub = req.body;
+        if (
+            !sub || typeof sub !== 'object' ||
+            typeof sub.endpoint !== 'string' ||
+            !sub.endpoint.startsWith('https://') ||
+            sub.endpoint.length > 2048 ||
+            !sub.keys || typeof sub.keys !== 'object' ||
+            typeof sub.keys.p256dh !== 'string' ||
+            sub.keys.p256dh.trim() === '' ||
+            sub.keys.p256dh.length > 256 ||
+            typeof sub.keys.auth !== 'string' ||
+            sub.keys.auth.trim() === '' ||
+            sub.keys.auth.length > 256
+        ) {
+            return res.status(400).json({ success: false, message: 'Invalid push subscription.' });
+        }
+
+        const cleanSubscription = {
+            endpoint: sub.endpoint,
+            keys: {
+                p256dh: sub.keys.p256dh,
+                auth: sub.keys.auth
+            }
+        };
+
         // Save subscription to the employee record
         await Employee.findOneAndUpdate(
-            { id: req.user.id }, // Note: assuming id is the unique string ID from Employee.js
-            { $set: { push_subscription: subscription } }
+            { id: req.user.id },
+            { $set: { push_subscription: cleanSubscription } }
         );
-        
+
         res.status(201).json({ success: true, message: 'Subscription saved' });
     } catch (err) {
         console.error('Subscription error:', err);

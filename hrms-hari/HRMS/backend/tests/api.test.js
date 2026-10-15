@@ -5737,6 +5737,122 @@ describe('HRMS Backend Automated Test Suite', () => {
             });
             expect(otherNotifs.length).toBe(0);
         });
+
+        it('an employee with push_subscription set does not show it in GET employees list, GET employee by id, GET profile, login response, or GET me', async () => {
+            // Set push subscription directly on testEmp
+            await Employee.updateOne(
+                { _id: testEmp._id },
+                {
+                    $set: {
+                        push_subscription: {
+                            endpoint: 'https://fcm.googleapis.com/fcm/send/test-endpoint',
+                            keys: { p256dh: 'test-p256dh', auth: 'test-auth' }
+                        }
+                    }
+                }
+            );
+
+            // 1. GET /api/employees (list)
+            const listRes = await request(app)
+                .get('/api/employees')
+                .set('Authorization', `Bearer ${t18AdminToken}`);
+            expect(listRes.status).toBe(200);
+            const foundInList = (listRes.body.employees || []).find(e => e.id === testEmp.id);
+            expect(foundInList).toBeDefined();
+            expect(foundInList.push_subscription).toBeUndefined();
+
+            // 2. GET /api/employees/:id
+            const getRes = await request(app)
+                .get(`/api/employees/${testEmp.id}`)
+                .set('Authorization', `Bearer ${t18AdminToken}`);
+            expect(getRes.status).toBe(200);
+            expect(getRes.body.employee.push_subscription).toBeUndefined();
+
+            // 3. Login response
+            const loginRes = await request(app)
+                .post('/api/auth/login')
+                .send({
+                    email: testEmp.email,
+                    password: 'Secret123!'
+                });
+            expect(loginRes.status).toBe(200);
+            expect(loginRes.body.user.push_subscription).toBeUndefined();
+
+            // 4. GET /api/auth/me
+            const meRes = await request(app)
+                .get('/api/auth/me')
+                .set('Authorization', `Bearer ${t18EmpToken}`);
+            expect(meRes.status).toBe(200);
+            expect(meRes.body.user.push_subscription).toBeUndefined();
+        });
+
+        it('subscribe with an invalid shape (missing keys, non-https endpoint, extra oversized field) returns 400 and stores nothing', async () => {
+            // Clear testEmp's subscription first
+            await Employee.updateOne({ _id: testEmp._id }, { $set: { push_subscription: null } });
+
+            // Case A: non-https endpoint
+            const resA = await request(app)
+                .post('/api/notifications/subscribe')
+                .set('Authorization', `Bearer ${t18EmpToken}`)
+                .send({
+                    endpoint: 'http://insecure.endpoint.com/test',
+                    keys: { p256dh: 'validKey', auth: 'validAuth' }
+                });
+            expect(resA.status).toBe(400);
+            expect(resA.body.message).toBe('Invalid push subscription.');
+
+            // Case B: missing keys
+            const resB = await request(app)
+                .post('/api/notifications/subscribe')
+                .set('Authorization', `Bearer ${t18EmpToken}`)
+                .send({
+                    endpoint: 'https://secure.endpoint.com/test'
+                });
+            expect(resB.status).toBe(400);
+
+            // Case C: oversized field (>256 chars on auth)
+            const resC = await request(app)
+                .post('/api/notifications/subscribe')
+                .set('Authorization', `Bearer ${t18EmpToken}`)
+                .send({
+                    endpoint: 'https://secure.endpoint.com/test',
+                    keys: { p256dh: 'validKey', auth: 'a'.repeat(300) }
+                });
+            expect(resC.status).toBe(400);
+
+            // Verify nothing stored
+            const emp = await Employee.findOne({ _id: testEmp._id }).select('+push_subscription');
+            expect(emp.push_subscription).toBeNull();
+        });
+
+        it('subscribe with a valid shape stores only endpoint and keys', async () => {
+            const validSub = {
+                endpoint: 'https://fcm.googleapis.com/fcm/send/valid-endpoint',
+                keys: {
+                    p256dh: 'valid-p256dh-key',
+                    auth: 'valid-auth-token'
+                },
+                extraField: 'shouldNotBeSaved',
+                nested: { attack: true }
+            };
+
+            const res = await request(app)
+                .post('/api/notifications/subscribe')
+                .set('Authorization', `Bearer ${t18EmpToken}`)
+                .send(validSub);
+            expect(res.status).toBe(201);
+            expect(res.body.success).toBe(true);
+
+            const emp = await Employee.findOne({ _id: testEmp._id }).select('+push_subscription');
+            expect(emp.push_subscription).toBeDefined();
+            expect(emp.push_subscription.endpoint).toBe(validSub.endpoint);
+            expect(emp.push_subscription.keys).toEqual({
+                p256dh: validSub.keys.p256dh,
+                auth: validSub.keys.auth
+            });
+            expect(emp.push_subscription.extraField).toBeUndefined();
+            expect(emp.push_subscription.nested).toBeUndefined();
+        });
     });
 });
 

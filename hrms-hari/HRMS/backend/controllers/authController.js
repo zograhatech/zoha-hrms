@@ -65,7 +65,7 @@ const generateAuthPayload = async (employee, rememberMe, settings) => {
     employee.refresh_tokens.push(refreshToken);
     await employee.save();
 
-    const { password_hash, refresh_tokens, ...rest } = employee.toObject();
+    const { password_hash, refresh_tokens, push_subscription, ...rest } = employee.toObject();
     return {
         token,
         refreshToken,
@@ -203,7 +203,7 @@ const logout = async (req, res) => {
 // GET /api/auth/me
 const getMe = async (req, res) => {
     try {
-        const employee = await Employee.findOne({ id: req.user.id }).select('-password_hash');
+        const employee = await Employee.findOne({ id: req.user.id }).select('-password_hash -push_subscription');
         if (!employee) return res.status(404).json({ success: false, message: 'User not found.' });
 
         let department_name = null;
@@ -257,10 +257,12 @@ const getMe = async (req, res) => {
             { expiresIn: '15m' }
         );
 
+        const { push_subscription: _ps, ...userObj } = employee.toObject();
+
         res.json({ 
             success: true, 
             token: newToken, 
-            user: { ...employee.toObject(), department_name, department_id, permissions: combinedPermissions } 
+            user: { ...userObj, department_name, department_id, permissions: combinedPermissions } 
         });
 
     } catch (err) {

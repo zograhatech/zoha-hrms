@@ -47,7 +47,7 @@ const employeeSchema = new mongoose.Schema({
     refresh_tokens: [String],
     reset_otp: { type: String },
     reset_otp_expiry: { type: Date },
-    push_subscription: { type: Object, default: null },
+    push_subscription: { type: Object, default: null, select: false },
     permissions: { type: [String], default: null },
     // Email verification fields
     emailVerified: { type: Boolean, default: false },
