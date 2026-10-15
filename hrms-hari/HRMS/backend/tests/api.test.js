@@ -6374,7 +6374,341 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(emp.push_subscription.keys.p256dh).toBe('updated-key');
         });
     });
+
+    describe('Phase A: Idle Auto Clock-Out API & Settings', () => {
+        let idleEmp;
+        let idleEmpToken;
+        let exemptEmp;
+        let exemptEmpToken;
+        let originalDateNow;
+
+        beforeAll(async () => {
+            const Employee = require('../models/Employee');
+            const Attendance = require('../models/Attendance');
+            const Shift = require('../models/Shift');
+
+            // Default shift if none
+            let shift = await Shift.findOne({ is_default: true });
+            if (!shift) {
+                shift = await Shift.create({
+                    name: 'General Shift',
+                    start_time: '09:00',
+                    end_time: '18:00',
+                    is_default: true
+                });
+            }
+
+            // Create test employees
+            idleEmp = await Employee.create({
+                id: 'EMP_IDLE_01',
+                name: 'Idle Test Employee',
+                email: 'idle_test@example.com',
+                password_hash: await bcrypt.hash('Secret123!', 10),
+                role: 'employee',
+                status: 'active',
+                department_id: testDeptId,
+                shift_id: shift._id
+            });
+            idleEmpToken = jwt.sign(
+                { id: idleEmp.id, _id: idleEmp._id, role: idleEmp.role, permissions: [] },
+                process.env.JWT_SECRET
+            );
+
+            exemptEmp = await Employee.create({
+                id: 'EMP_IDLE_EXEMPT',
+                name: 'Exempt Test Employee',
+                email: 'exempt_test@example.com',
+                password_hash: await bcrypt.hash('Secret123!', 10),
+                role: 'employee',
+                status: 'active',
+                department_id: testDeptId,
+                shift_id: shift._id
+            });
+            exemptEmpToken = jwt.sign(
+                { id: exemptEmp.id, _id: exemptEmp._id, role: exemptEmp.role, permissions: [] },
+                process.env.JWT_SECRET
+            );
+        });
+
+        beforeEach(async () => {
+            const Setting = require('../models/Setting');
+            const Attendance = require('../models/Attendance');
+
+            await Attendance.deleteMany({ employee_id: { $in: [idleEmp.id, exemptEmp.id] } });
+
+            // Configure default idle settings with 00:00 - 23:59 office hours so tests pass regardless of execution time
+            await Setting.updateOne(
+                {},
+                {
+                    $set: {
+                        idle_auto_clockout_enabled: true,
+                        idle_timeout_minutes: 10,
+                        idle_exempt_employee_ids: [exemptEmp.id],
+                        idle_exempt_app_names: ['zoom.exe', 'teams.exe'],
+                        attendance_settings: {
+                            office_start_time: '00:00',
+                            office_end_time: '23:59',
+                            grace_period: 15,
+                            half_day_min_hours: 4,
+                            full_day_min_hours: 8
+                        }
+                    }
+                },
+                { upsert: true }
+            );
+        });
+
+        it('1. auto clock-out closes an open session and sets auto_clock_out true', async () => {
+            const Attendance = require('../models/Attendance');
+            // Create an open session
+            const checkInTime = new Date(Date.now() - 30 * 60 * 1000); // 30 mins ago
+            await Attendance.create({
+                employee_id: idleEmp.id,
+                date: checkInTime,
+                check_in: checkInTime,
+                status: 'present',
+                is_open_session: true,
+                work_hours: 0
+            });
+
+            const res = await request(app)
+                .post('/api/attendance/auto-clock-out')
+                .set('Authorization', `Bearer ${idleEmpToken}`)
+                .send({
+                    idle_seconds: 600,
+                    reported_at: new Date().toISOString()
+                });
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+
+            const session = await Attendance.findOne({ employee_id: idleEmp.id });
+            expect(session.is_open_session).toBe(false);
+            expect(session.auto_clock_out).toBe(true);
+            expect(session.check_out).toBeDefined();
+            expect(session.work_hours).toBeGreaterThan(0);
+        });
+
+        it('2. rejects when the feature is disabled (403)', async () => {
+            const Setting = require('../models/Setting');
+            await Setting.updateOne({}, { $set: { idle_auto_clockout_enabled: false } });
+
+            const res = await request(app)
+                .post('/api/attendance/auto-clock-out')
+                .set('Authorization', `Bearer ${idleEmpToken}`)
+                .send({
+                    idle_seconds: 600,
+                    reported_at: new Date().toISOString()
+                });
+
+            expect(res.status).toBe(403);
+            expect(res.body.success).toBe(false);
+            expect(res.body.message).toMatch(/disabled/i);
+        });
+
+        it('3. rejects an exempt employee (403)', async () => {
+            const res = await request(app)
+                .post('/api/attendance/auto-clock-out')
+                .set('Authorization', `Bearer ${exemptEmpToken}`)
+                .send({
+                    idle_seconds: 600,
+                    reported_at: new Date().toISOString()
+                });
+
+            expect(res.status).toBe(403);
+            expect(res.body.success).toBe(false);
+            expect(res.body.message).toMatch(/exempt/i);
+        });
+
+        it('4. rejects idle_seconds below the limit (400)', async () => {
+            const res = await request(app)
+                .post('/api/attendance/auto-clock-out')
+                .set('Authorization', `Bearer ${idleEmpToken}`)
+                .send({
+                    idle_seconds: 599, // below 10 mins * 60 = 600s
+                    reported_at: new Date().toISOString()
+                });
+
+            expect(res.status).toBe(400);
+            expect(res.body.success).toBe(false);
+            expect(res.body.message).toMatch(/idle_seconds must be at least/i);
+        });
+
+        it('5. rejects outside office hours (400)', async () => {
+            const Setting = require('../models/Setting');
+            // Set office hours to a window that definitely excludes the current time
+            // We'll compute current IST hour/min and set start/end in the past/future
+            const now = new Date();
+            const istTime = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
+            const curH = istTime.getUTCHours();
+            // Window 2-3 hours ahead
+            const startH = (curH + 2) % 24;
+            const endH = (curH + 3) % 24;
+            const pad = (n) => String(n).padStart(2, '0');
+
+            await Setting.updateOne(
+                {},
+                {
+                    $set: {
+                        'attendance_settings.office_start_time': `${pad(startH)}:00`,
+                        'attendance_settings.office_end_time': `${pad(endH)}:00`
+                    }
+                }
+            );
+
+            const res = await request(app)
+                .post('/api/attendance/auto-clock-out')
+                .set('Authorization', `Bearer ${idleEmpToken}`)
+                .send({
+                    idle_seconds: 600,
+                    reported_at: new Date().toISOString()
+                });
+
+            expect(res.status).toBe(400);
+            expect(res.body.success).toBe(false);
+            expect(res.body.message).toMatch(/during office hours/i);
+        });
+
+        it('6. rejects with no open session (409) and a second call does nothing', async () => {
+            const Attendance = require('../models/Attendance');
+            // Open session first
+            const checkInTime = new Date(Date.now() - 15 * 60 * 1000);
+            await Attendance.create({
+                employee_id: idleEmp.id,
+                date: checkInTime,
+                check_in: checkInTime,
+                status: 'present',
+                is_open_session: true,
+                work_hours: 0
+            });
+
+            // First call succeeds (200)
+            const res1 = await request(app)
+                .post('/api/attendance/auto-clock-out')
+                .set('Authorization', `Bearer ${idleEmpToken}`)
+                .send({
+                    idle_seconds: 600,
+                    reported_at: new Date().toISOString()
+                });
+            expect(res1.status).toBe(200);
+
+            // Second call: session is closed, returns 409
+            const res2 = await request(app)
+                .post('/api/attendance/auto-clock-out')
+                .set('Authorization', `Bearer ${idleEmpToken}`)
+                .send({
+                    idle_seconds: 600,
+                    reported_at: new Date().toISOString()
+                });
+            expect(res2.status).toBe(409);
+            expect(res2.body.success).toBe(false);
+            expect(res2.body.message).toMatch(/no open clock-in session/i);
+        });
+
+        it('7. email and notification are created exactly once on success', async () => {
+            const Attendance = require('../models/Attendance');
+            const Notification = require('../models/Notification');
+            const { sendEmail } = require('../utils/emailService');
+
+            await Notification.deleteMany({ recipient: idleEmp._id });
+            sendEmail.lastEmail = null;
+
+            const checkInTime = new Date(Date.now() - 20 * 60 * 1000);
+            await Attendance.create({
+                employee_id: idleEmp.id,
+                date: checkInTime,
+                check_in: checkInTime,
+                status: 'present',
+                is_open_session: true,
+                work_hours: 0
+            });
+
+            const res = await request(app)
+                .post('/api/attendance/auto-clock-out')
+                .set('Authorization', `Bearer ${idleEmpToken}`)
+                .send({
+                    idle_seconds: 600,
+                    reported_at: new Date().toISOString()
+                });
+
+            expect(res.status).toBe(200);
+
+            // Check notification
+            const notifs = await Notification.find({ recipient: idleEmp._id, title: 'Automatically clocked out' });
+            expect(notifs.length).toBe(1);
+            expect(notifs[0].message).toMatch(/after 10 minutes of inactivity/i);
+
+            // Check email
+            expect(sendEmail.lastEmail).toBeDefined();
+            expect(sendEmail.lastEmail.to).toBe(idleEmp.email);
+            expect(sendEmail.lastEmail.subject).toBe('Automatically clocked out');
+        });
+
+        it('8. idle-policy returns exempt true only for listed employees', async () => {
+            // idleEmp should have exempt: false
+            const res1 = await request(app)
+                .get('/api/attendance/idle-policy')
+                .set('Authorization', `Bearer ${idleEmpToken}`);
+
+            expect(res1.status).toBe(200);
+            expect(res1.body.success).toBe(true);
+            expect(res1.body.enabled).toBe(true);
+            expect(res1.body.timeout_minutes).toBe(10);
+            expect(res1.body.exempt).toBe(false);
+            expect(res1.body.exempt_app_names).toEqual(['zoom.exe', 'teams.exe']);
+            expect(res1.body.idle_exempt_employee_ids).toBeUndefined(); // ensure other IDs are never leaked
+
+            // exemptEmp should have exempt: true
+            const res2 = await request(app)
+                .get('/api/attendance/idle-policy')
+                .set('Authorization', `Bearer ${exemptEmpToken}`);
+
+            expect(res2.status).toBe(200);
+            expect(res2.body.success).toBe(true);
+            expect(res2.body.exempt).toBe(true);
+            expect(res2.body.idle_exempt_employee_ids).toBeUndefined();
+        });
+
+        it('9. updateSettings rejects a timeout of 0 and 300 with 400', async () => {
+            // Test timeout 0
+            const res0 = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${adminToken}`)
+                .send({ idle_timeout_minutes: 0 });
+
+            expect(res0.status).toBe(400);
+            expect(res0.body.success).toBe(false);
+            expect(res0.body.message).toMatch(/idle_timeout_minutes must be a number between 1 and 240/i);
+
+            // Test timeout 300
+            const res300 = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${adminToken}`)
+                .send({ idle_timeout_minutes: 300 });
+
+            expect(res300.status).toBe(400);
+            expect(res300.body.success).toBe(false);
+            expect(res300.body.message).toMatch(/idle_timeout_minutes must be a number between 1 and 240/i);
+
+            // Test valid timeout (e.g. 15) persists
+            const resValid = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${adminToken}`)
+                .send({
+                    idle_timeout_minutes: 15,
+                    idle_auto_clockout_enabled: true,
+                    idle_exempt_employee_ids: ['EMP123', ' EMP456 '],
+                    idle_exempt_app_names: ['zoom.exe', ' teams.exe ']
+                });
+
+            expect(resValid.status).toBe(200);
+            expect(resValid.body.settings.idle_timeout_minutes).toBe(15);
+            expect(resValid.body.settings.idle_exempt_employee_ids).toEqual(['EMP123', 'EMP456']);
+            expect(resValid.body.settings.idle_exempt_app_names).toEqual(['zoom.exe', 'teams.exe']);
+        });
+    });
 });
+
 
 
 

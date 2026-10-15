@@ -105,6 +105,7 @@ const getEmployeeAttendance = async (req, res) => {
                 work_hours: Number(totalHours.toFixed(2)),
                 is_open_session: hasOpenSession,
                 needs_review: hasNeedsReview,
+                auto_clock_out: day.records.some(r => r.auto_clock_out),
                 _id: day.records[0]?._id
             };
         });
@@ -204,6 +205,7 @@ const getTeamAttendance = async (req, res) => {
                 check_in: data?.check_in || null,
                 check_out: data?.check_out || null,
                 work_hours: work_hours,
+                auto_clock_out: Boolean(data?.records?.some(r => r.auto_clock_out)),
             };
         });
 
@@ -1006,6 +1008,164 @@ const getAttendanceTrends = async (req, res) => {
     }
 };
 
+// GET /api/attendance/idle-policy
+const getIdlePolicy = async (req, res) => {
+    try {
+        const Setting = require('../models/Setting');
+        const settings = await Setting.findOne();
+
+        const enabled = Boolean(settings?.idle_auto_clockout_enabled);
+        const timeout_minutes = settings?.idle_timeout_minutes ?? 10;
+        const exempt_app_names = settings?.idle_exempt_app_names || [];
+        const exempt_employee_ids = settings?.idle_exempt_employee_ids || [];
+        const isExempt = exempt_employee_ids.includes(req.user.id);
+
+        const office_start_time = settings?.attendance_settings?.office_start_time || '09:00';
+        const office_end_time = settings?.attendance_settings?.office_end_time || '18:00';
+
+        res.json({
+            success: true,
+            enabled,
+            timeout_minutes,
+            exempt_app_names,
+            exempt: isExempt,
+            office_start_time,
+            office_end_time
+        });
+    } catch (err) {
+        console.error('[getIdlePolicy]', err);
+        res.status(500).json({ success: false, message: 'Server error fetching idle policy.' });
+    }
+};
+
+// POST /api/attendance/auto-clock-out
+const autoClockOut = async (req, res) => {
+    try {
+        const { idle_seconds, reported_at } = req.body;
+        const Setting = require('../models/Setting');
+        const settings = await Setting.findOne();
+
+        // 1. Feature flag check
+        if (!settings?.idle_auto_clockout_enabled) {
+            return res.status(403).json({
+                success: false,
+                message: 'Idle auto clock-out is disabled.'
+            });
+        }
+
+        // 2. Exemption check
+        const exempt_employee_ids = settings?.idle_exempt_employee_ids || [];
+        if (exempt_employee_ids.includes(req.user.id)) {
+            return res.status(403).json({
+                success: false,
+                message: 'Employee is exempt from idle auto clock-out.'
+            });
+        }
+
+        // 3. Minimum idle limit check
+        const timeout_minutes = settings?.idle_timeout_minutes ?? 10;
+        const requiredIdleSeconds = timeout_minutes * 60;
+        if (typeof idle_seconds !== 'number' || idle_seconds < requiredIdleSeconds) {
+            return res.status(400).json({
+                success: false,
+                message: `idle_seconds must be at least ${requiredIdleSeconds} seconds.`
+            });
+        }
+
+        // 4. Office hours check (IST)
+        const now = new Date();
+        const istOffsetMs = 5.5 * 60 * 60 * 1000;
+        const istTime = new Date(now.getTime() + istOffsetMs);
+        const currentISTMinutes = istTime.getUTCHours() * 60 + istTime.getUTCMinutes();
+
+        const startTimeStr = settings?.attendance_settings?.office_start_time || '09:00';
+        const endTimeStr = settings?.attendance_settings?.office_end_time || '18:00';
+        const [startH, startM] = startTimeStr.split(':').map(Number);
+        const [endH, endM] = endTimeStr.split(':').map(Number);
+        const officeStartMinutes = startH * 60 + (startM || 0);
+        const officeEndMinutes = endH * 60 + (endM || 0);
+
+        if (currentISTMinutes < officeStartMinutes || currentISTMinutes > officeEndMinutes) {
+            return res.status(400).json({
+                success: false,
+                message: 'Auto clock-out can only occur during office hours.'
+            });
+        }
+
+        // 5. Open session check
+        const attendance = await findOpenSession(req.user.id);
+        if (!attendance) {
+            return res.status(409).json({
+                success: false,
+                message: 'No open clock-in session found for auto clock-out.'
+            });
+        }
+
+        const checkInTime = new Date(attendance.check_in || attendance.date);
+        const isInvertedOrFuture = checkInTime > now;
+
+        let diffHrs = 0;
+        if (!isInvertedOrFuture) {
+            const diffMs = Math.max(0, now - checkInTime);
+            diffHrs = diffMs / (1000 * 60 * 60);
+        }
+
+        attendance.check_out = now;
+        attendance.work_hours = isInvertedOrFuture ? 0 : Number(diffHrs.toFixed(2));
+        attendance.is_open_session = false;
+        attendance.auto_clock_out = true;
+
+        const checkInIST = toISTDateString(checkInTime);
+        const checkOutIST = toISTDateString(now);
+        if (isInvertedOrFuture || (checkInIST && checkOutIST && checkInIST !== checkOutIST)) {
+            attendance.needs_review = true;
+        } else {
+            attendance.needs_review = false;
+        }
+
+        await attendance.save();
+
+        // Send in-app notification & email
+        const emp = await Employee.findOne({ id: req.user.id }).lean();
+        const recipientId = emp?._id || req.user._id || req.user.id;
+        const notifTitle = 'Automatically clocked out';
+        const notifMessage = `You were clocked out after ${timeout_minutes} minutes of inactivity. Clock in again when you return.`;
+
+        try {
+            await Notification.create({
+                recipient: recipientId,
+                type: 'general',
+                title: notifTitle,
+                message: notifMessage
+            });
+        } catch (notifErr) {
+            console.error('[autoClockOut] Failed to create in-app notification:', notifErr);
+        }
+
+        if (emp && emp.email) {
+            try {
+                const { sendEmail } = require('../utils/emailService');
+                await sendEmail({
+                    to: emp.email,
+                    subject: notifTitle,
+                    text: notifMessage
+                });
+            } catch (emailErr) {
+                console.error('[autoClockOut] Failed to send auto clock-out email:', emailErr);
+            }
+        }
+
+        res.status(200).json({
+            success: true,
+            message: 'Automatically clocked out due to inactivity.',
+            attendance
+        });
+    } catch (err) {
+        console.error('[autoClockOut]', err);
+        res.status(500).json({ success: false, message: 'Server error during auto clock-out.' });
+    }
+};
+
 module.exports = {
     getEmployeeAttendance,
     getTeamAttendance,
@@ -1016,6 +1176,8 @@ module.exports = {
     markHoliday,
     getAttendanceTrends,
     exportAttendance,
-    getAttendanceLogs
+    getAttendanceLogs,
+    getIdlePolicy,
+    autoClockOut
 };
 

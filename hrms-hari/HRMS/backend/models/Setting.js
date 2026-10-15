@@ -67,7 +67,11 @@ const settingSchema = new mongoose.Schema({
     require_2fa: { type: Boolean, default: false },
     security_pilot_employee_ids: { type: [String], default: [] },
     enable_browser_push: { type: Boolean, default: true },
-    push_pilot_employee_ids: { type: [String], default: [] }
+    push_pilot_employee_ids: { type: [String], default: [] },
+    idle_timeout_minutes: { type: Number, default: 10, min: 1, max: 240 },
+    idle_exempt_employee_ids: { type: [String], default: [] },
+    idle_exempt_app_names: { type: [String], default: [] },
+    idle_auto_clockout_enabled: { type: Boolean, default: false }
 }, { timestamps: true });
 
 module.exports = mongoose.models.Setting || mongoose.model('Setting', settingSchema);

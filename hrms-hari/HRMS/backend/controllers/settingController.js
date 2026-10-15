@@ -209,6 +209,45 @@ const updateSettings = async (req, res) => {
             settings.markModified('push_pilot_employee_ids');
         }
 
+        if (updateData.idle_auto_clockout_enabled !== undefined) {
+            settings.idle_auto_clockout_enabled = Boolean(updateData.idle_auto_clockout_enabled);
+        }
+
+        if (updateData.idle_timeout_minutes !== undefined) {
+            const timeout = Number(updateData.idle_timeout_minutes);
+            if (isNaN(timeout) || timeout < 1 || timeout > 240) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'idle_timeout_minutes must be a number between 1 and 240.'
+                });
+            }
+            settings.idle_timeout_minutes = timeout;
+        }
+
+        if (updateData.idle_exempt_employee_ids !== undefined) {
+            let exemptEmps = [];
+            if (Array.isArray(updateData.idle_exempt_employee_ids)) {
+                exemptEmps = updateData.idle_exempt_employee_ids.map(id => String(id).trim()).filter(Boolean);
+            } else if (typeof updateData.idle_exempt_employee_ids === 'string') {
+                exemptEmps = updateData.idle_exempt_employee_ids.split(',').map(id => id.trim()).filter(Boolean);
+            }
+            if (exemptEmps.length > 500) exemptEmps = exemptEmps.slice(0, 500);
+            settings.idle_exempt_employee_ids = exemptEmps;
+            settings.markModified('idle_exempt_employee_ids');
+        }
+
+        if (updateData.idle_exempt_app_names !== undefined) {
+            let exemptApps = [];
+            if (Array.isArray(updateData.idle_exempt_app_names)) {
+                exemptApps = updateData.idle_exempt_app_names.map(name => String(name).trim()).filter(Boolean);
+            } else if (typeof updateData.idle_exempt_app_names === 'string') {
+                exemptApps = updateData.idle_exempt_app_names.split(',').map(name => name.trim()).filter(Boolean);
+            }
+            if (exemptApps.length > 500) exemptApps = exemptApps.slice(0, 500);
+            settings.idle_exempt_app_names = exemptApps;
+            settings.markModified('idle_exempt_app_names');
+        }
+
         const savedSettings = await settings.save();
         console.log('[updateSettings] Saved roles in DB:', Object.keys(savedSettings.roles_permissions || {}));
 
