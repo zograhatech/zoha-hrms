@@ -5,7 +5,7 @@ const Leave = require('../models/Leave');
 const Event = require('../models/Event');
 const Holiday = require('../models/Holiday');
 const XLSX = require('xlsx');
-const { toISTDateString, getISTDayStart, getISTDayEnd, getISOWeekInfo } = require('../utils/istDate');
+const { toISTDateString, getISTDayStart, getISTDayEnd, getISOWeekInfo, formatISTTime, formatWorkedHours } = require('../utils/istDate');
 const { getVisibleEmployeeScope, isEmployeeVisible, normalizeRole } = require('../utils/visibilityHelper');
 
 // GET /api/attendance/:employeeId
@@ -596,6 +596,10 @@ const getDailyAttendanceData = async (allowedEmpIds, startDateStr, endDateStr) =
     const employees = await Employee.find({ id: { $in: allowedEmpIds } }).select('id name department_id designation').lean();
     const empMap = Object.fromEntries(employees.map(e => [e.id, e]));
 
+    const deptIds = [...new Set(employees.map(e => e.department_id?.toString()).filter(Boolean))];
+    const depts = await Department.find({ _id: { $in: deptIds } }).select('name').lean();
+    const deptMap = Object.fromEntries(depts.map(d => [d._id.toString(), d.name]));
+
     // Group records by `employee_id` and IST date `YYYY-MM-DD`
     const grouped = {};
     records.forEach(rec => {
@@ -627,10 +631,15 @@ const getDailyAttendanceData = async (allowedEmpIds, startDateStr, endDateStr) =
 
     const dailyRows = Object.values(grouped).map(item => {
         let totalHours = 0;
+        let totalMinutes = 0;
         let hasOpenSession = false;
+        let isHoliday = item.status === 'holiday';
+        let hasNeedsReview = false;
 
         item.records.forEach(rec => {
             const isHolidayRow = rec.status === 'holiday';
+            if (isHolidayRow) isHoliday = true;
+            if (rec.needs_review) hasNeedsReview = true;
             const hasCheckIn = !!rec.check_in;
             const hasCheckOut = !!rec.check_out;
             const isInverted = hasCheckIn && hasCheckOut && (new Date(rec.check_out) < new Date(rec.check_in));
@@ -642,19 +651,30 @@ const getDailyAttendanceData = async (allowedEmpIds, startDateStr, endDateStr) =
             if (hasCheckIn && hasCheckOut && !isInverted && !rec.needs_review) {
                 const diffMs = new Date(rec.check_out) - new Date(rec.check_in);
                 totalHours += diffMs / (1000 * 60 * 60);
+                totalMinutes += diffMs / (1000 * 60);
             }
         });
 
         const emp = empMap[item.employee_id] || {};
+        const deptName = emp.department_id ? (deptMap[emp.department_id.toString()] || '—') : '—';
+        const roundedMinutes = Math.round(totalMinutes);
+        const workedHoursFormatted = (isHoliday || hasNeedsReview)
+            ? '—'
+            : formatWorkedHours(roundedMinutes, { isHoliday, needsReview: hasNeedsReview, fromMinutes: true });
+
         return {
             employee_id: item.employee_id,
             name: emp.name || item.employee_id,
+            department: deptName,
             date: item.date,
             first_check_in: item.check_in || null,
             last_check_out: item.check_out || null,
             worked_hours: Number(totalHours.toFixed(2)),
+            total_minutes: roundedMinutes,
+            worked_hours_formatted: workedHoursFormatted,
             open_session: hasOpenSession,
-            status: item.status
+            status: item.status,
+            needs_review: hasNeedsReview
         };
     });
 
@@ -872,10 +892,13 @@ const exportAttendance = async (req, res) => {
         const rows = dailyRows.map(r => ({
             'Employee ID': r.employee_id,
             'Employee Name': r.name,
+            'Department': r.department || '—',
             'Date': r.date,
-            'First Check In': r.first_check_in ? new Date(r.first_check_in).toISOString() : '',
-            'Last Check Out': r.last_check_out ? new Date(r.last_check_out).toISOString() : '',
-            'Worked Hours': r.worked_hours,
+            'First Check In': formatISTTime(r.first_check_in),
+            'Last Check Out': formatISTTime(r.last_check_out),
+            'Worked Hours': (r.status === 'holiday' || r.needs_review)
+                ? '—'
+                : (r.worked_hours_formatted || formatWorkedHours(r.total_minutes ?? Math.round((r.worked_hours || 0) * 60), { isHoliday: r.status === 'holiday', needsReview: r.needs_review, fromMinutes: true })),
             'Open Session': r.open_session ? 'Yes' : 'No'
         }));
 

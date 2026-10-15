@@ -101,12 +101,18 @@ export default function Sidebar({ open, onClose }) {
             return allowedForExit.includes(item.to);
         }
 
+        // Strictly SuperAdmin (role 'admin') only for Payroll items
+        const roleLower = (role || '').toLowerCase().replace(/\s+/g, '');
+        const isAdmin = roleLower === 'admin';
+        if (item.to === '/dashboard/payroll' || item.to === '/dashboard/payroll-admin') {
+            return isAdmin;
+        }
+
         // 1. HR Manager / Admin has full system access automatically
         const isManager = isManagerRole(role);
         if (isManager) return true;
 
         // 2. Team Lead role access: automatic access to Team Attendance Report, Leave Approvals, Performance, Employees, and Departments
-        const roleLower = (role || '').toLowerCase().replace(/\s+/g, '');
         const isTL = roleLower === 'team_lead' || roleLower === 'hr';
         if (isTL) {
             const tlAllowedPaths = [

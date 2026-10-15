@@ -78,11 +78,41 @@ function getISOWeekInfo(istDateStr) {
     };
 }
 
+/**
+ * Formats a Date/timestamp into IST HH:mm (24-hour).
+ * Returns '—' if empty or invalid.
+ */
+function formatISTTime(dateInput) {
+    if (!dateInput) return '—';
+    const d = new Date(dateInput);
+    if (isNaN(d.getTime())) return '—';
+    const istTime = new Date(d.getTime() + IST_OFFSET_MS);
+    const hh = String(istTime.getUTCHours()).padStart(2, '0');
+    const mm = String(istTime.getUTCMinutes()).padStart(2, '0');
+    return `${hh}:${mm}`;
+}
+
+/**
+ * Formats worked hours/minutes into HH:mm (zero-padded).
+ * Returns '—' if holiday or needs_review.
+ */
+function formatWorkedHours(value, { isHoliday = false, needsReview = false, fromMinutes = false } = {}) {
+    if (isHoliday || needsReview) return '—';
+    if (value == null || value === '') return '—';
+    const totalMinutes = fromMinutes ? Math.round(Number(value) || 0) : Math.round((Number(value) || 0) * 60);
+    if (isNaN(totalMinutes) || totalMinutes < 0) return '00:00';
+    const hours = Math.floor(totalMinutes / 60);
+    const mins = totalMinutes % 60;
+    return `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
+}
+
 module.exports = {
     IST_OFFSET_MS,
     toISTDateString,
     getISTDayStart,
     getISTDayEnd,
-    getISOWeekInfo
+    getISOWeekInfo,
+    formatISTTime,
+    formatWorkedHours
 };
 

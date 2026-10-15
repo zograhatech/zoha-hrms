@@ -11,7 +11,7 @@ import {
 } from 'react-icons/fi';
 import { useToast } from '../../context/ToastContext';
 import { formatDate } from '../../utils/dateFormatter';
-import { isManagerRole, getRoleDisplayLabel, normalizeRole } from '../../utils/roleHelper';
+import { isManagerRole, getRoleDisplayLabel, normalizeRole, isSuperAdmin } from '../../utils/roleHelper';
 import DocumentManager from '../../components/DocumentManager';
 
 export default function EmployeeList() {
@@ -234,6 +234,7 @@ export default function EmployeeList() {
     };
 
     function handleSalaryEdit(emp) {
+        if (!isSuperAdmin(user)) return;
         setEditingEmployee(emp);
         setForm({
             ...form,
@@ -779,10 +780,7 @@ export default function EmployeeList() {
                                                 <button className="btn btn-icon btn-sm" title="Edit Profile" onClick={() => handleEdit(e)}><FiEdit2 size={14} /></button>
                                                 
                                                 {/* Payroll Action */}
-                                                {(() => {
-                                                    if (user?.permissions && Array.isArray(user.permissions)) return user.permissions.includes('payroll');
-                                                    return isManagerRole(user);
-                                                })() && (
+                                                {isSuperAdmin(user) && (
                                                     <button className="btn btn-icon btn-sm" title="Salary Details" style={{ color: 'var(--accent-primary)' }} onClick={() => handleSalaryEdit(e)}><FiCreditCard size={14} /></button>
                                                 )}
 

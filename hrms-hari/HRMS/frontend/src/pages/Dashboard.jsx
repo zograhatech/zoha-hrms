@@ -1,5 +1,5 @@
 import { useState, lazy, Suspense, useEffect } from 'react';
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import Sidebar from '../components/Sidebar';
 import Navbar from '../components/Navbar';
 import ChatWidget from '../components/ChatWidget';
@@ -9,6 +9,15 @@ import { useAuth } from '../context/AuthContext';
 import { isManagerRole } from '../utils/roleHelper';
 import { FiFileText } from 'react-icons/fi';
 import ModuleGuard from '../components/ModuleGuard';
+
+const AdminRoute = ({ children }) => {
+    const { user } = useAuth();
+    const isAdmin = (user?.role || '').toLowerCase().replace(/\s+/g, '') === 'admin';
+    if (!isAdmin) {
+        return <Navigate to="/dashboard" replace />;
+    }
+    return children;
+};
 
 const safeLazy = (importFunc) => lazy(() => 
     importFunc().catch((error) => {
@@ -98,7 +107,7 @@ export default function Dashboard() {
                         <Route path="profile" element={<ModuleGuard module="profile"><Profile /></ModuleGuard>} />
                         <Route path="attendance" element={<ModuleGuard module="attendance"><Attendance /></ModuleGuard>} />
                         <Route path="leave" element={<ModuleGuard module="leave"><Leave /></ModuleGuard>} />
-                        <Route path="payroll" element={<ModuleGuard module="payroll"><Payroll /></ModuleGuard>} />
+                        <Route path="payroll" element={<AdminRoute><Payroll /></AdminRoute>} />
                         <Route path="tickets" element={<ModuleGuard module="tickets"><Tickets /></ModuleGuard>} />
                         <Route path="messages" element={<Messages />} />
                         
@@ -121,7 +130,7 @@ export default function Dashboard() {
                         } />
                         
                         {/* Admin / Premium Modules */}
-                        <Route path="payroll-admin" element={<ModuleGuard module="payroll_admin"><PayrollAdmin /></ModuleGuard>} />
+                        <Route path="payroll-admin" element={<AdminRoute><PayrollAdmin /></AdminRoute>} />
                         <Route path="analytics" element={<Analytics />} />
                         <Route path="departments" element={<Departments />} />
                         <Route path="settings" element={<ModuleGuard module={['manage_settings', 'zoom_settings']}><Settings /></ModuleGuard>} />

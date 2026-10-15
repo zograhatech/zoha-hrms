@@ -22,8 +22,19 @@ const computeSalary = (p) => {
     };
 };
 
+// Strictly enforce SuperAdmin (admin) role in controller
+const checkAdminRole = (req, res) => {
+    const roleLower = (req.user?.role || '').toLowerCase().replace(/\s+/g, '');
+    if (roleLower !== 'admin') {
+        res.status(403).json({ success: false, message: 'Access denied: Admin only.' });
+        return false;
+    }
+    return true;
+};
+
 // ─── GET /api/payroll/:employeeId ─────────────────────────────
 const getEmployeePayroll = async (req, res) => {
+    if (!checkAdminRole(req, res)) return;
     try {
         const { employeeId } = req.params;
         const { month, year } = req.query;
@@ -65,6 +76,7 @@ const getEmployeePayroll = async (req, res) => {
 
 // ─── GET /api/payroll/all  (Admin) ────────────────────────────
 const getAllPayroll = async (req, res) => {
+    if (!checkAdminRole(req, res)) return;
     try {
         const { month, year } = req.query;
         const filter = {};
@@ -104,6 +116,7 @@ const getAllPayroll = async (req, res) => {
 
 // ─── GET /api/payroll/analytics?year=YYYY ────────────────────
 const getAnalytics = async (req, res) => {
+    if (!checkAdminRole(req, res)) return;
     try {
         const year = parseInt(req.query.year) || new Date().getFullYear();
         const analytics = await Payroll.aggregate([
@@ -141,6 +154,7 @@ const getAnalytics = async (req, res) => {
 
 // ─── POST /api/payroll/create ────────────────────────────────
 const createPayroll = async (req, res) => {
+    if (!checkAdminRole(req, res)) return;
     try {
         const {
             employee_id, month, year, days_worked,
@@ -184,6 +198,7 @@ const createPayroll = async (req, res) => {
 
 // ─── PUT /api/payroll/:id/pay ─────────────────────────────────
 const markAsPaid = async (req, res) => {
+    if (!checkAdminRole(req, res)) return;
     try {
         const payroll = await Payroll.findByIdAndUpdate(
             req.params.id,
@@ -223,6 +238,7 @@ const markAsPaid = async (req, res) => {
 };
 
 const bulkMarkAsPaid = async (req, res) => {
+    if (!checkAdminRole(req, res)) return;
     try {
         const { ids } = req.body;
         if (!Array.isArray(ids) || ids.length === 0) {
@@ -243,6 +259,7 @@ const bulkMarkAsPaid = async (req, res) => {
 
 // ─── GET /api/payroll/export ──────────────────────────────────
 const exportPayroll = async (req, res) => {
+    if (!checkAdminRole(req, res)) return;
     try {
         const payrolls = await Payroll.find({}).lean();
         const empIds = [...new Set(payrolls.map(p => p.employee_id))];
@@ -288,6 +305,7 @@ const exportPayroll = async (req, res) => {
 
 // ─── GET /api/payroll/template ────────────────────────────────
 const downloadPayrollTemplate = (req, res) => {
+    if (!checkAdminRole(req, res)) return;
     const sample = [{
         employee_id: 'EMP001',
         month: 3, year: 2026,
@@ -308,6 +326,7 @@ const downloadPayrollTemplate = (req, res) => {
 
 // ─── POST /api/payroll/import ─────────────────────────────────
 const importPayroll = async (req, res) => {
+    if (!checkAdminRole(req, res)) return;
     try {
         if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded.' });
 

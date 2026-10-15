@@ -5,7 +5,7 @@ import {
     FiCalendar, FiCheckCircle, FiXCircle, FiClock,
     FiActivity, FiList
 } from 'react-icons/fi';
-import { formatDate } from '../../utils/dateFormatter';
+import { formatDate, formatISTTime } from '../../utils/dateFormatter';
 
 const STATUS_COLOR = { present: 'present', absent: 'absent', late: 'late', 'half-day': 'half-day', holiday: 'holiday' };
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -19,7 +19,7 @@ function computeWorkedTime(record) {
     const totalMinutes = Math.round(diffMs / (1000 * 60));
     const hours = Math.floor(totalMinutes / 60);
     const minutes = totalMinutes % 60;
-    return `${hours}h ${String(minutes).padStart(2, '0')}m`;
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
 }
 
 export default function Attendance() {
@@ -160,8 +160,8 @@ export default function Attendance() {
                                         <span className={`badge badge-${a.status === 'present' ? 'success' : a.status === 'absent' ? 'danger' : a.status === 'late' ? 'warning' : 'info'}`}>{a.status}</span>
                                         {a.needs_review && <span className="badge badge-danger" style={{ marginLeft: 6 }}>Needs review</span>}
                                     </td>
-                                    <td>{a.check_in ? new Date(a.check_in).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
-                                    <td>{a.check_out ? new Date(a.check_out).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
+                                    <td>{formatISTTime(a.check_in)}</td>
+                                    <td>{formatISTTime(a.check_out)}</td>
                                     <td>{computeWorkedTime(a)}</td>
                                     <td>{a.is_open_session ? <span className="badge badge-warning">Yes</span> : '—'}</td>
                                 </tr>

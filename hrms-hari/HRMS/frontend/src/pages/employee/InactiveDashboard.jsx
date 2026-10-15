@@ -28,6 +28,8 @@ export default function InactiveDashboard() {
     const [viewingPayslip, setViewingPayslip] = useState(null);
     const [payslipData, setPayslipData] = useState(null);
     const [payslipLoading, setPayslipLoading] = useState(false);
+    const roleLower = (user?.role || '').toLowerCase().replace(/\s+/g, '');
+    const isAdmin = roleLower === 'admin';
 
     useEffect(() => {
         if (!user?.id) return;
@@ -35,7 +37,7 @@ export default function InactiveDashboard() {
         Promise.all([
             API.get(`/employees/${user.id}`).catch(() => ({ data: { employee: null } })),
             API.get(`/leaves/${user.id}`).catch(() => ({ data: { leaves: [] } })),
-            API.get(`/payroll/${user.id}`).catch(() => ({ data: { payroll: [] } })),
+            isAdmin ? API.get(`/payroll/${user.id}`).catch(() => ({ data: { payroll: [] } })) : Promise.resolve({ data: { payroll: [] } }),
             API.get('/verification/mine').catch(() => ({ data: { requests: [] } })),
             API.get('/resignations/my').catch(() => ({ data: { resignation: null } }))
         ]).then(([empRes, leaveRes, payRes, verifyRes, resignRes]) => {
@@ -99,7 +101,7 @@ export default function InactiveDashboard() {
     const tabs = [
         { id: 'profile', label: 'My Profile', icon: <FiUser /> },
         { id: 'leaves', label: 'Leave History', icon: <FiCalendar /> },
-        { id: 'payroll', label: 'Payslip History', icon: <FiFileText /> },
+        ...(isAdmin ? [{ id: 'payroll', label: 'Payslip History', icon: <FiFileText /> }] : []),
         { id: 'verify', label: 'Verification Requests', icon: <FiUserCheck />, badge: verificationRequests.filter(r => r.status === 'pending').length },
         { id: 'attachments', label: 'Attachments', icon: <FiDownload /> }
     ];

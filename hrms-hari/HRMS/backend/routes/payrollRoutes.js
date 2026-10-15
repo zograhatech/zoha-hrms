@@ -7,15 +7,27 @@ const { getEmployeePayroll, getAllPayroll, getAnalytics, createPayroll, markAsPa
 
 const upload = multer({ storage: multer.memoryStorage() });
 
-router.get('/all', auth(['manage_payroll', 'payroll_admin', 'hr_manager', 'hr']), getAllPayroll);
-router.get('/analytics', auth(['view_analytics', 'analytics', 'hr_manager', 'hr']), getAnalytics);
-router.get('/export', auth(['manage_payroll', 'payroll_admin', 'hr_manager', 'hr']), exportPayroll);
-router.get('/template', auth(['manage_payroll', 'payroll_admin', 'hr_manager', 'hr']), downloadPayrollTemplate);
-router.post('/import', auth(['manage_payroll', 'payroll_admin', 'hr_manager', 'hr']), upload.single('file'), importPayroll);
-router.post('/create', auth(['manage_payroll', 'payroll_admin', 'hr_manager', 'hr']), createPayroll);
-router.put('/bulk-pay', auth(['manage_payroll', 'payroll_admin', 'hr_manager', 'hr']), bulkMarkAsPaid);
-router.put('/:id/pay', auth(['manage_payroll', 'payroll_admin', 'hr_manager', 'hr']), markAsPaid);
+// Strictly SuperAdmin (role 'admin') only. Permission flags, manager, team_lead, employee cannot bypass.
+const requireAdmin = (req, res, next) => {
+    const roleLower = (req.user?.role || '').toLowerCase().replace(/\s+/g, '');
+    if (roleLower !== 'admin') {
+        return res.status(403).json({ success: false, message: 'Access denied: Admin only.' });
+    }
+    next();
+};
 
-router.get('/:employeeId', auth(), getEmployeePayroll);
+router.use(auth());
+router.use(requireAdmin);
+
+router.get('/all', getAllPayroll);
+router.get('/analytics', getAnalytics);
+router.get('/export', exportPayroll);
+router.get('/template', downloadPayrollTemplate);
+router.post('/import', upload.single('file'), importPayroll);
+router.post('/create', createPayroll);
+router.put('/bulk-pay', bulkMarkAsPaid);
+router.put('/:id/pay', markAsPaid);
+
+router.get('/:employeeId', getEmployeePayroll);
 
 module.exports = router;

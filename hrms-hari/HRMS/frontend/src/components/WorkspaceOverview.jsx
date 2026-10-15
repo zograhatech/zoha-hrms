@@ -22,6 +22,9 @@ export default function WorkspaceOverview() {
     const [attendance, setAttendance] = useState(null);
     const [payroll, setPayroll] = useState(null);
 
+    const roleLower = (user?.role || '').toLowerCase().replace(/\s+/g, '');
+    const isAdmin = roleLower === 'admin';
+
     useEffect(() => {
         if (!user?.id) return;
         const empId = user.id;
@@ -37,25 +40,27 @@ export default function WorkspaceOverview() {
         API.get(`/leaves/${empId}`).then(r => setLeave(r.data)).catch(() => { });
         API.get(`/attendance/${empId}?month=${m}&year=${y}`).then(r => setAttendance(r.data)).catch(() => { });
 
-        API.get(`/payroll/${empId}?month=${pm}&year=${py}`).then(r => {
-            if (r.data.payroll) {
-                setPayroll({ ...r.data, isPrevious: true });
-            } else {
-                API.get(`/payroll/${empId}`).then(res => {
-                    const allP = Array.isArray(res.data.payroll) ? res.data.payroll : [res.data.payroll].filter(Boolean);
-                    if (allP.length > 0) {
-                        setPayroll({ payroll: allP[0], isFallback: true });
-                    }
-                });
-            }
-        }).catch(() => { });
-    }, [user]);
+        if (isAdmin) {
+            API.get(`/payroll/${empId}?month=${pm}&year=${py}`).then(r => {
+                if (r.data.payroll) {
+                    setPayroll({ ...r.data, isPrevious: true });
+                } else {
+                    API.get(`/payroll/${empId}`).then(res => {
+                        const allP = Array.isArray(res.data.payroll) ? res.data.payroll : [res.data.payroll].filter(Boolean);
+                        if (allP.length > 0) {
+                            setPayroll({ payroll: allP[0], isFallback: true });
+                        }
+                    });
+                }
+            }).catch(() => { });
+        }
+    }, [user, isAdmin]);
 
     const bal = leave?.balance;
     const att = attendance?.summary;
 
     return (
-        <div className="grid-4" style={{ marginBottom: 24 }}>
+        <div className={isAdmin ? "grid-4" : "grid-3"} style={{ marginBottom: 24 }}>
             <StatCard 
                 icon={<FiCheckCircle />} 
                 label="PRESENT THIS MONTH" 
@@ -77,13 +82,15 @@ export default function WorkspaceOverview() {
                 color="#6366f1" 
                 sub="Available balance" 
             />
-            <StatCard
-                icon={<FiCreditCard />}
-                label="PREVIOUS MONTH SALARY"
-                value={payroll?.payroll ? `₹${parseInt(payroll.payroll.actual_payable || payroll.payroll.net_salary).toLocaleString('en-IN')}` : '—'}
-                color="#f59e0b"
-                sub={payroll?.isPrevious ? `Verified for ${new Date(0, payroll.payroll.month - 1).toLocaleString('default', { month: 'long' })}` : "Latest available record"}
-            />
+            {isAdmin && (
+                <StatCard
+                    icon={<FiCreditCard />}
+                    label="PREVIOUS MONTH SALARY"
+                    value={payroll?.payroll ? `₹${parseInt(payroll.payroll.actual_payable || payroll.payroll.net_salary).toLocaleString('en-IN')}` : '—'}
+                    color="#f59e0b"
+                    sub={payroll?.isPrevious ? `Verified for ${new Date(0, payroll.payroll.month - 1).toLocaleString('default', { month: 'long' })}` : "Latest available record"}
+                />
+            )}
         </div>
     );
 }

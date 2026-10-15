@@ -10,7 +10,7 @@ import {
     FiCheckCircle, FiXCircle, FiClock, FiCalendar
 } from 'react-icons/fi';
 import { useToast } from '../../context/ToastContext';
-import { formatDate } from '../../utils/dateFormatter';
+import { formatDate, formatISTTime, formatWorkedHours } from '../../utils/dateFormatter';
 import { isManagerRole, isSuperAdmin } from '../../utils/roleHelper';
 
 const MONTHS = ['', 'January', 'February', 'March', 'April', 'May', 'June',
@@ -323,9 +323,9 @@ export default function AttendanceReport() {
                                             <td>{a.department || '—'}</td>
                                             <td>{a.designation || '—'}</td>
                                             <td><span className={`badge badge-${a.status === 'present' ? 'success' : a.status === 'late' ? 'warning' : 'danger'}`}>{a.status}</span></td>
-                                            <td>{a.check_in || '—'}</td>
-                                            <td>{a.check_out || '—'}</td>
-                                            <td>{a.work_hours != null ? `${a.work_hours}h` : '—'}</td>
+                                            <td>{formatISTTime(a.check_in)}</td>
+                                            <td>{formatISTTime(a.check_out)}</td>
+                                            <td>{(a.status === 'holiday' || a.needs_review) ? '—' : formatWorkedHours(a.work_hours, { fromMinutes: false })}</td>
                                             {(canManage || canApproveLeaves) && (
                                                 <td>
                                                     <div style={{ display: 'flex', gap: 4 }}>
@@ -427,9 +427,9 @@ export default function AttendanceReport() {
                                                 <td style={{ fontWeight: 600 }}>{row.employee_id}</td>
                                                 <td>{row.name}</td>
                                                 <td>{row.date || row.week || row.month}</td>
-                                                <td>{row.first_check_in ? new Date(row.first_check_in).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
-                                                <td>{row.last_check_out ? new Date(row.last_check_out).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
-                                                <td>{row.worked_hours != null ? `${row.worked_hours}h` : '0h'}</td>
+                                                <td>{formatISTTime(row.first_check_in)}</td>
+                                                <td>{formatISTTime(row.last_check_out)}</td>
+                                                <td>{(row.status === 'holiday' || row.needs_review) ? '—' : (row.worked_hours_formatted || formatWorkedHours(row.total_minutes ?? row.worked_hours, { isHoliday: row.status === 'holiday', needsReview: row.needs_review, fromMinutes: row.total_minutes !== undefined }))}</td>
                                                 <td>{row.open_session ? <span className="badge badge-warning">Yes</span> : <span className="badge badge-success">No</span>}</td>
                                             </tr>
                                         ))

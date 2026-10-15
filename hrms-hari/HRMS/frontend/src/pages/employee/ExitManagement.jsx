@@ -17,14 +17,20 @@ export default function ExitManagement() {
     const [loading, setLoading] = useState(true);
     const [showModal, setShowModal] = useState(false);
 
+    const roleLower = (user?.role || '').toLowerCase().replace(/\s+/g, '');
+    const isAdmin = roleLower === 'admin';
+
     const fetchData = async () => {
         try {
-            const [resRes, payRes] = await Promise.all([
-                API.get('/resignations/my'),
-                API.get('/payroll/my')
-            ]);
+            const promises = [API.get('/resignations/my')];
+            if (isAdmin) {
+                promises.push(API.get('/payroll/my').catch(() => ({ data: { payrolls: [] } })));
+            }
+            const [resRes, payRes] = await Promise.all(promises);
             setResignation(resRes.data.resignation);
-            setPayslips(payRes.data.payrolls || []);
+            if (payRes) {
+                setPayslips(payRes.data?.payrolls || []);
+            }
         } catch (error) {
             console.error('Error fetching data:', error);
         } finally {
@@ -181,29 +187,31 @@ export default function ExitManagement() {
                         </div>
 
                         {/* Document History / Payslips */}
-                        <div className="card">
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-                                <h3 style={{ margin: 0, fontWeight: 800, fontSize: '1.1rem', display: 'flex', alignItems: 'center', gap: 10 }}>
-                                    <FiShield className="text-primary" /> Verified History
-                                </h3>
-                                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>DISBURSED LOGS</div>
-                            </div>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                                {payslips.length > 0 ? payslips.slice(0, 4).map(p => (
-                                    <div key={p._id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px', background: 'var(--bg-hover)', borderRadius: 16, border: '1px solid var(--border-color)' }}>
-                                        <div>
-                                            <div style={{ fontWeight: 800, fontSize: '0.9rem' }}>{p.month} {p.year}</div>
-                                            <div style={{ fontSize: '0.75rem', color: '#10b981', fontWeight: 700 }}>₹{p.net_salary.toLocaleString()} · Credited</div>
+                        {isAdmin && (
+                            <div className="card">
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+                                    <h3 style={{ margin: 0, fontWeight: 800, fontSize: '1.1rem', display: 'flex', alignItems: 'center', gap: 10 }}>
+                                        <FiShield className="text-primary" /> Verified History
+                                    </h3>
+                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>DISBURSED LOGS</div>
+                                </div>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                                    {payslips.length > 0 ? payslips.slice(0, 4).map(p => (
+                                        <div key={p._id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px', background: 'var(--bg-hover)', borderRadius: 16, border: '1px solid var(--border-color)' }}>
+                                            <div>
+                                                <div style={{ fontWeight: 800, fontSize: '0.9rem' }}>{p.month} {p.year}</div>
+                                                <div style={{ fontSize: '0.75rem', color: '#10b981', fontWeight: 700 }}>₹{p.net_salary.toLocaleString()} · Credited</div>
+                                            </div>
+                                            <button className="btn btn-sm btn-outline" onClick={() => window.location.href = `/dashboard/payroll`} style={{ borderRadius: 8 }}>
+                                                View
+                                            </button>
                                         </div>
-                                        <button className="btn btn-sm btn-outline" onClick={() => window.location.href = `/dashboard/payroll`} style={{ borderRadius: 8 }}>
-                                            View
-                                        </button>
-                                    </div>
-                                )) : (
-                                    <p style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem', padding: '20px' }}>No payslips found.</p>
-                                )}
+                                    )) : (
+                                        <p style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem', padding: '20px' }}>No payslips found.</p>
+                                    )}
+                                </div>
                             </div>
-                        </div>
+                        )}
                     </div>
                 </div>
             )}

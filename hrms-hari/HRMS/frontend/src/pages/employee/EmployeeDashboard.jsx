@@ -77,10 +77,12 @@ export default function EmployeeDashboard() {
     }, [user]);
 
     const bal = leave?.balance;
+    const roleLower = (user?.role || '').toLowerCase().replace(/\s+/g, '');
+    const isAdmin = roleLower === 'admin';
 
     const quickActions = [
         { icon: <FiSun />, label: 'Apply Leave', color: '#10b981', action: () => navigate('/dashboard/leave') },
-        { icon: <FiCreditCard />, label: 'View Payslip', color: '#6366f1', action: () => navigate('/dashboard/payroll') },
+        ...(isAdmin ? [{ icon: <FiCreditCard />, label: 'View Payslip', color: '#6366f1', action: () => navigate('/dashboard/payroll') }] : []),
         { icon: <FiCalendar />, label: 'Attendance', color: '#3b82f6', action: () => navigate('/dashboard/attendance') },
         { icon: <FiMessageSquare />, label: 'Raise Ticket', color: '#f59e0b', action: () => navigate('/dashboard/tickets') },
     ];

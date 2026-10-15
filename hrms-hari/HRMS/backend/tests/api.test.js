@@ -2237,7 +2237,7 @@ describe('HRMS Backend Automated Test Suite', () => {
             for (let i = 0; i < expRows.length; i++) {
                 expect(expRows[i]['Employee ID']).toBe(logRes.body.logs[i].employee_id);
                 expect(expRows[i]['Date']).toBe(logRes.body.logs[i].date);
-                expect(expRows[i]['Worked Hours']).toBe(logRes.body.logs[i].worked_hours);
+                expect(expRows[i]['Worked Hours']).toBe(logRes.body.logs[i].worked_hours_formatted);
             }
         });
 
@@ -5210,6 +5210,237 @@ describe('HRMS Backend Automated Test Suite', () => {
                     delete process.env.TRUST_PROXY;
                 }
             }
+        });
+    });
+
+    describe('17. Attendance Export, Time Format, and Payroll Access Tests', () => {
+        let t17AdminToken, t17ManagerToken, t17TLToken, t17EmpToken;
+        let t17Dept;
+
+        beforeAll(async () => {
+            const Employee = require('../models/Employee');
+            const Department = require('../models/Department');
+
+            t17Dept = await Department.create({
+                name: 'Engineering_T17',
+                description: 'Engineering department for T17'
+            });
+
+            const hash = await bcrypt.hash('Secret123!', 10);
+
+            // Create admin, manager, team_lead, employee
+            await Employee.create([
+                { id: 'T17_ADM', name: 'T17 Admin', email: 't17_adm@example.test', password_hash: hash, role: 'admin', status: 'active', department_id: t17Dept._id },
+                { id: 'T17_MGR', name: 'T17 Manager', email: 't17_mgr@example.test', password_hash: hash, role: 'manager', status: 'active', department_id: t17Dept._id, permissions: ['manage_payroll', 'payroll_admin'] },
+                { id: 'T17_TL', name: 'T17 Team Lead', email: 't17_tl@example.test', password_hash: hash, role: 'team_lead', status: 'active', department_id: t17Dept._id, permissions: ['manage_payroll'] },
+                { id: 'T17_EMP', name: 'T17 Employee', email: 't17_emp@example.test', password_hash: hash, role: 'employee', status: 'active', department_id: t17Dept._id, permissions: ['payroll_user'] }
+            ]);
+
+            t17AdminToken = jwt.sign({ id: 'T17_ADM', role: 'admin', email: 't17_adm@example.test' }, process.env.JWT_SECRET);
+            t17ManagerToken = jwt.sign({ id: 'T17_MGR', role: 'manager', email: 't17_mgr@example.test' }, process.env.JWT_SECRET);
+            t17TLToken = jwt.sign({ id: 'T17_TL', role: 'team_lead', email: 't17_tl@example.test' }, process.env.JWT_SECRET);
+            t17EmpToken = jwt.sign({ id: 'T17_EMP', role: 'employee', email: 't17_emp@example.test' }, process.env.JWT_SECRET);
+        });
+
+        // TASK 1:
+        it('1. Attendance export header contains "Department", and employee row shows department name', async () => {
+            const Attendance = require('../models/Attendance');
+            const XLSX = require('xlsx');
+
+            const date = new Date('2026-10-14T09:00:00+05:30');
+            await Attendance.create({
+                employee_id: 'T17_EMP',
+                date,
+                check_in: new Date('2026-10-14T09:00:00+05:30'),
+                check_out: new Date('2026-10-14T17:00:00+05:30'),
+                status: 'present'
+            });
+
+            // Single-employee export
+            const singleRes = await request(app)
+                .get('/api/attendance/export?employee_id=T17_EMP&date=2026-10-14')
+                .set('Authorization', `Bearer ${t17AdminToken}`)
+                .responseType('blob');
+            expect(singleRes.status).toBe(200);
+
+            const wb = XLSX.read(singleRes.body, { type: 'buffer' });
+            const sheet = wb.Sheets[wb.SheetNames[0]];
+            const headers = XLSX.utils.sheet_to_json(sheet, { header: 1 })[0];
+            expect(headers).toContain('Department');
+            expect(headers.indexOf('Department')).toBe(headers.indexOf('Employee Name') + 1);
+
+            const rows = XLSX.utils.sheet_to_json(sheet);
+            expect(rows.length).toBeGreaterThan(0);
+            const empRow = rows.find(r => r['Employee ID'] === 'T17_EMP');
+            expect(empRow).toBeDefined();
+            expect(empRow['Department']).toBe('Engineering_T17');
+
+            // All-employee export path
+            const allRes = await request(app)
+                .get('/api/attendance/export?date=2026-10-14')
+                .set('Authorization', `Bearer ${t17AdminToken}`)
+                .responseType('blob');
+            expect(allRes.status).toBe(200);
+            const allWb = XLSX.read(allRes.body, { type: 'buffer' });
+            const allSheet = allWb.Sheets[allWb.SheetNames[0]];
+            const allHeaders = XLSX.utils.sheet_to_json(allSheet, { header: 1 })[0];
+            expect(allHeaders).toContain('Department');
+            expect(allHeaders.indexOf('Department')).toBe(allHeaders.indexOf('Employee Name') + 1);
+        });
+
+        // TASK 2:
+        it('2. Check-in of 2026-10-13T06:22:56Z exports as "11:52" (IST)', async () => {
+            const Attendance = require('../models/Attendance');
+            const XLSX = require('xlsx');
+
+            const checkIn = new Date('2026-10-13T06:22:56Z'); // 11:52 IST
+            const checkOut = new Date('2026-10-13T12:00:00Z'); // 17:30 IST
+
+            await Attendance.create({
+                employee_id: 'T17_EMP',
+                date: checkIn,
+                check_in: checkIn,
+                check_out: checkOut,
+                status: 'present'
+            });
+
+            const res = await request(app)
+                .get('/api/attendance/export?employee_id=T17_EMP&date=2026-10-13')
+                .set('Authorization', `Bearer ${t17AdminToken}`)
+                .responseType('blob');
+            expect(res.status).toBe(200);
+
+            const wb = XLSX.read(res.body, { type: 'buffer' });
+            const sheet = wb.Sheets[wb.SheetNames[0]];
+            const rows = XLSX.utils.sheet_to_json(sheet);
+            const row = rows.find(r => r['Employee ID'] === 'T17_EMP');
+            expect(row).toBeDefined();
+            expect(row['First Check In']).toBe('11:52');
+            expect(row['Last Check Out']).toBe('17:30');
+            expect(row['Date']).toBe('2026-10-13');
+        });
+
+        // TASK 3:
+        it('3. Worked hours formatted in HH:mm: 330 minutes -> "05:30", 0 -> "00:00", holiday row -> "—"', async () => {
+            const { formatWorkedHours } = require('../utils/istDate');
+            expect(formatWorkedHours(330, { fromMinutes: true })).toBe('05:30');
+            expect(formatWorkedHours(0, { fromMinutes: true })).toBe('00:00');
+            expect(formatWorkedHours(330, { isHoliday: true, fromMinutes: true })).toBe('—');
+            expect(formatWorkedHours(330, { needsReview: true, fromMinutes: true })).toBe('—');
+            expect(formatWorkedHours(5.18, { fromMinutes: false })).toBe('05:11');
+            expect(formatWorkedHours(0.92, { fromMinutes: false })).toBe('00:55');
+
+            // Also test via export
+            const Attendance = require('../models/Attendance');
+            const XLSX = require('xlsx');
+
+            const holDate = new Date('2026-10-15T09:00:00+05:30');
+            await Attendance.create({
+                employee_id: 'T17_EMP',
+                date: holDate,
+                status: 'holiday'
+            });
+
+            const res = await request(app)
+                .get('/api/attendance/export?employee_id=T17_EMP&date=2026-10-15')
+                .set('Authorization', `Bearer ${t17AdminToken}`)
+                .responseType('blob');
+            expect(res.status).toBe(200);
+            const wb = XLSX.read(res.body, { type: 'buffer' });
+            const sheet = wb.Sheets[wb.SheetNames[0]];
+            const rows = XLSX.utils.sheet_to_json(sheet);
+            const row = rows.find(r => r['Employee ID'] === 'T17_EMP');
+            expect(row['Worked Hours']).toBe('—');
+        });
+
+        // TASK 4:
+        it('4. Manager, team_lead, and employee get 403 on every payroll endpoint; admin gets 200', async () => {
+            const Payroll = require('../models/Payroll');
+
+            const samplePayroll = await Payroll.create({
+                employee_id: 'T17_EMP',
+                month: 1,
+                year: 2026,
+                basic: 20000,
+                days_worked: 25,
+                status: 'pending'
+            });
+
+            const nonAdminTokens = [
+                { role: 'manager', token: t17ManagerToken },
+                { role: 'team_lead', token: t17TLToken },
+                { role: 'employee', token: t17EmpToken }
+            ];
+
+            // 1. GET /api/payroll/all
+            for (const { token } of nonAdminTokens) {
+                const res = await request(app).get('/api/payroll/all').set('Authorization', `Bearer ${token}`);
+                expect(res.status).toBe(403);
+            }
+            const adminAll = await request(app).get('/api/payroll/all').set('Authorization', `Bearer ${t17AdminToken}`);
+            expect(adminAll.status).toBe(200);
+
+            // 2. GET /api/payroll/analytics
+            for (const { token } of nonAdminTokens) {
+                const res = await request(app).get('/api/payroll/analytics').set('Authorization', `Bearer ${token}`);
+                expect(res.status).toBe(403);
+            }
+            const adminAnalytics = await request(app).get('/api/payroll/analytics').set('Authorization', `Bearer ${t17AdminToken}`);
+            expect(adminAnalytics.status).toBe(200);
+
+            // 3. GET /api/payroll/export
+            for (const { token } of nonAdminTokens) {
+                const res = await request(app).get('/api/payroll/export').set('Authorization', `Bearer ${token}`);
+                expect(res.status).toBe(403);
+            }
+            const adminExport = await request(app).get('/api/payroll/export').set('Authorization', `Bearer ${t17AdminToken}`);
+            expect(adminExport.status).toBe(200);
+
+            // 4. GET /api/payroll/template
+            for (const { token } of nonAdminTokens) {
+                const res = await request(app).get('/api/payroll/template').set('Authorization', `Bearer ${token}`);
+                expect(res.status).toBe(403);
+            }
+            const adminTemplate = await request(app).get('/api/payroll/template').set('Authorization', `Bearer ${t17AdminToken}`);
+            expect(adminTemplate.status).toBe(200);
+
+            // 5. POST /api/payroll/create
+            for (const { token } of nonAdminTokens) {
+                const res = await request(app).post('/api/payroll/create').set('Authorization', `Bearer ${token}`).send({ employee_id: 'T17_EMP', month: 2, year: 2026, basic: 10000 });
+                expect(res.status).toBe(403);
+            }
+            const adminCreate = await request(app).post('/api/payroll/create').set('Authorization', `Bearer ${t17AdminToken}`).send({ employee_id: 'T17_EMP', month: 2, year: 2026, basic: 10000 });
+            expect(adminCreate.status).toBe(201);
+
+            // 6. POST /api/payroll/import
+            for (const { token } of nonAdminTokens) {
+                const res = await request(app).post('/api/payroll/import').set('Authorization', `Bearer ${token}`);
+                expect(res.status).toBe(403);
+            }
+
+            // 7. PUT /api/payroll/bulk-pay
+            for (const { token } of nonAdminTokens) {
+                const res = await request(app).put('/api/payroll/bulk-pay').set('Authorization', `Bearer ${token}`).send({ ids: [samplePayroll._id] });
+                expect(res.status).toBe(403);
+            }
+            const adminBulkPay = await request(app).put('/api/payroll/bulk-pay').set('Authorization', `Bearer ${t17AdminToken}`).send({ ids: [samplePayroll._id] });
+            expect(adminBulkPay.status).toBe(200);
+
+            // 8. PUT /api/payroll/:id/pay
+            for (const { token } of nonAdminTokens) {
+                const res = await request(app).put(`/api/payroll/${samplePayroll._id}/pay`).set('Authorization', `Bearer ${token}`);
+                expect(res.status).toBe(403);
+            }
+            const adminPay = await request(app).put(`/api/payroll/${samplePayroll._id}/pay`).set('Authorization', `Bearer ${t17AdminToken}`);
+            expect(adminPay.status).toBe(200);
+
+            // 9. GET /api/payroll/:employeeId
+            for (const { token } of nonAdminTokens) {
+                const res = await request(app).get('/api/payroll/T17_EMP').set('Authorization', `Bearer ${token}`);
+                expect(res.status).toBe(403);
+            }
+            const adminGetEmp = await request(app).get('/api/payroll/T17_EMP').set('Authorization', `Bearer ${t17AdminToken}`);
+            expect(adminGetEmp.status).toBe(200);
         });
     });
 });
