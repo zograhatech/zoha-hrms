@@ -6017,6 +6017,70 @@ describe('HRMS Backend Automated Test Suite', () => {
                 sendSpy.mockRestore();
             }
         });
+
+        it('saving push_pilot_employee_ids ["EMP6608"] persists, and a subscribe from EMP6608 returns 201 while an employee not on the list returns 403', async () => {
+            // Create EMP6608 and non-pilot employee EMP9999
+            const hash = await bcrypt.hash('Secret123!', 10);
+            await Employee.deleteMany({ id: { $in: ['EMP6608', 'EMP9999'] } });
+
+            const pilotEmp = await Employee.create({
+                id: 'EMP6608',
+                name: 'Pilot User 6608',
+                email: 'emp6608@example.test',
+                password_hash: hash,
+                role: 'employee',
+                status: 'active'
+            });
+
+            const nonPilotEmp = await Employee.create({
+                id: 'EMP9999',
+                name: 'Non Pilot User 9999',
+                email: 'emp9999@example.test',
+                password_hash: hash,
+                role: 'employee',
+                status: 'active'
+            });
+
+            const pilotToken = jwt.sign({ id: pilotEmp.id, role: 'employee', email: pilotEmp.email }, process.env.JWT_SECRET);
+            const nonPilotToken = jwt.sign({ id: nonPilotEmp.id, role: 'employee', email: nonPilotEmp.email }, process.env.JWT_SECRET);
+
+            // 1. Save settings via PUT /api/settings with enable_browser_push: false and push_pilot_employee_ids: [" EMP6608 ", ""]
+            const putRes = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${t18AdminToken}`)
+                .send({
+                    enable_browser_push: false,
+                    push_pilot_employee_ids: [' EMP6608 ', '']
+                });
+            expect(putRes.status).toBe(200);
+
+            // Verify persistence in DB (trimmed strings, empty dropped)
+            const savedSetting = await Setting.findOne();
+            expect(savedSetting.push_pilot_employee_ids).toContain('EMP6608');
+            expect(savedSetting.push_pilot_employee_ids).not.toContain('');
+
+            // 2. Subscribe from non-pilot employee -> 403
+            const nonPilotRes = await request(app)
+                .post('/api/notifications/subscribe')
+                .set('Authorization', `Bearer ${nonPilotToken}`)
+                .send({
+                    endpoint: 'https://fcm.googleapis.com/fcm/send/nonpilot-endpoint',
+                    keys: { p256dh: 'k', auth: 'a' }
+                });
+            expect(nonPilotRes.status).toBe(403);
+            expect(nonPilotRes.body.message).toContain('not enabled');
+
+            // 3. Subscribe from EMP6608 -> 201
+            const pilotRes = await request(app)
+                .post('/api/notifications/subscribe')
+                .set('Authorization', `Bearer ${pilotToken}`)
+                .send({
+                    endpoint: 'https://fcm.googleapis.com/fcm/send/pilot6608-endpoint',
+                    keys: { p256dh: 'k', auth: 'a' }
+                });
+            expect(pilotRes.status).toBe(201);
+            expect(pilotRes.body.success).toBe(true);
+        });
     });
 });
 
