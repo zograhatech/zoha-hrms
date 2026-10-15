@@ -5654,6 +5654,56 @@ describe('HRMS Backend Automated Test Suite', () => {
             });
             expect(nonAdminNotif).toBeNull();
         });
+
+        it('changing an employee\'s department creates one notification for that employee with the old and new names; updating other fields only creates no department notification', async () => {
+            const Department = require('../models/Department');
+
+            const deptOld = await Department.create({ name: 'Dept_Old_' + Date.now() });
+            const deptNew = await Department.create({ name: 'Dept_New_' + Date.now() });
+
+            // Set employee's initial department
+            await Employee.updateOne({ _id: testEmp._id }, { $set: { department_id: deptOld._id } });
+
+            // 1) Update other fields only -> creates NO department notification
+            await Notification.deleteMany({ recipient: testEmp._id, title: 'Department Updated' });
+
+            const resOther = await request(app)
+                .put(`/api/employees/${testEmp.id}`)
+                .set('Authorization', `Bearer ${t18AdminToken}`)
+                .send({
+                    phone: '9876543210'
+                });
+            expect(resOther.status).toBe(200);
+
+            const notifOther = await Notification.findOne({
+                recipient: testEmp._id,
+                title: 'Department Updated'
+            });
+            expect(notifOther).toBeNull();
+
+            // 2) Change employee's department to deptNew -> creates 1 notification with old and new names
+            const resDept = await request(app)
+                .put(`/api/employees/${testEmp.id}`)
+                .set('Authorization', `Bearer ${t18AdminToken}`)
+                .send({
+                    department_id: deptNew._id
+                });
+            expect(resDept.status).toBe(200);
+
+            const deptNotifs = await Notification.find({
+                recipient: testEmp._id,
+                title: 'Department Updated'
+            });
+            expect(deptNotifs.length).toBe(1);
+            expect(deptNotifs[0].message).toBe(`Your department has been changed from ${deptOld.name} to ${deptNew.name}.`);
+
+            // Verify no notification for any other employee
+            const otherEmpDeptNotif = await Notification.findOne({
+                recipient: { $ne: testEmp._id },
+                title: 'Department Updated'
+            });
+            expect(otherEmpDeptNotif).toBeNull();
+        });
     });
 });
 

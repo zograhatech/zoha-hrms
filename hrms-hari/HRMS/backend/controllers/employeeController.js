@@ -465,9 +465,9 @@ const updateEmployee = async (req, res) => {
 
             updateFields = {
                 name, phone, designation: designation || undefined,
-                department_id: department_id || null,
-                shift_id: shift_id || null,
-                manager_id: manager_id || null,
+                department_id: department_id !== undefined ? (department_id || null) : undefined,
+                shift_id: shift_id !== undefined ? (shift_id || null) : undefined,
+                manager_id: manager_id !== undefined ? (manager_id || null) : undefined,
                 role: role !== undefined ? String(role).toLowerCase().trim() : undefined,
                 status, gender, address,
                 pan, uan, pf_account_no,
@@ -525,6 +525,45 @@ const updateEmployee = async (req, res) => {
                 });
             } catch (notifErr) {
                 console.error('[updateEmployee] Role change notification error:', notifErr.message);
+            }
+        }
+
+        // If department was changed, save an in-app notification to the employee
+        const storedDeptId = targetEmp.department_id ? String(targetEmp.department_id) : '';
+        const incomingDeptId = req.body.department_id !== undefined ? (req.body.department_id ? String(req.body.department_id) : '') : storedDeptId;
+
+        if (req.body.department_id !== undefined && incomingDeptId !== storedDeptId) {
+            try {
+                let oldDeptName = 'Unassigned';
+                let newDeptName = 'Unassigned';
+
+                if (storedDeptId) {
+                    const oldDept = mongoose.Types.ObjectId.isValid(storedDeptId)
+                        ? await Department.findById(storedDeptId).select('name').lean()
+                        : await Department.findOne({ name: storedDeptId }).select('name').lean();
+                    if (oldDept?.name) oldDeptName = oldDept.name;
+                }
+                if (incomingDeptId) {
+                    const newDept = mongoose.Types.ObjectId.isValid(incomingDeptId)
+                        ? await Department.findById(incomingDeptId).select('name').lean()
+                        : await Department.findOne({ name: incomingDeptId }).select('name').lean();
+                    if (newDept?.name) newDeptName = newDept.name;
+                }
+
+                const senderId = (req.user?._id && mongoose.Types.ObjectId.isValid(req.user._id))
+                    ? req.user._id
+                    : (mongoose.Types.ObjectId.isValid(req.user?.id) ? req.user.id : null);
+
+                await Notification.create({
+                    recipient: emp._id,
+                    sender: senderId,
+                    type: 'general',
+                    title: 'Department Updated',
+                    message: `Your department has been changed from ${oldDeptName} to ${newDeptName}.`,
+                    data: { status: 'updated' }
+                });
+            } catch (notifErr) {
+                console.error('[updateEmployee] Department change notification error:', notifErr.message);
             }
         }
 
