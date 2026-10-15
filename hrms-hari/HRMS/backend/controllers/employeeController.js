@@ -298,6 +298,23 @@ const createEmployee = async (req, res) => {
             `
         });
 
+        // Send Welcome Notification
+        try {
+            const senderId = (req.user?._id && mongoose.Types.ObjectId.isValid(req.user._id))
+                ? req.user._id
+                : (mongoose.Types.ObjectId.isValid(req.user?.id) ? req.user.id : null);
+            await Notification.create({
+                recipient: employee._id,
+                sender: senderId,
+                type: 'general',
+                title: 'Welcome to Zograha Technologies',
+                message: `Your employee account has been created. Your ID is ${employee.id}.`,
+                data: { status: 'created' }
+            });
+        } catch (notifErr) {
+            console.error('[createEmployee] Welcome notification error:', notifErr.message);
+        }
+
         res.status(201).json({ success: true, message: 'Employee created successfully. Welcome email sent.', employee: rest });
     } catch (err) {
         console.error('[createEmployee]', err);

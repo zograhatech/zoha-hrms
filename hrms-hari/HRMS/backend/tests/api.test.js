@@ -5704,6 +5704,39 @@ describe('HRMS Backend Automated Test Suite', () => {
             });
             expect(otherEmpDeptNotif).toBeNull();
         });
+
+        it('creating an employee via the API creates exactly one welcome notification for that employee', async () => {
+            const newEmpId = 'EMP_WELCOME_TEST_101';
+            const res = await request(app)
+                .post('/api/employees')
+                .set('Authorization', `Bearer ${t18AdminToken}`)
+                .send({
+                    id: newEmpId,
+                    name: 'Welcome Test Employee',
+                    email: 'welcometest@example.com',
+                    password: 'Password@123',
+                    role: 'employee'
+                });
+            expect(res.status).toBe(201);
+
+            const createdEmp = await Employee.findOne({ id: newEmpId });
+            expect(createdEmp).toBeDefined();
+
+            const notifs = await Notification.find({
+                recipient: createdEmp._id,
+                title: 'Welcome to Zograha Technologies'
+            });
+            expect(notifs.length).toBe(1);
+            expect(notifs[0].message).toBe(`Your employee account has been created. Your ID is ${newEmpId}.`);
+
+            // Verify no other employee received this welcome notification
+            const otherNotifs = await Notification.find({
+                recipient: { $ne: createdEmp._id },
+                title: 'Welcome to Zograha Technologies',
+                message: { $regex: newEmpId }
+            });
+            expect(otherNotifs.length).toBe(0);
+        });
     });
 });
 
