@@ -1,5 +1,9 @@
+const mongoose = require('mongoose');
 const RemoteAccess = require('../models/RemoteAccess');
 const AuditLog = require('../models/AuditLog');
+const Employee = require('../models/Employee');
+const Notification = require('../models/Notification');
+const { sendEmail } = require('../utils/emailService');
 const { getClientIp, validateCidr, parseIp } = require('../middleware/ipAccess');
 
 // GET /api/remote-access (SuperAdmin only)
@@ -84,6 +88,36 @@ const grantRemoteAccess = async (req, res) => {
             console.error('[grantRemoteAccess] AuditLog creation failed:', auditErr.message);
         }
 
+        // In-app notification & Email to employee
+        try {
+            const emp = await Employee.findOne({
+                $or: [
+                    { id: record.employee_id },
+                    ...(mongoose.Types.ObjectId.isValid(record.employee_id) ? [{ _id: record.employee_id }] : [])
+                ]
+            }).lean();
+
+            if (emp) {
+                await Notification.create({
+                    recipient: emp._id,
+                    type: 'general',
+                    title: 'Remote Access Granted',
+                    message: `You have been granted remote access${record.expiresAt ? ` until ${new Date(record.expiresAt).toLocaleString()}` : ' until revoked'}.`,
+                    data: { status: 'granted' }
+                });
+
+                if (emp.email) {
+                    sendEmail({
+                        to: emp.email,
+                        subject: 'Remote Access Granted',
+                        text: `Hello ${emp.name || ''},\n\nYou have been granted remote access${record.expiresAt ? ` until ${new Date(record.expiresAt).toLocaleString()}` : ' until revoked'}.\n\nRegards,\nHRMS Team`
+                    }).catch(emailErr => console.error('[grantRemoteAccess] Email send failed:', emailErr.message));
+                }
+            }
+        } catch (notifErr) {
+            console.error('[grantRemoteAccess] Notification creation failed:', notifErr.message);
+        }
+
         return res.status(201).json({
             success: true,
             data: record
@@ -144,6 +178,36 @@ const revokeRemoteAccess = async (req, res) => {
             });
         } catch (auditErr) {
             console.error('[revokeRemoteAccess] AuditLog creation failed:', auditErr.message);
+        }
+
+        // In-app notification & Email to employee
+        try {
+            const emp = await Employee.findOne({
+                $or: [
+                    { id: record.employee_id },
+                    ...(mongoose.Types.ObjectId.isValid(record.employee_id) ? [{ _id: record.employee_id }] : [])
+                ]
+            }).lean();
+
+            if (emp) {
+                await Notification.create({
+                    recipient: emp._id,
+                    type: 'general',
+                    title: 'Remote Access Revoked',
+                    message: 'Your remote access exception has been revoked.',
+                    data: { status: 'revoked' }
+                });
+
+                if (emp.email) {
+                    sendEmail({
+                        to: emp.email,
+                        subject: 'Remote Access Revoked',
+                        text: `Hello ${emp.name || ''},\n\nYour remote access exception has been revoked.\n\nRegards,\nHRMS Team`
+                    }).catch(emailErr => console.error('[revokeRemoteAccess] Email send failed:', emailErr.message));
+                }
+            }
+        } catch (notifErr) {
+            console.error('[revokeRemoteAccess] Notification creation failed:', notifErr.message);
         }
 
         return res.json({

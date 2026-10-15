@@ -297,6 +297,25 @@ const approveLeave = async (req, res) => {
         const emp = await Employee.findOne({ id: leave.employee_id }).lean();
         const settings = await Setting.findOne().lean();
         const compName = settings?.company_name || process.env.COMPANY_NAME || 'HRMS';
+
+        if (emp?._id) {
+            try {
+                const senderId = (req.user?._id && mongoose.Types.ObjectId.isValid(req.user._id))
+                    ? req.user._id
+                    : (mongoose.Types.ObjectId.isValid(req.user?.id) ? req.user.id : null);
+                await Notification.create({
+                    recipient: emp._id,
+                    sender: senderId,
+                    type: 'leave',
+                    title: 'Leave Request Approved',
+                    message: `Your request for ${leave.leave_type} leave (${leave.start_date.toDateString()} to ${leave.end_date.toDateString()}) has been approved.`,
+                    data: { leaveId: leave._id.toString(), status: 'approved' }
+                });
+            } catch (notifErr) {
+                console.error('[approveLeave] In-app notification error:', notifErr.message);
+            }
+        }
+
         if (emp?.email) {
             sendEmail({
                 to: emp.email,
@@ -311,7 +330,7 @@ const approveLeave = async (req, res) => {
                     </div>
                     <p>Enjoy your time off!</p>
                 `
-            });
+            }).catch(e => console.error('[approveLeave] email error:', e.message));
         }
 
         res.json({ success: true, message: 'Leave approved successfully and employee notified.' });
@@ -342,6 +361,25 @@ const rejectLeave = async (req, res) => {
         const emp = await Employee.findOne({ id: leave.employee_id }).lean();
         const settings = await Setting.findOne().lean();
         const compName = settings?.company_name || process.env.COMPANY_NAME || 'HRMS';
+
+        if (emp?._id) {
+            try {
+                const senderId = (req.user?._id && mongoose.Types.ObjectId.isValid(req.user._id))
+                    ? req.user._id
+                    : (mongoose.Types.ObjectId.isValid(req.user?.id) ? req.user.id : null);
+                await Notification.create({
+                    recipient: emp._id,
+                    sender: senderId,
+                    type: 'leave',
+                    title: 'Leave Request Rejected',
+                    message: `Your request for ${leave.leave_type} leave (${leave.start_date.toDateString()} to ${leave.end_date.toDateString()}) has been rejected.${req.body.rejection_reason ? ' Reason: ' + req.body.rejection_reason : ''}`,
+                    data: { leaveId: leave._id.toString(), status: 'rejected' }
+                });
+            } catch (notifErr) {
+                console.error('[rejectLeave] In-app notification error:', notifErr.message);
+            }
+        }
+
         if (emp?.email) {
             sendEmail({
                 to: emp.email,
@@ -353,7 +391,7 @@ const rejectLeave = async (req, res) => {
                     ${req.body.rejection_reason ? `<p><b>Reason:</b> ${req.body.rejection_reason}</p>` : ''}
                     <p>If you have any questions, please contact the HR department.</p>
                 `
-            });
+            }).catch(e => console.error('[rejectLeave] email error:', e.message));
         }
 
         res.json({ success: true, message: 'Leave rejected and employee notified.' });

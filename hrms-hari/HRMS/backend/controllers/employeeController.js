@@ -7,6 +7,7 @@ const LeaveBalance = require('../models/LeaveBalance');
 const Leave = require('../models/Leave');
 const Holiday = require('../models/Holiday');
 const Setting = require('../models/Setting');
+const Notification = require('../models/Notification');
 const XLSX = require('xlsx');
 const { getVisibleEmployeeScope } = require('../utils/visibilityHelper');
 const { toISTDateString, getISTDayStart, getISTDayEnd } = require('../utils/istDate');
@@ -507,6 +508,26 @@ const updateEmployee = async (req, res) => {
         ).select('-password_hash');
 
         if (!emp) return res.status(404).json({ success: false, message: 'Employee not found.' });
+
+        // If role was changed, save an in-app notification to the employee
+        if (targetEmp.role !== emp.role) {
+            try {
+                const senderId = (req.user?._id && mongoose.Types.ObjectId.isValid(req.user._id))
+                    ? req.user._id
+                    : (mongoose.Types.ObjectId.isValid(req.user?.id) ? req.user.id : null);
+                await Notification.create({
+                    recipient: emp._id,
+                    sender: senderId,
+                    type: 'general',
+                    title: 'Role Updated',
+                    message: `Your role has been changed from ${targetEmp.role} to ${emp.role}.`,
+                    data: { status: emp.role }
+                });
+            } catch (notifErr) {
+                console.error('[updateEmployee] Role change notification error:', notifErr.message);
+            }
+        }
+
         res.json({ success: true, message: 'Employee updated successfully.', employee: emp });
     } catch (err) {
         console.error('[updateEmployee]', err);

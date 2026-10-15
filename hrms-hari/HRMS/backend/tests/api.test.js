@@ -5443,6 +5443,218 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(adminGetEmp.status).toBe(200);
         });
     });
+
+    describe('18. Tier 1 Notifications Tests', () => {
+        const Employee = require('../models/Employee');
+        const Notification = require('../models/Notification');
+        const Leave = require('../models/Leave');
+        const Attendance = require('../models/Attendance');
+        const Payroll = require('../models/Payroll');
+        const Setting = require('../models/Setting');
+        let t18AdminToken, t18EmpToken, t18MgrToken;
+        let adminEmp, testEmp, mgrEmp, secondEmp;
+
+        beforeAll(async () => {
+            const hash = await bcrypt.hash('Secret123!', 10);
+
+            adminEmp = await Employee.create({
+                id: 'T18_ADM',
+                name: 'T18 Admin',
+                email: 't18_adm@example.test',
+                password_hash: hash,
+                role: 'admin',
+                status: 'active'
+            });
+
+            mgrEmp = await Employee.create({
+                id: 'T18_MGR',
+                name: 'T18 Manager',
+                email: 't18_mgr@example.test',
+                password_hash: hash,
+                role: 'manager',
+                status: 'active'
+            });
+
+            testEmp = await Employee.create({
+                id: 'T18_EMP',
+                name: 'T18 Employee',
+                email: 't18_emp@example.test',
+                password_hash: hash,
+                role: 'employee',
+                manager_id: 'T18_MGR',
+                status: 'active'
+            });
+
+            secondEmp = await Employee.create({
+                id: 'T18_EMP2',
+                name: 'T18 Second Employee',
+                email: 't18_emp2@example.test',
+                password_hash: hash,
+                role: 'employee',
+                status: 'active'
+            });
+
+            t18AdminToken = jwt.sign({ id: 'T18_ADM', role: 'admin', email: 't18_adm@example.test' }, process.env.JWT_SECRET);
+            t18MgrToken = jwt.sign({ id: 'T18_MGR', role: 'manager', email: 't18_mgr@example.test' }, process.env.JWT_SECRET);
+            t18EmpToken = jwt.sign({ id: 'T18_EMP', role: 'employee', email: 't18_emp@example.test' }, process.env.JWT_SECRET);
+        });
+
+        it('leave approved creates applicant notification', async () => {
+            await Notification.deleteMany({ recipient: testEmp._id });
+
+            const leave = await Leave.create({
+                employee_id: testEmp.id,
+                leave_type: 'sick',
+                start_date: new Date('2026-11-01'),
+                end_date: new Date('2026-11-03'),
+                total_days: 3,
+                status: 'pending',
+                reason: 'Sick leave test'
+            });
+
+            const res = await request(app)
+                .put(`/api/leaves/${leave._id}/approve`)
+                .set('Authorization', `Bearer ${t18AdminToken}`);
+            expect(res.status).toBe(200);
+
+            const notif = await Notification.findOne({
+                recipient: testEmp._id,
+                type: 'leave',
+                title: 'Leave Request Approved'
+            });
+            expect(notif).toBeDefined();
+            expect(notif.data.leaveId).toBe(leave._id.toString());
+            expect(notif.data.status).toBe('approved');
+        });
+
+        it('attendance flagged creates employee and manager notifications', async () => {
+            await Notification.deleteMany({ recipient: { $in: [testEmp._id, mgrEmp._id] } });
+
+            // Create an open attendance session with a future check-in to trigger needs_review
+            const futureDate = new Date(Date.now() + 2 * 60 * 60 * 1000);
+            await Attendance.create({
+                employee_id: testEmp.id,
+                date: futureDate,
+                check_in: futureDate,
+                status: 'present',
+                is_open_session: true,
+                work_hours: 0
+            });
+
+            const res = await request(app)
+                .post('/api/attendance/clock-out')
+                .set('Authorization', `Bearer ${t18EmpToken}`);
+            expect(res.status).toBe(200);
+            expect(res.body.attendance.needs_review).toBe(true);
+
+            const empNotif = await Notification.findOne({
+                recipient: testEmp._id,
+                title: 'Attendance Session Flagged for Review'
+            });
+            expect(empNotif).toBeDefined();
+
+            const mgrNotif = await Notification.findOne({
+                recipient: mgrEmp._id,
+                title: 'Employee Attendance Session Flagged'
+            });
+            expect(mgrNotif).toBeDefined();
+        });
+
+        it('remote exception granted creates employee notification', async () => {
+            await Notification.deleteMany({ recipient: testEmp._id });
+
+            const res = await request(app)
+                .post('/api/remote-access')
+                .set('Authorization', `Bearer ${t18AdminToken}`)
+                .send({
+                    employee_id: testEmp.id,
+                    allowedIp: '192.168.1.100'
+                });
+            expect(res.status).toBe(201);
+
+            const notif = await Notification.findOne({
+                recipient: testEmp._id,
+                title: 'Remote Access Granted'
+            });
+            expect(notif).toBeDefined();
+            expect(notif.data.status).toBe('granted');
+        });
+
+        it('role change creates employee notification', async () => {
+            await Notification.deleteMany({ recipient: testEmp._id, title: 'Role Updated' });
+
+            const res = await request(app)
+                .put(`/api/employees/${testEmp.id}`)
+                .set('Authorization', `Bearer ${t18AdminToken}`)
+                .send({
+                    role: 'team_lead'
+                });
+            expect(res.status).toBe(200);
+
+            const notif = await Notification.findOne({
+                recipient: testEmp._id,
+                title: 'Role Updated'
+            });
+            expect(notif).toBeDefined();
+            expect(notif.message).toContain('employee');
+            expect(notif.message).toContain('team_lead');
+        });
+
+        it('payroll change creates only the affected employee\'s notification', async () => {
+            await Notification.deleteMany({ title: 'Payroll Created' });
+
+            const res = await request(app)
+                .post('/api/payroll/create')
+                .set('Authorization', `Bearer ${t18AdminToken}`)
+                .send({
+                    employee_id: testEmp.id,
+                    month: 4,
+                    year: 2026,
+                    basic: 25000
+                });
+            expect(res.status).toBe(201);
+
+            const payrollNotifs = await Notification.find({ title: 'Payroll Created' });
+            expect(payrollNotifs.length).toBe(1);
+            expect(payrollNotifs[0].recipient.toString()).toBe(testEmp._id.toString());
+
+            const secondEmpNotif = await Notification.findOne({
+                recipient: secondEmp._id,
+                title: 'Payroll Created'
+            });
+            expect(secondEmpNotif).toBeNull();
+        });
+
+        it('security settings update notifies admins only', async () => {
+            await Notification.deleteMany({ title: 'Security Settings Updated' });
+
+            const res = await request(app)
+                .post('/api/settings')
+                .set('Authorization', `Bearer ${t18AdminToken}`)
+                .send({
+                    require_2fa: true
+                });
+            expect(res.status).toBe(200);
+
+            // Wait brief moment for async IIFE notification dispatch
+            await new Promise(r => setTimeout(r, 200));
+
+            const notifs = await Notification.find({ title: 'Security Settings Updated' });
+            expect(notifs.length).toBeGreaterThan(0);
+
+            for (const notif of notifs) {
+                const recipientEmp = await Employee.findById(notif.recipient).lean();
+                expect(recipientEmp).toBeDefined();
+                expect(recipientEmp.role).toBe('admin');
+            }
+
+            const nonAdminNotif = await Notification.findOne({
+                recipient: { $in: [testEmp._id, mgrEmp._id, secondEmp._id] },
+                title: 'Security Settings Updated'
+            });
+            expect(nonAdminNotif).toBeNull();
+        });
+    });
 });
 
 

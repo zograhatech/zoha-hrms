@@ -1,6 +1,7 @@
 const Payroll = require('../models/Payroll');
 const Employee = require('../models/Employee');
 const Department = require('../models/Department');
+const Notification = require('../models/Notification');
 const { sendEmail } = require('../utils/emailService');
 const XLSX = require('xlsx');
 
@@ -189,6 +190,21 @@ const createPayroll = async (req, res) => {
             status: 'pending'
         });
 
+        try {
+            const emp = await Employee.findOne({ id: employee_id }).select('_id').lean();
+            if (emp) {
+                await Notification.create({
+                    recipient: emp._id,
+                    type: 'general',
+                    title: 'Payroll Created',
+                    message: `Payroll record for month ${month}/${year} has been created.`,
+                    data: { status: 'pending' }
+                });
+            }
+        } catch (notifErr) {
+            console.error('[createPayroll] notification error:', notifErr.message);
+        }
+
         res.status(201).json({ success: true, message: 'Payroll record created.', payroll: payroll.toJSON() });
     } catch (err) {
         console.error('[createPayroll]', err);
@@ -208,6 +224,20 @@ const markAsPaid = async (req, res) => {
         if (!payroll) return res.status(404).json({ success: false, message: 'Payroll record not found.' });
 
         const emp = await Employee.findOne({ id: payroll.employee_id }).lean();
+        if (emp?._id) {
+            try {
+                await Notification.create({
+                    recipient: emp._id,
+                    type: 'general',
+                    title: 'Salary Disbursed',
+                    message: `Your salary for month ${payroll.month}/${payroll.year} has been marked as paid.`,
+                    data: { status: 'paid' }
+                });
+            } catch (notifErr) {
+                console.error('[markAsPaid] notification error:', notifErr.message);
+            }
+        }
+
         if (emp?.email) {
             const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
             const monthName = months[payroll.month - 1];
@@ -227,7 +257,7 @@ const markAsPaid = async (req, res) => {
                     </div>
                     <p>Best Regards,<br>Finance Team</p>
                 `
-            });
+            }).catch(e => console.error('[markAsPaid] email error:', e.message));
         }
 
         res.json({ success: true, message: 'Marked as paid and employee notified.', payroll: payroll.toJSON() });
@@ -245,10 +275,30 @@ const bulkMarkAsPaid = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Invalid or empty IDs array.' });
         }
 
+        const payrolls = await Payroll.find({ _id: { $in: ids } }).lean();
         const result = await Payroll.updateMany(
             { _id: { $in: ids } },
             { $set: { status: 'paid', paid_date: new Date() } }
         );
+
+        try {
+            const empIds = [...new Set(payrolls.map(p => p.employee_id))];
+            const emps = await Employee.find({ id: { $in: empIds } }).select('_id id').lean();
+            const empMap = Object.fromEntries(emps.map(e => [e.id, e._id]));
+            const notifs = payrolls.map(p => empMap[p.employee_id] ? ({
+                recipient: empMap[p.employee_id],
+                type: 'general',
+                title: 'Salary Disbursed',
+                message: `Your salary for month ${p.month}/${p.year} has been marked as paid.`,
+                data: { status: 'paid' }
+            }) : null).filter(Boolean);
+
+            if (notifs.length > 0) {
+                await Notification.insertMany(notifs);
+            }
+        } catch (notifErr) {
+            console.error('[bulkMarkAsPaid] notification error:', notifErr.message);
+        }
 
         res.json({ success: true, message: `Bulk updated ${result.modifiedCount} records and notified employees.` });
     } catch (err) {
@@ -339,6 +389,7 @@ const importPayroll = async (req, res) => {
         const REQUIRED = ['employee_id', 'month', 'year', 'basic'];
         let imported = 0, skipped = 0;
         const errors = [];
+        const importNotifs = [];
 
         for (let i = 0; i < rows.length; i++) {
             const row = rows[i];
@@ -384,7 +435,22 @@ const importPayroll = async (req, res) => {
                 bank_ac_no: String(row.bank_ac_no || ''),
                 status: 'pending',
             });
+            importNotifs.push({
+                recipient: emp._id,
+                type: 'general',
+                title: 'Payroll Created',
+                message: `Payroll record for month ${row.month}/${row.year} has been imported.`,
+                data: { status: 'pending' }
+            });
             imported++;
+        }
+
+        if (importNotifs.length > 0) {
+            try {
+                await Notification.insertMany(importNotifs);
+            } catch (notifErr) {
+                console.error('[importPayroll] notification error:', notifErr.message);
+            }
         }
 
         res.json({ success: true, message: `Payroll import complete. ${imported} imported, ${skipped} skipped.`, imported, skipped, errors });

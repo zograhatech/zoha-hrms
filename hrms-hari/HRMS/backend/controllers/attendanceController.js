@@ -4,6 +4,7 @@ const Department = require('../models/Department');
 const Leave = require('../models/Leave');
 const Event = require('../models/Event');
 const Holiday = require('../models/Holiday');
+const Notification = require('../models/Notification');
 const XLSX = require('xlsx');
 const { toISTDateString, getISTDayStart, getISTDayEnd, getISOWeekInfo, formatISTTime, formatWorkedHours } = require('../utils/istDate');
 const { getVisibleEmployeeScope, isEmployeeVisible, normalizeRole } = require('../utils/visibilityHelper');
@@ -417,6 +418,60 @@ const clockOut = async (req, res) => {
         }
 
         await attendance.save();
+
+        if (attendance.needs_review) {
+            try {
+                const emp = await Employee.findOne({ id: attendance.employee_id }).select('_id id name manager_id team_lead_id').lean();
+                if (emp) {
+                    const notifs = [{
+                        recipient: emp._id,
+                        type: 'general',
+                        title: 'Attendance Session Flagged for Review',
+                        message: `Your attendance session on ${checkInIST || 'today'} has been flagged for review.`,
+                        data: { status: 'needs_review' }
+                    }];
+
+                    const recipientMap = new Map();
+                    const mongoose = require('mongoose');
+                    if (emp.manager_id) {
+                        const mgr = await Employee.findOne({
+                            $or: [
+                                { id: emp.manager_id },
+                                ...(mongoose.Types.ObjectId.isValid(emp.manager_id) ? [{ _id: emp.manager_id }] : [])
+                            ]
+                        }).select('_id status').lean();
+                        if (mgr && mgr.status !== 'inactive' && mgr.status !== 'terminated') {
+                            recipientMap.set(mgr._id.toString(), mgr._id);
+                        }
+                    }
+                    if (emp.team_lead_id) {
+                        const tl = await Employee.findOne({
+                            $or: [
+                                { id: emp.team_lead_id },
+                                ...(mongoose.Types.ObjectId.isValid(emp.team_lead_id) ? [{ _id: emp.team_lead_id }] : [])
+                            ]
+                        }).select('_id status').lean();
+                        if (tl && tl.status !== 'inactive' && tl.status !== 'terminated') {
+                            recipientMap.set(tl._id.toString(), tl._id);
+                        }
+                    }
+                    for (const supId of recipientMap.values()) {
+                        notifs.push({
+                            recipient: supId,
+                            sender: emp._id,
+                            type: 'general',
+                            title: 'Employee Attendance Session Flagged',
+                            message: `Attendance session for ${emp.name || emp.id} on ${checkInIST || 'today'} requires review.`,
+                            data: { status: 'needs_review' }
+                        });
+                    }
+
+                    await Notification.insertMany(notifs);
+                }
+            } catch (notifErr) {
+                console.error('[clockOut] Notification creation failed:', notifErr.message);
+            }
+        }
 
         res.json({ success: true, message: 'Clocked out successfully.', attendance });
     } catch (err) {

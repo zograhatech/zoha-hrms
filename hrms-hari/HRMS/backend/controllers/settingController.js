@@ -222,7 +222,7 @@ const updateSettings = async (req, res) => {
         if (emailVerificationFlagChanged || twofaFlagChanged) {
             (async () => {
                 try {
-                    const activeEmployees = await Employee.find({ status: 'active' }).select('_id email name emailVerified').lean();
+                    const admins = await Employee.find({ role: 'admin', status: 'active' }).select('_id email name').lean();
                     const flagChanges = [];
                     if (emailVerificationFlagChanged) {
                         flagChanges.push(`Email Verification requirement is now ${savedSettings.require_email_verification ? 'ENABLED' : 'DISABLED'}`);
@@ -232,21 +232,37 @@ const updateSettings = async (req, res) => {
                     }
                     const summaryText = flagChanges.join('; ');
 
-                    for (const emp of activeEmployees) {
-                        // In-app notification
+                    for (const adm of admins) {
+                        // In-app notification for admin
                         try {
                             await Notification.create({
-                                recipient: emp._id,
+                                recipient: adm._id,
                                 type: 'general',
                                 title: 'Security Settings Updated',
                                 message: summaryText
                             });
                         } catch (notifErr) {
-                            console.error('[updateSettings] In-app notification error for', emp._id, notifErr.message);
+                            console.error('[updateSettings] In-app notification error for admin', adm._id, notifErr.message);
                         }
 
-                        // Also: when require_email_verification is turned ON, unverified users get an in-app Notification for verification required
-                        if (emailVerificationFlagChanged && savedSettings.require_email_verification && !emp.emailVerified) {
+                        // Email notification for admin
+                        if (adm.email) {
+                            try {
+                                await sendEmail({
+                                    to: adm.email,
+                                    subject: 'Security Settings Updated',
+                                    text: `Hello ${adm.name || ''},\n\nSecurity settings have been updated:\n${summaryText}\n\nRegards,\n${savedSettings.company_name || 'HRMS'}`
+                                });
+                            } catch (mailErr) {
+                                console.error('[updateSettings] Email error for admin', adm.email, mailErr.message);
+                            }
+                        }
+                    }
+
+                    // Also: when require_email_verification is turned ON, unverified users get an in-app Notification for verification required
+                    if (emailVerificationFlagChanged && savedSettings.require_email_verification) {
+                        const unverifiedEmployees = await Employee.find({ status: 'active', emailVerified: { $ne: true } }).select('_id email name').lean();
+                        for (const emp of unverifiedEmployees) {
                             try {
                                 await Notification.create({
                                     recipient: emp._id,
@@ -256,19 +272,6 @@ const updateSettings = async (req, res) => {
                                 });
                             } catch (e) {
                                 console.error('[updateSettings] Unverified user notification error:', e.message);
-                            }
-                        }
-
-                        // Email notification
-                        if (emp.email) {
-                            try {
-                                await sendEmail({
-                                    to: emp.email,
-                                    subject: 'Security Settings Updated',
-                                    text: `Hello ${emp.name || ''},\n\nSecurity settings have been updated:\n${summaryText}\n\nRegards,\n${savedSettings.company_name || 'HRMS'}`
-                                });
-                            } catch (mailErr) {
-                                console.error('[updateSettings] Email error for', emp.email, mailErr.message);
                             }
                         }
                     }
