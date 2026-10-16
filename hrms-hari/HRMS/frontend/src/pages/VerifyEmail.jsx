@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useSearchParams, useNavigate, Link } from 'react-router-dom';
+import { useSearchParams, Link } from 'react-router-dom';
 import API from '../api/axios';
 import { useBranding } from '../context/BrandingContext';
 import { FiCheckCircle, FiAlertCircle, FiLogIn, FiBriefcase } from 'react-icons/fi';
@@ -7,7 +7,6 @@ import { FiCheckCircle, FiAlertCircle, FiLogIn, FiBriefcase } from 'react-icons/
 export default function VerifyEmail() {
     const [searchParams] = useSearchParams();
     const token = searchParams.get('token');
-    const navigate = useNavigate();
     const { branding } = useBranding();
 
     const [status, setStatus] = useState('verifying'); // 'verifying' | 'success' | 'error'

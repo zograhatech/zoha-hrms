@@ -2,7 +2,6 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { io } from 'socket.io-client';
 import { useAuth } from './AuthContext';
 import { useToast } from './ToastContext';
-import { subscribeToPushNotifications } from '../utils/pushHelper';
 
 const SocketContext = createContext();
 

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { isManagerRole, normalizeRole, isSuperAdmin, isTeamLead } from '../../utils/roleHelper';
+import { normalizeRole } from '../../utils/roleHelper';
 
 import API from '../../api/axios';
 import {

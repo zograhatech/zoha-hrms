@@ -46,6 +46,7 @@ export default function AdminDashboard() {
     const [upcomingHolidays, setUpcomingHolidays] = useState([]);
     const [attendanceTrends, setAttendanceTrends] = useState([]);
     const [zoomMeetings, setZoomMeetings] = useState([]);
+    const [resignations, setResignations] = useState([]);
     const [loading, setLoading] = useState(true);
     const { showToast } = useToast();
     const [showSuperAdminModal, setShowSuperAdminModal] = useState(false);
@@ -88,6 +89,8 @@ export default function AdminDashboard() {
             setSubmittingSuperAdmin(false);
         }
     };
+
+    useEffect(() => {
         const calls = [];
         if (hasAnalytics) calls.push(API.get('/employees/stats'));
         else calls.push(Promise.resolve({ data: { stats: null } }));
