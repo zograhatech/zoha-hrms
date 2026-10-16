@@ -7038,6 +7038,206 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(resList.status).toBe(403);
         });
     });
+
+    describe('25. Login-Level IP Enforcement Tests', () => {
+        const AccessSettings = require('../models/AccessSettings');
+        const RemoteAccess = require('../models/RemoteAccess');
+        const Employee = require('../models/Employee');
+        const { invalidateAccessSettingsCache } = require('../middleware/ipAccess');
+
+        const officeCidr = '192.168.1.0/24';
+        const allowedOfficeIp = '192.168.1.55';
+        const blockedRemoteIp = '203.0.113.195';
+        const testPassword = 'Password123!';
+
+        let loginEmp, loginTL, loginMgr, loginAdmin;
+        let testRefreshToken;
+
+        beforeAll(async () => {
+            process.env.TRUST_PROXY = 'vercel';
+            const passwordHash = await bcrypt.hash(testPassword, 10);
+
+            loginEmp = await Employee.create({
+                id: 'LOGIN_IP_EMP',
+                name: 'Login IP Employee',
+                email: 'login_ip_emp@zograhatechnologies.test',
+                password_hash: passwordHash,
+                role: 'employee',
+                status: 'active',
+                emailVerified: true
+            });
+
+            loginTL = await Employee.create({
+                id: 'LOGIN_IP_TL',
+                name: 'Login IP Team Lead',
+                email: 'login_ip_tl@zograhatechnologies.test',
+                password_hash: passwordHash,
+                role: 'team_lead',
+                status: 'active',
+                emailVerified: true
+            });
+
+            loginMgr = await Employee.create({
+                id: 'LOGIN_IP_MGR',
+                name: 'Login IP Manager',
+                email: 'login_ip_mgr@zograhatechnologies.test',
+                password_hash: passwordHash,
+                role: 'manager',
+                status: 'active',
+                emailVerified: true
+            });
+
+            loginAdmin = await Employee.create({
+                id: 'LOGIN_IP_ADMIN',
+                name: 'Login IP SuperAdmin',
+                email: 'login_ip_admin@zograhatechnologies.test',
+                password_hash: passwordHash,
+                role: 'admin',
+                status: 'active',
+                emailVerified: true
+            });
+
+            testRefreshToken = jwt.sign(
+                { id: loginEmp.id },
+                process.env.JWT_REFRESH_SECRET,
+                { expiresIn: '7d' }
+            );
+            await Employee.updateOne({ id: loginEmp.id }, { $set: { refresh_tokens: [testRefreshToken] } });
+        });
+
+        afterAll(async () => {
+            delete process.env.TRUST_PROXY;
+            await Employee.deleteMany({ id: { $in: ['LOGIN_IP_EMP', 'LOGIN_IP_TL', 'LOGIN_IP_MGR', 'LOGIN_IP_ADMIN'] } });
+            await AccessSettings.deleteMany({});
+            await RemoteAccess.deleteMany({ employee_id: 'LOGIN_IP_EMP' });
+            invalidateAccessSettingsCache();
+        });
+
+        beforeEach(async () => {
+            await AccessSettings.deleteMany({});
+            await AccessSettings.create({
+                enforce_ip_access: true,
+                ranges: [{ cidr: officeCidr, label: 'Office Range', enabled: true }]
+            });
+            invalidateAccessSettingsCache();
+            await RemoteAccess.deleteMany({ employee_id: 'LOGIN_IP_EMP' });
+        });
+
+        it('wrong password from blocked IP gets 401, not 403', async () => {
+            const res = await request(app)
+                .post('/api/auth/login')
+                .set('x-vercel-forwarded-for', blockedRemoteIp)
+                .send({ email: loginEmp.email, password: 'WrongPassword999!' });
+
+            expect(res.status).toBe(401);
+            expect(res.body.message).toMatch(/invalid.*password/i);
+        });
+
+        it('employee from a blocked IP gets 403 and no token', async () => {
+            const res = await request(app)
+                .post('/api/auth/login')
+                .set('x-vercel-forwarded-for', blockedRemoteIp)
+                .send({ email: loginEmp.email, password: testPassword });
+
+            expect(res.status).toBe(403);
+            expect(res.body.success).toBe(false);
+            expect(res.body.message).toBe('Access allowed only from the office network.');
+            expect(res.body.token).toBeUndefined();
+            expect(res.body.refreshToken).toBeUndefined();
+        });
+
+        it('employee from an allowed IP logs in normally', async () => {
+            const res = await request(app)
+                .post('/api/auth/login')
+                .set('x-vercel-forwarded-for', allowedOfficeIp)
+                .send({ email: loginEmp.email, password: testPassword });
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+            expect(res.body.token).toBeDefined();
+            expect(res.body.refreshToken).toBeDefined();
+        });
+
+        it('team_lead from a blocked IP gets 403', async () => {
+            const res = await request(app)
+                .post('/api/auth/login')
+                .set('x-vercel-forwarded-for', blockedRemoteIp)
+                .send({ email: loginTL.email, password: testPassword });
+
+            expect(res.status).toBe(403);
+            expect(res.body.success).toBe(false);
+            expect(res.body.message).toBe('Access allowed only from the office network.');
+            expect(res.body.token).toBeUndefined();
+            expect(res.body.refreshToken).toBeUndefined();
+        });
+
+        it('manager and SuperAdmin from a blocked IP log in normally', async () => {
+            const mgrRes = await request(app)
+                .post('/api/auth/login')
+                .set('x-vercel-forwarded-for', blockedRemoteIp)
+                .send({ email: loginMgr.email, password: testPassword });
+
+            expect(mgrRes.status).toBe(200);
+            expect(mgrRes.body.success).toBe(true);
+            expect(mgrRes.body.token).toBeDefined();
+
+            const adminRes = await request(app)
+                .post('/api/auth/login')
+                .set('x-vercel-forwarded-for', blockedRemoteIp)
+                .send({ email: loginAdmin.email, password: testPassword });
+
+            expect(adminRes.status).toBe(200);
+            expect(adminRes.body.success).toBe(true);
+            expect(adminRes.body.token).toBeDefined();
+        });
+
+        it('employee with an active remote exception logs in from a blocked IP', async () => {
+            await RemoteAccess.create({
+                employee_id: loginEmp.id,
+                allowedIp: blockedRemoteIp,
+                active: true,
+                grantedBy: 'admin',
+                expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000)
+            });
+
+            const res = await request(app)
+                .post('/api/auth/login')
+                .set('x-vercel-forwarded-for', blockedRemoteIp)
+                .send({ email: loginEmp.email, password: testPassword });
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+            expect(res.body.token).toBeDefined();
+        });
+
+        it('refresh from a blocked IP gets 403', async () => {
+            await Employee.updateOne({ id: loginEmp.id }, { $set: { refresh_tokens: [testRefreshToken] } });
+
+            const res = await request(app)
+                .post('/api/auth/refresh')
+                .set('x-vercel-forwarded-for', blockedRemoteIp)
+                .send({ refreshToken: testRefreshToken });
+
+            expect(res.status).toBe(403);
+            expect(res.body.success).toBe(false);
+            expect(res.body.message).toBe('Access allowed only from the office network.');
+            expect(res.body.token).toBeUndefined();
+        });
+
+        it('enforcement OFF allows login from any IP', async () => {
+            await AccessSettings.updateOne({}, { $set: { enforce_ip_access: false } });
+            invalidateAccessSettingsCache();
+
+            const res = await request(app)
+                .post('/api/auth/login')
+                .set('x-vercel-forwarded-for', blockedRemoteIp)
+                .send({ email: loginEmp.email, password: testPassword });
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+            expect(res.body.token).toBeDefined();
+        });
+    });
 });
 
 

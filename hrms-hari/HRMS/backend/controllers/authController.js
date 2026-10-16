@@ -6,6 +6,7 @@ const { sendEmail } = require('../utils/emailService');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const { isSecurityFlagOn } = require('../utils/securityFlags');
+const { checkIpAccess } = require('../middleware/ipAccess');
 
 const hashSha256 = (val) => crypto.createHash('sha256').update(String(val)).digest('hex');
 
@@ -115,6 +116,10 @@ const login = async (req, res) => {
 
         // 1. If emailVerified is true: return the normal token. No code, ever.
         if (employee.emailVerified) {
+            req.user = { id: employee.id, employee_id: employee.id, role: employee.role };
+            const ipAllowed = await checkIpAccess(req, res, employee.role);
+            if (!ipAllowed) return;
+
             const authData = await generateAuthPayload(employee, rememberMe, settings);
             return res.json({
                 success: true,
@@ -164,6 +169,10 @@ const login = async (req, res) => {
         }
 
         // 3. Otherwise: normal login.
+        req.user = { id: employee.id, employee_id: employee.id, role: employee.role };
+        const ipAllowed = await checkIpAccess(req, res, employee.role);
+        if (!ipAllowed) return;
+
         const authData = await generateAuthPayload(employee, rememberMe, settings);
         return res.json({
             success: true,
@@ -281,6 +290,10 @@ const refreshToken = async (req, res) => {
 
         try {
             const decoded = jwt.verify(token, process.env.JWT_REFRESH_SECRET);
+
+            req.user = { id: employee.id, employee_id: employee.id, role: employee.role };
+            const ipAllowed = await checkIpAccess(req, res, employee.role);
+            if (!ipAllowed) return;
 
             // Issue new tokens
             const newAccessToken = jwt.sign(
@@ -584,6 +597,10 @@ const verify2fa = async (req, res) => {
         employee.twofaAttempts = 0;
         employee.twofaLockedUntil = null;
         await employee.save();
+
+        req.user = { id: employee.id, employee_id: employee.id, role: employee.role };
+        const ipAllowed = await checkIpAccess(req, res, employee.role);
+        if (!ipAllowed) return;
 
         const settings = await Setting.findOne();
         const authData = await generateAuthPayload(employee, rememberMe, settings);
