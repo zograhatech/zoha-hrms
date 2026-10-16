@@ -7238,6 +7238,126 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(res.body.token).toBeDefined();
         });
     });
+
+    describe('26. Policy-Driven Idle Policy and Companion Tests', () => {
+        const Setting = require('../models/Setting');
+        const Employee = require('../models/Employee');
+        let policyEmpToken;
+
+        beforeAll(async () => {
+            const passwordHash = await bcrypt.hash('TestPass123!', 10);
+            const policyEmp = await Employee.create({
+                id: 'POLICY_EMP_01',
+                name: 'Policy Test Employee',
+                email: 'policy_emp@zograhatechnologies.test',
+                password_hash: passwordHash,
+                role: 'employee',
+                status: 'active',
+                emailVerified: true
+            });
+
+            policyEmpToken = jwt.sign(
+                { id: policyEmp.id, _id: policyEmp._id, role: policyEmp.role, email: policyEmp.email },
+                process.env.JWT_SECRET,
+                { expiresIn: '1h' }
+            );
+        });
+
+        afterAll(async () => {
+            await Employee.deleteOne({ id: 'POLICY_EMP_01' });
+        });
+
+        it('Changing idle_timeout_minutes in settings is reflected in the very next idle-policy call', async () => {
+            await Setting.updateOne({}, { $set: { idle_timeout_minutes: 25 } }, { upsert: true });
+
+            const res1 = await request(app)
+                .get('/api/attendance/idle-policy')
+                .set('Authorization', `Bearer ${policyEmpToken}`);
+
+            expect(res1.status).toBe(200);
+            expect(res1.body.idle_timeout_minutes).toBe(25);
+            expect(res1.body.timeout_minutes).toBe(25);
+
+            await Setting.updateOne({}, { $set: { idle_timeout_minutes: 5 } });
+
+            const res2 = await request(app)
+                .get('/api/attendance/idle-policy')
+                .set('Authorization', `Bearer ${policyEmpToken}`);
+
+            expect(res2.status).toBe(200);
+            expect(res2.body.idle_timeout_minutes).toBe(5);
+            expect(res2.body.timeout_minutes).toBe(5);
+        });
+
+        it('Turning idle_auto_clockout_enabled on or off is reflected in the very next idle-policy call', async () => {
+            await Setting.updateOne({}, { $set: { idle_auto_clockout_enabled: false } });
+
+            const resOff = await request(app)
+                .get('/api/attendance/idle-policy')
+                .set('Authorization', `Bearer ${policyEmpToken}`);
+
+            expect(resOff.status).toBe(200);
+            expect(resOff.body.idle_auto_clockout_enabled).toBe(false);
+            expect(resOff.body.enabled).toBe(false);
+
+            await Setting.updateOne({}, { $set: { idle_auto_clockout_enabled: true } });
+
+            const resOn = await request(app)
+                .get('/api/attendance/idle-policy')
+                .set('Authorization', `Bearer ${policyEmpToken}`);
+
+            expect(resOn.status).toBe(200);
+            expect(resOn.body.idle_auto_clockout_enabled).toBe(true);
+            expect(resOn.body.enabled).toBe(true);
+        });
+
+        it('Office hours changes are reflected in the very next idle-policy call', async () => {
+            await Setting.updateOne({}, {
+                $set: {
+                    'attendance_settings.office_start_time': '10:15',
+                    'attendance_settings.office_end_time': '19:45'
+                }
+            });
+
+            const res = await request(app)
+                .get('/api/attendance/idle-policy')
+                .set('Authorization', `Bearer ${policyEmpToken}`);
+
+            expect(res.status).toBe(200);
+            expect(res.body.office_start_time).toBe('10:15');
+            expect(res.body.office_end_time).toBe('19:45');
+        });
+
+        it('Missing settings fields return the documented defaults and never null', async () => {
+            await Setting.updateOne({}, {
+                $unset: {
+                    idle_timeout_minutes: "",
+                    idle_auto_clockout_enabled: "",
+                    idle_exempt_app_names: "",
+                    attendance_settings: ""
+                }
+            });
+
+            const res = await request(app)
+                .get('/api/attendance/idle-policy')
+                .set('Authorization', `Bearer ${policyEmpToken}`);
+
+            expect(res.status).toBe(200);
+            expect(res.body.idle_timeout_minutes).toBe(10);
+            expect(res.body.timeout_minutes).toBe(10);
+            expect(res.body.idle_auto_clockout_enabled).toBe(false);
+            expect(res.body.enabled).toBe(false);
+            expect(res.body.office_start_time).toBe('09:00');
+            expect(res.body.office_end_time).toBe('18:00');
+            expect(res.body.idle_exempt_app_names).toEqual([]);
+            expect(res.body.poll_seconds).toBe(60);
+            expect(res.body.idle_timeout_minutes).not.toBeNull();
+            expect(res.body.office_start_time).not.toBeNull();
+            expect(res.body.office_end_time).not.toBeNull();
+            expect(res.body.defaults_applied).toBeDefined();
+            expect(res.body.notice).toMatch(/server defaults applied/i);
+        });
+    });
 });
 
 

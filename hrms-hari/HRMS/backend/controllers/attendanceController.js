@@ -1012,26 +1012,77 @@ const getAttendanceTrends = async (req, res) => {
 const getIdlePolicy = async (req, res) => {
     try {
         const Setting = require('../models/Setting');
-        const settings = await Setting.findOne();
+        // Fresh read directly from MongoDB on every call; no cache.
+        const settings = await Setting.findOne().lean();
 
-        const enabled = Boolean(settings?.idle_auto_clockout_enabled);
-        const timeout_minutes = settings?.idle_timeout_minutes ?? 10;
-        const exempt_app_names = settings?.idle_exempt_app_names || [];
+        const DEFAULTS = {
+            idle_timeout_minutes: 10,
+            idle_auto_clockout_enabled: false,
+            idle_exempt_app_names: [],
+            office_start_time: '09:00',
+            office_end_time: '18:00',
+            poll_seconds: 60
+        };
+
+        const defaults_applied = [];
+
+        let timeout_minutes = settings?.idle_timeout_minutes;
+        if (timeout_minutes == null || isNaN(Number(timeout_minutes))) {
+            timeout_minutes = DEFAULTS.idle_timeout_minutes;
+            defaults_applied.push('idle_timeout_minutes');
+        } else {
+            timeout_minutes = Number(timeout_minutes);
+        }
+
+        let enabled = settings?.idle_auto_clockout_enabled;
+        if (enabled == null) {
+            enabled = DEFAULTS.idle_auto_clockout_enabled;
+            defaults_applied.push('idle_auto_clockout_enabled');
+        } else {
+            enabled = Boolean(enabled);
+        }
+
+        let exempt_app_names = settings?.idle_exempt_app_names;
+        if (!Array.isArray(exempt_app_names)) {
+            exempt_app_names = DEFAULTS.idle_exempt_app_names;
+            defaults_applied.push('idle_exempt_app_names');
+        }
+
+        let office_start_time = settings?.attendance_settings?.office_start_time;
+        if (!office_start_time || typeof office_start_time !== 'string') {
+            office_start_time = DEFAULTS.office_start_time;
+            defaults_applied.push('office_start_time');
+        }
+
+        let office_end_time = settings?.attendance_settings?.office_end_time;
+        if (!office_end_time || typeof office_end_time !== 'string') {
+            office_end_time = DEFAULTS.office_end_time;
+            defaults_applied.push('office_end_time');
+        }
+
         const exempt_employee_ids = settings?.idle_exempt_employee_ids || [];
-        const isExempt = exempt_employee_ids.includes(req.user.id);
+        const isExempt = Boolean(req.user?.id && exempt_employee_ids.includes(req.user.id));
 
-        const office_start_time = settings?.attendance_settings?.office_start_time || '09:00';
-        const office_end_time = settings?.attendance_settings?.office_end_time || '18:00';
-
-        res.json({
+        const responsePayload = {
             success: true,
             enabled,
+            idle_auto_clockout_enabled: enabled,
             timeout_minutes,
+            idle_timeout_minutes: timeout_minutes,
             exempt_app_names,
+            idle_exempt_app_names: exempt_app_names,
             exempt: isExempt,
             office_start_time,
-            office_end_time
-        });
+            office_end_time,
+            poll_seconds: 60
+        };
+
+        if (defaults_applied.length > 0) {
+            responsePayload.defaults_applied = defaults_applied;
+            responsePayload.notice = `Server defaults applied for missing settings: ${defaults_applied.join(', ')}`;
+        }
+
+        res.json(responsePayload);
     } catch (err) {
         console.error('[getIdlePolicy]', err);
         res.status(500).json({ success: false, message: 'Server error fetching idle policy.' });
