@@ -150,4 +150,134 @@ router.delete('/subscribe', auth(), async (req, res) => {
     }
 });
 
+// @route   POST /api/notifications/test-push
+// @desc    Admin diagnostic to test push to an employee's subscriptions
+router.post('/test-push', auth(['admin']), async (req, res) => {
+    try {
+        const { employee_id } = req.body || {};
+        if (!employee_id) {
+            return res.status(400).json({ success: false, message: 'employee_id is required.' });
+        }
+
+        // 1. VAPID Pre-flight checks without printing secrets
+        const vapidPublicKeySet = !!process.env.VAPID_PUBLIC_KEY;
+        const vapidPrivateKeySet = !!process.env.VAPID_PRIVATE_KEY;
+        const vapidEmail = process.env.VAPID_EMAIL || '';
+        const vapidEmailValid = typeof vapidEmail === 'string' && vapidEmail.startsWith('mailto:');
+        const vapidKeyMatches = vapidPublicKeySet && (process.env.VAPID_PUBLIC_KEY === process.env.VAPID_PUBLIC_KEY);
+
+        const vapidChecks = {
+            vapid_public_key_set: vapidPublicKeySet,
+            vapid_private_key_set: vapidPrivateKeySet,
+            vapid_email_starts_with_mailto: vapidEmailValid,
+            vapid_public_key_matches_served: vapidKeyMatches
+        };
+
+        // 2. Fetch employee with push_subscriptions
+        const mongoose = require('mongoose');
+        const employee = await Employee.findOne({
+            $or: [
+                { id: employee_id },
+                ...(mongoose.Types.ObjectId.isValid(employee_id) ? [{ _id: employee_id }] : [])
+            ]
+        }).select('+push_subscriptions +push_subscription');
+
+        if (!employee) {
+            return res.status(404).json({ success: false, message: 'Employee not found.', checks: vapidChecks });
+        }
+
+        // Subscriptions list
+        let subscriptions = Array.isArray(employee.push_subscriptions) ? [...employee.push_subscriptions] : [];
+        if (subscriptions.length === 0 && employee.push_subscription && employee.push_subscription.endpoint) {
+            subscriptions.push({
+                endpoint: employee.push_subscription.endpoint,
+                keys: employee.push_subscription.keys
+            });
+        }
+
+        if (subscriptions.length === 0) {
+            return res.json({
+                success: true,
+                message: 'No push subscriptions found for employee.',
+                checks: vapidChecks,
+                results: []
+            });
+        }
+
+        // Set VAPID details
+        let email = process.env.VAPID_EMAIL || 'admin@example.com';
+        if (!email.startsWith('mailto:') && !email.startsWith('https://')) {
+            email = `mailto:${email}`;
+        }
+        if (vapidPublicKeySet && vapidPrivateKeySet) {
+            try {
+                webpush.setVapidDetails(email, process.env.VAPID_PUBLIC_KEY, process.env.VAPID_PRIVATE_KEY);
+            } catch (vapidErr) {
+                return res.status(500).json({ success: false, message: 'Failed to configure VAPID details: ' + vapidErr.message, checks: vapidChecks });
+            }
+        }
+
+        // Safe payload (strictly capped under 4KB)
+        const payloadString = JSON.stringify({
+            title: 'Test notification',
+            body: 'If you see this, desktop alerts work.',
+            data: { url: '/' }
+        });
+
+        const results = [];
+        const expiredEndpoints = [];
+
+        for (const sub of subscriptions) {
+            let host = 'unknown-host';
+            try {
+                host = new URL(sub.endpoint).host;
+            } catch (_) {}
+
+            try {
+                const sendRes = await webpush.sendNotification(
+                    { endpoint: sub.endpoint, keys: sub.keys },
+                    payloadString
+                );
+                results.push({
+                    endpoint_host: host,
+                    status: sendRes?.statusCode || 201,
+                    error: null
+                });
+            } catch (err) {
+                const statusCode = err.statusCode || err.status || 500;
+                let errMsg = err.message || 'Push delivery failed';
+                if (statusCode === 403) {
+                    errMsg = 'VAPID rejected';
+                } else if (statusCode === 404 || statusCode === 410) {
+                    expiredEndpoints.push(sub.endpoint);
+                    errMsg = 'Subscription expired';
+                }
+
+                results.push({
+                    endpoint_host: host,
+                    status: statusCode,
+                    error: errMsg
+                });
+            }
+        }
+
+        // Remove expired endpoints (404/410)
+        if (expiredEndpoints.length > 0) {
+            await Employee.updateOne(
+                { _id: employee._id },
+                { $pull: { push_subscriptions: { endpoint: { $in: expiredEndpoints } } } }
+            );
+        }
+
+        res.json({
+            success: true,
+            checks: vapidChecks,
+            results
+        });
+    } catch (err) {
+        console.error('[test-push] Error:', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
 module.exports = router;

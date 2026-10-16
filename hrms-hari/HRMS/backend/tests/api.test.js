@@ -6373,6 +6373,91 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(emp.push_subscriptions[0].keys.auth).toBe('updated-auth');
             expect(emp.push_subscription.keys.p256dh).toBe('updated-key');
         });
+
+        it('test-push: sends diagnostic test push; reports 201 sent, removes on 410, keeps on 403', async () => {
+            const webpush = require('web-push');
+
+            const ep201 = 'https://fcm.googleapis.com/fcm/send/test-diag-201';
+            const ep410 = 'https://updates.push.services.mozilla.com/wpush/v2/test-diag-410';
+            const ep403 = 'https://fcm.googleapis.com/fcm/send/test-diag-403';
+
+            await Employee.updateOne(
+                { _id: testEmp._id },
+                {
+                    $set: {
+                        push_subscriptions: [
+                            { endpoint: ep201, keys: { p256dh: 'k1', auth: 'a1' } },
+                            { endpoint: ep410, keys: { p256dh: 'k2', auth: 'a2' } },
+                            { endpoint: ep403, keys: { p256dh: 'k3', auth: 'a3' } }
+                        ]
+                    }
+                }
+            );
+
+            const sendSpy = jest.spyOn(webpush, 'sendNotification').mockImplementation(async (sub, payload) => {
+                if (sub.endpoint === ep201) {
+                    return { statusCode: 201 };
+                } else if (sub.endpoint === ep410) {
+                    const err = new Error('Gone');
+                    err.statusCode = 410;
+                    throw err;
+                } else if (sub.endpoint === ep403) {
+                    const err = new Error('Forbidden');
+                    err.statusCode = 403;
+                    throw err;
+                }
+                return { statusCode: 200 };
+            });
+
+            try {
+                const res = await request(app)
+                    .post('/api/notifications/test-push')
+                    .set('Authorization', `Bearer ${adminToken}`)
+                    .send({ employee_id: testEmp.id });
+
+                expect(res.status).toBe(200);
+                expect(res.body.success).toBe(true);
+
+                // Pre-flight checks returned without secrets
+                expect(res.body.checks).toBeDefined();
+                expect(res.body.checks.vapid_public_key_set).toBe(true);
+                expect(res.body.checks.vapid_private_key_set).toBe(true);
+                expect(res.body.checks.vapid_email_starts_with_mailto).toBe(true);
+                expect(res.body.checks.vapid_public_key_matches_served).toBe(true);
+
+                // Results returned
+                expect(res.body.results.length).toBe(3);
+
+                const r201 = res.body.results.find(r => r.endpoint_host === 'fcm.googleapis.com' && r.status === 201);
+                expect(r201).toBeDefined();
+                expect(r201.error).toBeNull();
+
+                const r410 = res.body.results.find(r => r.endpoint_host === 'updates.push.services.mozilla.com');
+                expect(r410).toBeDefined();
+                expect(r410.status).toBe(410);
+                expect(r410.error).toMatch(/Subscription expired/i);
+
+                const r403 = res.body.results.find(r => r.endpoint_host === 'fcm.googleapis.com' && r.status === 403);
+                expect(r403).toBeDefined();
+                expect(r403.error).toBe('VAPID rejected');
+
+                // Verify keys and full endpoints were never returned in response
+                const resStr = JSON.stringify(res.body);
+                expect(resStr).not.toContain(ep201);
+                expect(resStr).not.toContain(ep410);
+                expect(resStr).not.toContain(ep403);
+                expect(resStr).not.toContain('p256dh');
+
+                // Verify database: 410 was removed, 201 and 403 remain
+                const empAfter = await Employee.findOne({ _id: testEmp._id }).select('+push_subscriptions');
+                const remEndpoints = empAfter.push_subscriptions.map(s => s.endpoint);
+                expect(remEndpoints).toContain(ep201);
+                expect(remEndpoints).toContain(ep403);
+                expect(remEndpoints).not.toContain(ep410);
+            } finally {
+                sendSpy.mockRestore();
+            }
+        });
     });
 
     describe('Phase A: Idle Auto Clock-Out API & Settings', () => {
