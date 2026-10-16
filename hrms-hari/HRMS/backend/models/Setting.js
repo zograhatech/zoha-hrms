@@ -71,7 +71,8 @@ const settingSchema = new mongoose.Schema({
     idle_timeout_minutes: { type: Number, default: 10, min: 1, max: 240 },
     idle_exempt_employee_ids: { type: [String], default: [] },
     idle_exempt_app_names: { type: [String], default: [] },
-    idle_auto_clockout_enabled: { type: Boolean, default: false }
+    idle_auto_clockout_enabled: { type: Boolean, default: false },
+    companion_download_url: { type: String, default: '' }
 }, { timestamps: true });
 
 module.exports = mongoose.models.Setting || mongoose.model('Setting', settingSchema);

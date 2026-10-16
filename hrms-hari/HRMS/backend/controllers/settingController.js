@@ -248,6 +248,34 @@ const updateSettings = async (req, res) => {
             settings.markModified('idle_exempt_app_names');
         }
 
+        if (updateData.companion_download_url !== undefined) {
+            const userRole = (req.user?.role || '').toLowerCase();
+            if (userRole !== 'admin') {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Only SuperAdmin can edit companion_download_url.'
+                });
+            }
+            const rawUrl = String(updateData.companion_download_url).trim();
+            if (rawUrl !== '') {
+                try {
+                    const parsedUrl = new URL(rawUrl);
+                    if (parsedUrl.protocol !== 'https:') {
+                        return res.status(400).json({
+                            success: false,
+                            message: 'companion_download_url must be a valid https:// URL or empty.'
+                        });
+                    }
+                } catch (_) {
+                    return res.status(400).json({
+                        success: false,
+                        message: 'companion_download_url must be a valid https:// URL or empty.'
+                    });
+                }
+            }
+            settings.companion_download_url = rawUrl;
+        }
+
         const savedSettings = await settings.save();
         console.log('[updateSettings] Saved roles in DB:', Object.keys(savedSettings.roles_permissions || {}));
 

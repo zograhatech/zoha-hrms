@@ -7358,6 +7358,266 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(res.body.notice).toMatch(/server defaults applied/i);
         });
     });
+
+    describe('27. Idle Companion Enrollment & Device Management Tests', () => {
+        const EnrollmentCode = require('../models/EnrollmentCode');
+        const DeviceToken = require('../models/DeviceToken');
+        const Setting = require('../models/Setting');
+        const Employee = require('../models/Employee');
+        const { sendEmail } = require('../utils/emailService');
+        const crypto = require('crypto');
+
+        let enrollAdminToken, enrollEmpToken;
+        let enrollEmp, inactiveEmp;
+        const downloadUrl = 'https://example.com/download/companion.ps1';
+
+        beforeAll(async () => {
+            const passwordHash = await bcrypt.hash('TestPass123!', 10);
+
+            const enrollAdmin = await Employee.create({
+                id: 'ENROLL_ADMIN_01',
+                name: 'Enroll Admin',
+                email: 'enroll_admin@zograhatechnologies.test',
+                password_hash: passwordHash,
+                role: 'admin',
+                status: 'active',
+                emailVerified: true
+            });
+
+            enrollEmp = await Employee.create({
+                id: 'ENROLL_EMP_01',
+                name: 'Enroll Employee',
+                email: 'enroll_emp@zograhatechnologies.test',
+                password_hash: passwordHash,
+                role: 'employee',
+                status: 'active',
+                emailVerified: true
+            });
+
+            inactiveEmp = await Employee.create({
+                id: 'ENROLL_INACTIVE_01',
+                name: 'Inactive Employee',
+                email: 'inactive_emp@zograhatechnologies.test',
+                password_hash: passwordHash,
+                role: 'employee',
+                status: 'inactive',
+                emailVerified: true
+            });
+
+            enrollAdminToken = jwt.sign(
+                { id: enrollAdmin.id, _id: enrollAdmin._id, role: enrollAdmin.role, email: enrollAdmin.email },
+                process.env.JWT_SECRET,
+                { expiresIn: '1h' }
+            );
+
+            enrollEmpToken = jwt.sign(
+                { id: enrollEmp.id, _id: enrollEmp._id, role: enrollEmp.role, email: enrollEmp.email },
+                process.env.JWT_SECRET,
+                { expiresIn: '1h' }
+            );
+
+            await Setting.updateOne({}, {
+                $set: {
+                    companion_download_url: downloadUrl,
+                    idle_auto_clockout_enabled: true
+                }
+            }, { upsert: true });
+        });
+
+        afterAll(async () => {
+            await Employee.deleteMany({ id: { $in: ['ENROLL_ADMIN_01', 'ENROLL_EMP_01', 'ENROLL_INACTIVE_01'] } });
+            await EnrollmentCode.deleteMany({ employee_id: { $in: ['ENROLL_EMP_01', 'ENROLL_INACTIVE_01'] } });
+            await DeviceToken.deleteMany({ employee_id: { $in: ['ENROLL_EMP_01', 'ENROLL_INACTIVE_01'] } });
+        });
+
+        it('SuperAdmin send-setup creates one active code and emails the employee', async () => {
+            const res = await request(app)
+                .post('/api/devices/enrollment-codes')
+                .set('Authorization', `Bearer ${enrollAdminToken}`)
+                .send({ employee_id: enrollEmp.id });
+
+            expect(res.status).toBe(201);
+            expect(res.body.success).toBe(true);
+            expect(res.body.expires_at).toBeDefined();
+            expect(res.body.code).toBeUndefined();
+            expect(res.body.code_hash).toBeUndefined();
+
+            // Mock transport captured the email
+            const lastEmail = sendEmail.lastEmail;
+            expect(lastEmail).toBeDefined();
+            expect(lastEmail.to).toBe(enrollEmp.email);
+            expect(lastEmail.subject).toBe('Set up Zograha Idle Companion');
+            expect(lastEmail.text).toContain(downloadUrl);
+            expect(lastEmail.code).toBeDefined();
+            expect(lastEmail.code).toHaveLength(10);
+            expect(lastEmail.code).toMatch(/^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{10}$/);
+
+            // Stored record has only a hash
+            const expectedHash = crypto.createHash('sha256').update(lastEmail.code).digest('hex');
+            const storedDoc = await EnrollmentCode.findOne({ code_hash: expectedHash }).lean();
+            expect(storedDoc).toBeDefined();
+            expect(storedDoc.employee_id).toBe(enrollEmp.id);
+            expect(storedDoc.used_at).toBeNull();
+            expect(storedDoc.code).toBeUndefined();
+        });
+
+        it('Send-setup is rejected when companion_download_url is empty (400)', async () => {
+            await Setting.updateOne({}, { $set: { companion_download_url: '' } });
+
+            const res = await request(app)
+                .post('/api/devices/enrollment-codes')
+                .set('Authorization', `Bearer ${enrollAdminToken}`)
+                .send({ employee_id: enrollEmp.id });
+
+            expect(res.status).toBe(400);
+            expect(res.body.message).toMatch(/Set the companion download link in Settings first/i);
+
+            // Restore setting
+            await Setting.updateOne({}, { $set: { companion_download_url: downloadUrl } });
+        });
+
+        it('Non-admin send-setup returns 403', async () => {
+            const res = await request(app)
+                .post('/api/devices/enrollment-codes')
+                .set('Authorization', `Bearer ${enrollEmpToken}`)
+                .send({ employee_id: enrollEmp.id });
+
+            expect(res.status).toBe(403);
+        });
+
+        let validEnrollCode;
+        it('Enroll with a valid code returns a device token that works on GET /api/attendance/idle-policy', async () => {
+            // Send setup to obtain a fresh code
+            await request(app)
+                .post('/api/devices/enrollment-codes')
+                .set('Authorization', `Bearer ${enrollAdminToken}`)
+                .send({ employee_id: enrollEmp.id });
+
+            validEnrollCode = sendEmail.lastEmail.code;
+
+            const enrollRes = await request(app)
+                .post('/api/devices/enroll')
+                .send({ code: validEnrollCode, device_name: 'Dev Pilot PC' });
+
+            expect(enrollRes.status).toBe(201);
+            expect(enrollRes.body.success).toBe(true);
+            expect(enrollRes.body.token).toMatch(/^dev_[a-f0-9]{64}$/);
+            expect(enrollRes.body.device.device_name).toBe('Dev Pilot PC');
+
+            // Device token works on GET /api/attendance/idle-policy
+            const policyRes = await request(app)
+                .get('/api/attendance/idle-policy')
+                .set('Authorization', `Bearer ${enrollRes.body.token}`);
+
+            expect(policyRes.status).toBe(200);
+            expect(policyRes.body.success).toBe(true);
+        });
+
+        it('Enroll with the same code twice fails the second time', async () => {
+            const resSecond = await request(app)
+                .post('/api/devices/enroll')
+                .send({ code: validEnrollCode, device_name: 'Second PC' });
+
+            expect(resSecond.status).toBe(400);
+            expect(resSecond.body.message).toBe('Invalid or expired code.');
+        });
+
+        it('Expired code fails', async () => {
+            const expiredCode = 'EXP2345678';
+            const expHash = crypto.createHash('sha256').update(expiredCode).digest('hex');
+            await EnrollmentCode.create({
+                employee_id: enrollEmp.id,
+                code_hash: expHash,
+                expires_at: new Date(Date.now() - 60 * 1000), // 1m in the past
+                used_at: null,
+                created_by: 'admin'
+            });
+
+            const res = await request(app)
+                .post('/api/devices/enroll')
+                .send({ code: expiredCode });
+
+            expect(res.status).toBe(400);
+            expect(res.body.message).toBe('Invalid or expired code.');
+        });
+
+        it('A newer code invalidates the older one', async () => {
+            // First code
+            await request(app)
+                .post('/api/devices/enrollment-codes')
+                .set('Authorization', `Bearer ${enrollAdminToken}`)
+                .send({ employee_id: enrollEmp.id });
+            const olderCode = sendEmail.lastEmail.code;
+
+            // Second code (newer)
+            await request(app)
+                .post('/api/devices/enrollment-codes')
+                .set('Authorization', `Bearer ${enrollAdminToken}`)
+                .send({ employee_id: enrollEmp.id });
+            const newerCode = sendEmail.lastEmail.code;
+
+            // Older code should fail
+            const resOlder = await request(app)
+                .post('/api/devices/enroll')
+                .send({ code: olderCode });
+            expect(resOlder.status).toBe(400);
+            expect(resOlder.body.message).toBe('Invalid or expired code.');
+
+            // Newer code succeeds
+            const resNewer = await request(app)
+                .post('/api/devices/enroll')
+                .send({ code: newerCode });
+            expect(resNewer.status).toBe(201);
+            expect(resNewer.body.token).toMatch(/^dev_/);
+        });
+
+        it('Enroll for an inactive employee fails with the generic message', async () => {
+            const inactCode = 'INA2345678';
+            const inactHash = crypto.createHash('sha256').update(inactCode).digest('hex');
+            await EnrollmentCode.create({
+                employee_id: inactiveEmp.id,
+                code_hash: inactHash,
+                expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000),
+                used_at: null,
+                created_by: 'admin'
+            });
+
+            const res = await request(app)
+                .post('/api/devices/enroll')
+                .send({ code: inactCode });
+
+            expect(res.status).toBe(400);
+            expect(res.body.message).toBe('Invalid or expired code.');
+        });
+
+        it('Enroll is rate limited after 10 attempts', async () => {
+            for (let i = 0; i < 10; i++) {
+                await request(app).post('/api/devices/enroll').send({ code: 'BADCODE123' });
+            }
+            const res11 = await request(app).post('/api/devices/enroll').send({ code: 'BADCODE123' });
+            expect(res11.status).toBe(429);
+            expect(res11.body.message).toMatch(/too many enrollment attempts/i);
+        });
+
+        it('Device list never includes token values or hashes', async () => {
+            const res = await request(app)
+                .get('/api/devices/tokens')
+                .set('Authorization', `Bearer ${enrollAdminToken}`);
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+            expect(Array.isArray(res.body.tokens)).toBe(true);
+            expect(res.body.tokens.length).toBeGreaterThan(0);
+
+            for (const dev of res.body.tokens) {
+                expect(dev.token).toBeUndefined();
+                expect(dev.token_hash).toBeUndefined();
+                expect(dev.plainToken).toBeUndefined();
+                expect(dev.hash).toBeUndefined();
+                expect(dev.employee_id).toBeDefined();
+            }
+        });
+    });
 });
 
 

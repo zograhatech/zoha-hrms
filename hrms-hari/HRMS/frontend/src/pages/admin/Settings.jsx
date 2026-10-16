@@ -75,7 +75,8 @@ export default function Settings() {
         idle_auto_clockout_enabled: false,
         idle_timeout_minutes: 10,
         idle_exempt_employee_ids: [],
-        idle_exempt_app_names: []
+        idle_exempt_app_names: [],
+        companion_download_url: ''
     });
 
     const [shifts, setShifts] = useState([]);
@@ -1572,6 +1573,21 @@ export default function Settings() {
                                     ) : (
                                         <small style={{ color: 'var(--text-muted)' }}>No exempt applications configured.</small>
                                     )}
+                                </div>
+
+                                {/* Companion Download URL */}
+                                <div className="form-group" style={{ marginTop: 20 }}>
+                                    <label className="form-label" style={{ fontWeight: 600 }}>Companion Download URL</label>
+                                    <input
+                                        type="url"
+                                        className="form-input"
+                                        placeholder="https://..."
+                                        value={settings.companion_download_url || ''}
+                                        onChange={e => setSettings(prev => ({ ...prev, companion_download_url: e.target.value }))}
+                                    />
+                                    <small style={{ color: 'var(--text-muted)', display: 'block', marginTop: 4 }}>
+                                        Direct https:// link for downloading the Windows Idle Companion installer or script. Used in setup invitation emails.
+                                    </small>
                                 </div>
                             </div>
                         </div>

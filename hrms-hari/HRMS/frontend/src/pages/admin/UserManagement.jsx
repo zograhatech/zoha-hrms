@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import API from '../../api/axios';
-import { FiSearch, FiRefreshCcw, FiShield, FiTrash2, FiUser, FiMail, FiKey, FiX, FiCheck } from 'react-icons/fi';
+import { FiSearch, FiRefreshCcw, FiShield, FiTrash2, FiUser, FiMail, FiKey, FiX, FiCheck, FiSend, FiMonitor } from 'react-icons/fi';
 import { useToast } from '../../context/ToastContext';
 import { useAuth } from '../../context/AuthContext';
 import { isManagerRole, getRoleDisplayLabel } from '../../utils/roleHelper';
@@ -82,6 +82,12 @@ export default function UserManagement() {
     const [userPerms, setUserPerms] = useState([]);
     const [savingPerms, setSavingPerms] = useState(false);
 
+    const isSuperAdmin = (user?.role || '').toLowerCase() === 'admin';
+    const [companionDownloadUrl, setCompanionDownloadUrl] = useState('');
+    const [devices, setDevices] = useState([]);
+    const [loadingDevices, setLoadingDevices] = useState(false);
+    const [sendingSetup, setSendingSetup] = useState({});
+
     const loadUsers = async () => {
         setLoading(true);
         try {
@@ -95,9 +101,73 @@ export default function UserManagement() {
         }
     };
 
+    const loadSettings = async () => {
+        try {
+            const { data } = await API.get('/settings');
+            if (data?.settings) {
+                setCompanionDownloadUrl(data.settings.companion_download_url || '');
+            }
+        } catch (err) {
+            console.error('Failed to load settings:', err);
+        }
+    };
+
+    const loadDevices = async () => {
+        if (!isSuperAdmin) return;
+        setLoadingDevices(true);
+        try {
+            const { data } = await API.get('/devices/tokens');
+            setDevices(data.tokens || []);
+        } catch (err) {
+            console.error('Failed to load device tokens:', err);
+        } finally {
+            setLoadingDevices(false);
+        }
+    };
+
+    const handleSendSetup = async (targetUser) => {
+        if (!companionDownloadUrl) {
+            showToast('Set the companion download link in Settings first.', 'error');
+            return;
+        }
+        if (!window.confirm(`Send Idle Companion setup email to ${targetUser.name} (${targetUser.email})?`)) {
+            return;
+        }
+        setSendingSetup(prev => ({ ...prev, [targetUser.id]: true }));
+        try {
+            const res = await API.post('/devices/enrollment-codes', { employee_id: targetUser.id });
+            if (res.data?.success) {
+                showToast(`Setup email sent to ${targetUser.name} successfully!`, 'success');
+            } else {
+                showToast(res.data?.message || 'Failed to send setup email.', 'error');
+            }
+        } catch (err) {
+            showToast(err.response?.data?.message || 'Failed to send setup email.', 'error');
+        } finally {
+            setSendingSetup(prev => ({ ...prev, [targetUser.id]: false }));
+        }
+    };
+
+    const handleRevokeDevice = async (device) => {
+        if (!window.confirm(`Are you sure you want to revoke device "${device.device_name}" for ${device.employee_name || device.employee_id}?`)) {
+            return;
+        }
+        try {
+            await API.delete(`/devices/tokens/${device._id || device.id}`);
+            showToast('Device token revoked successfully.', 'success');
+            loadDevices();
+        } catch (err) {
+            showToast(err.response?.data?.message || 'Failed to revoke device token.', 'error');
+        }
+    };
+
     useEffect(() => {
         loadUsers();
-    }, []);
+        if (isSuperAdmin) {
+            loadSettings();
+            loadDevices();
+        }
+    }, [user]);
 
     const handleRoleChange = async (userId, newRole) => {
         try {
@@ -274,6 +344,24 @@ export default function UserManagement() {
                                         <button className="btn btn-sm btn-danger-outline" title="Delete Account" disabled={isManagerRole(u.role)} onClick={() => deleteUser(u.id)}>
                                             <FiTrash2 size={14} />
                                         </button>
+                                        {isSuperAdmin && (
+                                            <button
+                                                className="btn btn-sm btn-outline"
+                                                title={!companionDownloadUrl ? 'Set the companion download link in Settings first.' : `Send Idle Companion setup email to ${u.name}`}
+                                                disabled={!companionDownloadUrl || sendingSetup[u.id]}
+                                                onClick={() => handleSendSetup(u)}
+                                                style={{
+                                                    color: !companionDownloadUrl ? 'var(--text-muted)' : '#0284c7',
+                                                    borderColor: !companionDownloadUrl ? undefined : 'rgba(2,132,199,0.3)',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    gap: 4
+                                                }}
+                                            >
+                                                <FiSend size={13} />
+                                                <span style={{ fontSize: '0.75rem' }}>Send setup</span>
+                                            </button>
+                                        )}
                                     </div>
                                 </td>
                             </tr>
@@ -281,6 +369,87 @@ export default function UserManagement() {
                     </tbody>
                 </table>
             </div>
+
+            {isSuperAdmin && (
+                <div className="card" style={{ marginTop: 32, padding: 0, overflow: 'hidden' }}>
+                    <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div>
+                            <h4 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <FiMonitor /> Installed Devices (Windows Idle Companion)
+                            </h4>
+                            <p style={{ margin: '4px 0 0 0', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                                Manage enrolled devices and revocable device tokens. Token secrets are never displayed.
+                            </p>
+                        </div>
+                        <button className="btn btn-sm btn-outline" onClick={loadDevices} disabled={loadingDevices} title="Refresh device list">
+                            <FiRefreshCcw size={14} /> Refresh
+                        </button>
+                    </div>
+                    <table className="table">
+                        <thead>
+                            <tr>
+                                <th>Employee</th>
+                                <th>Device Name</th>
+                                <th>Enrolled / Created</th>
+                                <th>Last Used</th>
+                                <th>Expires At</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {loadingDevices ? (
+                                <tr><td colSpan="7" style={{ textAlign: 'center', padding: 30 }}><div className="loading-spinner" /></td></tr>
+                            ) : devices.length === 0 ? (
+                                <tr><td colSpan="7" style={{ textAlign: 'center', padding: 30, color: 'var(--text-muted)' }}>No enrolled devices found.</td></tr>
+                            ) : devices.map(dev => {
+                                const isRevoked = Boolean(dev.revoked);
+                                const isExpired = new Date(dev.expires_at) < new Date();
+                                const statusLabel = isRevoked ? 'Revoked' : (isExpired ? 'Expired' : 'Active');
+                                const badgeClass = isRevoked ? 'badge-danger' : (isExpired ? 'badge-warning' : 'badge-success');
+                                const isActive = !isRevoked && !isExpired;
+
+                                return (
+                                    <tr key={dev._id || dev.id}>
+                                        <td>
+                                            <div style={{ fontWeight: 600 }}>{dev.employee_name || dev.employee_id}</div>
+                                            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{dev.employee_id}</div>
+                                        </td>
+                                        <td>
+                                            <span style={{ fontWeight: 500 }}>{dev.device_name || 'Windows PC'}</span>
+                                        </td>
+                                        <td style={{ fontSize: '0.82rem' }}>
+                                            {dev.createdAt ? new Date(dev.createdAt).toLocaleString() : '—'}
+                                        </td>
+                                        <td style={{ fontSize: '0.82rem' }}>
+                                            {dev.last_used_at ? new Date(dev.last_used_at).toLocaleString() : 'Never'}
+                                        </td>
+                                        <td style={{ fontSize: '0.82rem' }}>
+                                            {dev.expires_at ? new Date(dev.expires_at).toLocaleDateString() : '—'}
+                                        </td>
+                                        <td>
+                                            <span className={`badge ${badgeClass}`}>{statusLabel}</span>
+                                        </td>
+                                        <td>
+                                            {isActive ? (
+                                                <button
+                                                    className="btn btn-sm btn-danger-outline"
+                                                    title="Revoke device access"
+                                                    onClick={() => handleRevokeDevice(dev)}
+                                                >
+                                                    Revoke
+                                                </button>
+                                            ) : (
+                                                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>—</span>
+                                            )}
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                </div>
+            )}
 
             {selectedUser && (
                 <div className="modal-overlay">
