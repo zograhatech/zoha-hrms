@@ -72,23 +72,11 @@ const sendEmail = async ({ to, subject, text, html, code, attachments = [] }) =>
             companyLogo = `${baseUrl}${companyLogo.startsWith('/') ? '' : '/'}${companyLogo}`;
         }
 
-        const isGmail = mail_host.includes('gmail.com') || mail_host.includes('googlemail.com');
-
-        const transportConfig = {
-            host: isGmail ? undefined : mail_host,
-            port: isGmail ? undefined : parseInt(mail_port),
-            secure: isGmail ? undefined : (mail_encryption === 'ssl' || mail_port === '465'),
-            service: isGmail ? 'gmail' : undefined,
-            auth: {
-                user: mail_username,
-                pass: mail_password
-            },
-            tls: {
-                rejectUnauthorized: false
-            }
-        };
-
-        const transporter = nodemailer.createTransport(transportConfig);
+        const transporter = getTransporter(settings.email_settings);
+        if (!transporter) {
+            console.error('Failed to create transporter from settings.');
+            return false;
+        }
 
         const renderedHtml = buildEmailHtml({ companyName, companyLogo, html, text, code });
         lastSentEmail.html = renderedHtml;
@@ -110,6 +98,41 @@ const sendEmail = async ({ to, subject, text, html, code, attachments = [] }) =>
     }
 };
 
+/**
+ * Creates and returns a nodemailer transport instance from email_settings.
+ * Validates that host, username, and password are provided.
+ */
+const getTransporter = (settings) => {
+    const config = settings?.email_settings || settings || {};
+    let { mail_host, mail_port, mail_username, mail_password, mail_encryption } = config;
+
+    if (mail_host) mail_host = mail_host.trim().toLowerCase().replace(/^stmp\./, 'smtp.');
+    if (mail_username) mail_username = typeof mail_username === 'string' ? mail_username.trim() : mail_username;
+    if (mail_password) mail_password = typeof mail_password === 'string' ? mail_password.trim() : mail_password;
+
+    if (!mail_host || !mail_username || !mail_password) {
+        return null;
+    }
+
+    const isGmail = mail_host.includes('gmail.com') || mail_host.includes('googlemail.com');
+
+    const transportConfig = {
+        host: isGmail ? undefined : mail_host,
+        port: isGmail ? undefined : (mail_port ? parseInt(mail_port, 10) : undefined),
+        secure: isGmail ? undefined : (mail_encryption === 'ssl' || String(mail_port) === '465'),
+        service: isGmail ? 'gmail' : undefined,
+        auth: {
+            user: mail_username,
+            pass: mail_password
+        },
+        tls: {
+            rejectUnauthorized: false
+        }
+    };
+
+    return nodemailer.createTransport(transportConfig);
+};
+
 sendEmail.getLastSentEmail = () => lastSentEmail;
 
-module.exports = { sendEmail, build2faHtml, buildEmailHtml, getLastSentEmail: () => lastSentEmail };
+module.exports = { sendEmail, getTransporter, build2faHtml, buildEmailHtml, getLastSentEmail: () => lastSentEmail };

@@ -3,7 +3,7 @@ const LeaveBalance = require('../models/LeaveBalance');
 const Leave = require('../models/Leave');
 const Employee = require('../models/Employee');
 const Notification = require('../models/Notification');
-const { sendEmail } = require('../utils/emailService');
+const { sendEmail, getTransporter } = require('../utils/emailService');
 const nodemailer = require('nodemailer');
 
 const getSettings = async (req, res) => {
@@ -372,33 +372,37 @@ const updateSettings = async (req, res) => {
 
 const sendTestEmail = async (req, res) => {
     try {
-        let { mail_host, mail_port, mail_username, mail_password, mail_encryption, mail_from_email, mail_from_name } = req.body;
+        const currentSetting = await Setting.findOne();
+        const savedEmail = currentSetting?.email_settings || {};
+
+        let mail_host = req.body?.mail_host || savedEmail.mail_host;
+        let mail_port = req.body?.mail_port || savedEmail.mail_port;
+        let mail_username = req.body?.mail_username || savedEmail.mail_username;
+        let mail_password = req.body?.mail_password || savedEmail.mail_password;
+        let mail_encryption = req.body?.mail_encryption || savedEmail.mail_encryption;
+        let mail_from_email = req.body?.mail_from_email || savedEmail.mail_from_email;
+        let mail_from_name = req.body?.mail_from_name || savedEmail.mail_from_name || 'HRMS';
 
         if (mail_host) mail_host = mail_host.trim().toLowerCase().replace(/^stmp\./, 'smtp.');
-        if (mail_username) mail_username = mail_username.trim();
-        if (mail_password) mail_password = mail_password.trim();
+        if (mail_username && typeof mail_username === 'string') mail_username = mail_username.trim();
+        if (mail_password && typeof mail_password === 'string') mail_password = mail_password.trim();
 
-        if (!mail_host || !mail_username || !mail_password) {
-            return res.status(400).json({ success: false, message: 'SMTP Host, Username and Password are required.' });
+        if (!mail_host || !mail_username || !mail_password || !mail_from_email) {
+            return res.status(400).json({ success: false, message: 'SMTP Host, Username, Password, and From Email are required.' });
         }
 
-        const isGmail = mail_host.includes('gmail.com') || mail_host.includes('googlemail.com');
+        const transporter = getTransporter({
+            mail_host,
+            mail_port,
+            mail_username,
+            mail_password,
+            mail_encryption
+        });
 
-        const transportConfig = {
-            host: isGmail ? undefined : mail_host,
-            port: isGmail ? undefined : parseInt(mail_port),
-            secure: isGmail ? undefined : (mail_encryption === 'ssl' || mail_port === '465'),
-            service: isGmail ? 'gmail' : undefined,
-            auth: {
-                user: mail_username,
-                pass: mail_password
-            },
-            tls: {
-                rejectUnauthorized: false
-            }
-        };
+        if (!transporter) {
+            return res.status(400).json({ success: false, message: 'Invalid SMTP configuration. Host, Username and Password are required.' });
+        }
 
-        const currentSetting = await Setting.findOne();
         const companyName = currentSetting?.company_name || process.env.COMPANY_NAME || 'HRMS';
 
         const info = await transporter.sendMail({

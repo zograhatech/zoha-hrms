@@ -7618,7 +7618,73 @@ describe('HRMS Backend Automated Test Suite', () => {
             }
         });
     });
+
+    describe('28. Email Transporter & Test Email Tests', () => {
+        let nodemailerModule;
+        let originalCreateTransport;
+        let mockSendMail;
+
+        beforeAll(() => {
+            nodemailerModule = require('nodemailer');
+            originalCreateTransport = nodemailerModule.createTransport;
+        });
+
+        afterAll(() => {
+            nodemailerModule.createTransport = originalCreateTransport;
+        });
+
+        beforeEach(() => {
+            mockSendMail = jest.fn().mockResolvedValue({ messageId: 'mock-msg-12345' });
+            nodemailerModule.createTransport = jest.fn().mockReturnValue({
+                sendMail: mockSendMail
+            });
+        });
+
+        afterEach(() => {
+            nodemailerModule.createTransport = originalCreateTransport;
+        });
+
+        it('sendTestEmail with mocked nodemailer returns success and calls sendMail once with configured from address', async () => {
+            const res = await request(app)
+                .post('/api/settings/test-email')
+                .set('Authorization', `Bearer ${adminToken}`)
+                .send({
+                    mail_host: 'smtp.office365.com',
+                    mail_port: 587,
+                    mail_username: 'smtp-user@example.com',
+                    mail_password: 'smtp-password',
+                    mail_encryption: 'tls',
+                    mail_from_email: 'alerts@example.com',
+                    mail_from_name: 'HRMS Notifications'
+                });
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+            expect(res.body.message).toContain('Test email sent successfully to alerts@example.com');
+
+            expect(nodemailerModule.createTransport).toHaveBeenCalledTimes(1);
+            expect(mockSendMail).toHaveBeenCalledTimes(1);
+            expect(mockSendMail.mock.calls[0][0].from).toBe('"HRMS Notifications" <alerts@example.com>');
+            expect(mockSendMail.mock.calls[0][0].to).toBe('alerts@example.com');
+        });
+
+        it('A missing configuration returns a clear error, not a ReferenceError', async () => {
+            const Setting = require('../models/Setting');
+            await Setting.updateOne({}, { $unset: { email_settings: 1 } });
+
+            const res = await request(app)
+                .post('/api/settings/test-email')
+                .set('Authorization', `Bearer ${adminToken}`)
+                .send({});
+
+            expect(res.status).toBe(400);
+            expect(res.body.success).toBe(false);
+            expect(res.body.message).toMatch(/required/i);
+            expect(res.body.message).not.toContain('ReferenceError');
+        });
+    });
 });
+
 
 
 
