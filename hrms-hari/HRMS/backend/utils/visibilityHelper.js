@@ -44,16 +44,33 @@ async function getVisibleEmployeeScope(user) {
         return { isAll: false, visibleIds: emps.map(e => e.id) };
     }
 
-    // 3. Team Lead: employees whose team_lead_id is caller.id (plus self)
+    // 3. Team Lead: employees in the team lead's department, or whose team_lead_id is caller.id, plus self
     if (role === 'team_lead') {
         const tlIds = [user.id];
         if (user._id) tlIds.push(user._id.toString());
-        const emps = await Employee.find({
-            $or: [
-                { team_lead_id: { $in: tlIds } },
-                { id: user.id } // Team Lead can always see self
-            ]
-        }).select('id').lean();
+
+        // Resolve team lead's department_id
+        let userDeptId = user.department_id;
+        if (!userDeptId) {
+            const tlDoc = await Employee.findOne({
+                $or: [
+                    { id: user.id },
+                    ...(user._id ? [{ _id: user._id }] : [])
+                ]
+            }).select('department_id').lean();
+            userDeptId = tlDoc?.department_id;
+        }
+
+        const orConditions = [
+            { team_lead_id: { $in: tlIds } },
+            { id: user.id } // Team Lead can always see self
+        ];
+
+        if (userDeptId) {
+            orConditions.push({ department_id: userDeptId });
+        }
+
+        const emps = await Employee.find({ $or: orConditions }).select('id').lean();
         return { isAll: false, visibleIds: emps.map(e => e.id) };
     }
 

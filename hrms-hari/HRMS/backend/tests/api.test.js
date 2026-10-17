@@ -7683,6 +7683,227 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(res.body.message).not.toContain('ReferenceError');
         });
     });
+
+    describe('29. Team Lead Department Scope Tests', () => {
+        let deptSales;
+        let deptEngineering;
+        let tlSales;
+        let empSales;
+        let empEngineering;
+        let mgrSales;
+        let tlSalesToken;
+        let empSalesToken;
+        let mgrSalesToken;
+
+        beforeAll(async () => {
+            const Department = require('../models/Department');
+            const Employee = require('../models/Employee');
+            const Attendance = require('../models/Attendance');
+            const hash = await bcrypt.hash('TestPass123!', 10);
+
+            // Departments
+            deptSales = await Department.create({ name: 'TL_SCOPE_SALES', description: 'Sales Dept' });
+            deptEngineering = await Department.create({ name: 'TL_SCOPE_ENG', description: 'Engineering Dept' });
+
+            // Manager for Sales
+            mgrSales = await Employee.create({
+                id: 'MGR_TL_SCOPE',
+                name: 'Sales Manager',
+                email: 'mgr_tl_scope@zograhatechnologies.test',
+                password_hash: hash,
+                role: 'manager',
+                department_id: deptSales._id,
+                status: 'active'
+            });
+            await Department.updateOne({ _id: deptSales._id }, { $set: { manager_id: mgrSales.id } });
+
+            // Team Lead in Sales
+            tlSales = await Employee.create({
+                id: 'TL_SCOPE_01',
+                name: 'Sales Team Lead',
+                email: 'tl_scope_01@zograhatechnologies.test',
+                password_hash: hash,
+                role: 'team_lead',
+                department_id: deptSales._id,
+                status: 'active'
+            });
+
+            // Employee in Sales (department colleague)
+            empSales = await Employee.create({
+                id: 'EMP_TL_SALES',
+                name: 'Sales Colleague',
+                email: 'emp_tl_sales@zograhatechnologies.test',
+                password_hash: hash,
+                role: 'employee',
+                department_id: deptSales._id,
+                status: 'active'
+            });
+
+            // Employee in Engineering (other department)
+            empEngineering = await Employee.create({
+                id: 'EMP_TL_ENG',
+                name: 'Engineering Staff',
+                email: 'emp_tl_eng@zograhatechnologies.test',
+                password_hash: hash,
+                role: 'employee',
+                department_id: deptEngineering._id,
+                status: 'active'
+            });
+
+            // Attendance records for both employees
+            const today = new Date('2026-10-17T04:00:00.000Z');
+            await Attendance.create({
+                employee_id: empSales.id,
+                date: today,
+                check_in: new Date('2026-10-17T04:00:00.000Z'),
+                check_out: new Date('2026-10-17T12:30:00.000Z'),
+                worked_hours: 510,
+                worked_hours_formatted: '08:30',
+                status: 'present'
+            });
+
+            await Attendance.create({
+                employee_id: empEngineering.id,
+                date: today,
+                check_in: new Date('2026-10-17T04:30:00.000Z'),
+                check_out: new Date('2026-10-17T13:00:00.000Z'),
+                worked_hours: 510,
+                worked_hours_formatted: '08:30',
+                status: 'present'
+            });
+
+            tlSalesToken = jwt.sign(
+                { id: tlSales.id, _id: tlSales._id, role: tlSales.role, department_id: deptSales._id, email: tlSales.email },
+                process.env.JWT_SECRET,
+                { expiresIn: '1h' }
+            );
+
+            empSalesToken = jwt.sign(
+                { id: empSales.id, _id: empSales._id, role: empSales.role, department_id: deptSales._id, email: empSales.email },
+                process.env.JWT_SECRET,
+                { expiresIn: '1h' }
+            );
+
+            mgrSalesToken = jwt.sign(
+                { id: mgrSales.id, _id: mgrSales._id, role: mgrSales.role, department_id: deptSales._id, email: mgrSales.email },
+                process.env.JWT_SECRET,
+                { expiresIn: '1h' }
+            );
+        });
+
+        // 1. team_lead sees a department colleague in GET /api/employees
+        it('team_lead sees a department colleague in GET /api/employees', async () => {
+            const res = await request(app)
+                .get('/api/employees')
+                .set('Authorization', `Bearer ${tlSalesToken}`);
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+            const ids = res.body.employees.map(e => e.id);
+            expect(ids).toContain(empSales.id);
+            expect(ids).toContain(tlSales.id);
+        });
+
+        // 2. team_lead does not see an employee from another department
+        it('team_lead does not see an employee from another department', async () => {
+            const res = await request(app)
+                .get('/api/employees')
+                .set('Authorization', `Bearer ${tlSalesToken}`);
+
+            expect(res.status).toBe(200);
+            const ids = res.body.employees.map(e => e.id);
+            expect(ids).not.toContain(empEngineering.id);
+        });
+
+        // 3. team_lead sees department colleagues attendance in the logs and export
+        it('team_lead sees department colleagues attendance in the logs and export', async () => {
+            const XLSX = require('xlsx');
+
+            // Logs
+            const logRes = await request(app)
+                .get('/api/attendance/logs?from=2026-10-17&to=2026-10-17')
+                .set('Authorization', `Bearer ${tlSalesToken}`);
+
+            expect(logRes.status).toBe(200);
+            const logEmpIds = logRes.body.logs.map(l => l.employee_id);
+            expect(logEmpIds).toContain(empSales.id);
+
+            // Export
+            const expRes = await request(app)
+                .get('/api/attendance/export?from=2026-10-17&to=2026-10-17')
+                .set('Authorization', `Bearer ${tlSalesToken}`)
+                .responseType('blob');
+
+            expect(expRes.status).toBe(200);
+            const wb = XLSX.read(expRes.body, { type: 'buffer' });
+            const sheet = wb.Sheets[wb.SheetNames[0]];
+            const rows = XLSX.utils.sheet_to_json(sheet);
+            const expEmpIds = rows.map(r => r['Employee ID']);
+            expect(expEmpIds).toContain(empSales.id);
+        });
+
+        // 4. team_lead cannot see another department attendance
+        it('team_lead cannot see another department attendance', async () => {
+            const XLSX = require('xlsx');
+
+            // Individual query for other dept employee: 403
+            const forbiddenLog = await request(app)
+                .get(`/api/attendance/logs?employee_id=${empEngineering.id}&from=2026-10-17&to=2026-10-17`)
+                .set('Authorization', `Bearer ${tlSalesToken}`);
+            expect(forbiddenLog.status).toBe(403);
+
+            // General logs list: does not contain other dept employee
+            const listRes = await request(app)
+                .get('/api/attendance/logs?from=2026-10-17&to=2026-10-17')
+                .set('Authorization', `Bearer ${tlSalesToken}`);
+            expect(listRes.status).toBe(200);
+            const logEmpIds = listRes.body.logs.map(l => l.employee_id);
+            expect(logEmpIds).not.toContain(empEngineering.id);
+
+            // General export: does not contain other dept employee
+            const expRes = await request(app)
+                .get('/api/attendance/export?from=2026-10-17&to=2026-10-17')
+                .set('Authorization', `Bearer ${tlSalesToken}`)
+                .responseType('blob');
+            expect(expRes.status).toBe(200);
+            const wb = XLSX.read(expRes.body, { type: 'buffer' });
+            const sheet = wb.Sheets[wb.SheetNames[0]];
+            const rows = XLSX.utils.sheet_to_json(sheet);
+            const expEmpIds = rows.map(r => r['Employee ID']);
+            expect(expEmpIds).not.toContain(empEngineering.id);
+        });
+
+        // 5. employee still sees only themselves
+        it('employee still sees only themselves', async () => {
+            const res = await request(app)
+                .get('/api/employees')
+                .set('Authorization', `Bearer ${empSalesToken}`);
+
+            expect(res.status).toBe(200);
+            const ids = res.body.employees.map(e => e.id);
+            expect(ids).toEqual([empSales.id]);
+
+            // Attempting to view another employee's attendance: 403
+            const forbiddenLog = await request(app)
+                .get(`/api/attendance/logs?employee_id=${tlSales.id}&from=2026-10-17&to=2026-10-17`)
+                .set('Authorization', `Bearer ${empSalesToken}`);
+            expect(forbiddenLog.status).toBe(403);
+        });
+
+        // 6. manager scope is unchanged
+        it('manager scope is unchanged', async () => {
+            const res = await request(app)
+                .get('/api/employees')
+                .set('Authorization', `Bearer ${mgrSalesToken}`);
+
+            expect(res.status).toBe(200);
+            const ids = res.body.employees.map(e => e.id);
+            expect(ids).toContain(empSales.id);
+            expect(ids).toContain(tlSales.id);
+            expect(ids).toContain(mgrSales.id);
+            expect(ids).not.toContain(empEngineering.id);
+        });
+    });
 });
 
 
