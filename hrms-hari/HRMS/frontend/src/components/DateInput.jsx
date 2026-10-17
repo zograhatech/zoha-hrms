@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 
 /**
  * Custom DateInput component with a calendar picker popup.
@@ -41,10 +42,12 @@ const DateInput = ({ value, onChange, className, style, required, label }) => {
 
     const [displayValue, setDisplayValue] = useState(toDisplay(value));
     const [showPicker, setShowPicker] = useState(false);
+    const [coords, setCoords] = useState({ top: 0, left: 0 });
     const [calYear, setCalYear] = useState(selectedDate ? selectedDate.getFullYear() : today.getFullYear());
     const [calMonth, setCalMonth] = useState(selectedDate ? selectedDate.getMonth() : today.getMonth());
 
     const wrapperRef = useRef(null);
+    const pickerRef = useRef(null);
 
     // Sync internal state with external value prop during render
     const [prevValue, setPrevValue] = useState(value);
@@ -58,16 +61,51 @@ const DateInput = ({ value, onChange, className, style, required, label }) => {
         }
     }
 
+    const updateCoords = () => {
+        if (!wrapperRef.current) return;
+        const rect = wrapperRef.current.getBoundingClientRect();
+        const pickerHeight = 330;
+        const spaceBelow = window.innerHeight - rect.bottom;
+        const showAbove = spaceBelow < pickerHeight && rect.top > pickerHeight;
+        const top = showAbove
+            ? Math.max(8, rect.top - pickerHeight - 8)
+            : rect.bottom + 8;
+        const left = Math.max(8, Math.min(rect.left, window.innerWidth - 300));
+        setCoords({ top, left });
+    };
+
+    useLayoutEffect(() => {
+        if (!showPicker) return;
+        updateCoords();
+        window.addEventListener('scroll', updateCoords, true);
+        window.addEventListener('resize', updateCoords);
+        return () => {
+            window.removeEventListener('scroll', updateCoords, true);
+            window.removeEventListener('resize', updateCoords);
+        };
+    }, [showPicker]);
+
     // Close picker when clicking outside
     useEffect(() => {
+        if (!showPicker) return;
         const handler = (e) => {
-            if (wrapperRef.current && !wrapperRef.current.contains(e.target)) {
+            if (
+                wrapperRef.current && !wrapperRef.current.contains(e.target) &&
+                pickerRef.current && !pickerRef.current.contains(e.target)
+            ) {
                 setShowPicker(false);
             }
         };
         document.addEventListener('mousedown', handler);
         return () => document.removeEventListener('mousedown', handler);
-    }, []);
+    }, [showPicker]);
+
+    const togglePicker = () => {
+        if (!showPicker) {
+            updateCoords();
+        }
+        setShowPicker(v => !v);
+    };
 
     const notify = (isoDate) => onChange({ target: { value: isoDate } });
 
@@ -140,7 +178,7 @@ const DateInput = ({ value, onChange, className, style, required, label }) => {
                 />
                 <button
                     type="button"
-                    onClick={() => setShowPicker(v => !v)}
+                    onClick={togglePicker}
                     style={{
                         position: 'absolute', right: 12, top: 0, height: '100%',
                         background: 'none', border: 'none', cursor: 'pointer',
@@ -157,17 +195,23 @@ const DateInput = ({ value, onChange, className, style, required, label }) => {
                 </button>
             </div>
 
-            {showPicker && (
-                <div style={{
-                    position: 'absolute', top: 'calc(100% + 8px)', left: 0, zIndex: 999,
-                    background: 'var(--bg-secondary)',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: 12,
-                    boxShadow: '0 12px 40px rgba(0,0,0,0.35)',
-                    padding: 16,
-                    minWidth: 280,
-                    userSelect: 'none',
-                }}>
+            {showPicker && typeof document !== 'undefined' && createPortal(
+                <div
+                    ref={pickerRef}
+                    style={{
+                        position: 'fixed',
+                        top: coords.top,
+                        left: coords.left,
+                        zIndex: 9999,
+                        background: 'var(--bg-secondary)',
+                        border: '1px solid var(--border-color)',
+                        borderRadius: 12,
+                        boxShadow: '0 12px 40px rgba(0,0,0,0.35)',
+                        padding: 16,
+                        minWidth: 280,
+                        userSelect: 'none',
+                    }}
+                >
                     {/* Header: month & year navigation */}
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
                         <button type="button" onClick={prevMonth} style={navBtnStyle}>&#8249;</button>
@@ -258,7 +302,8 @@ const DateInput = ({ value, onChange, className, style, required, label }) => {
                             Today
                         </button>
                     </div>
-                </div>
+                </div>,
+                document.body
             )}
         </div>
     );
