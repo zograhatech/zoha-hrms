@@ -9727,5 +9727,247 @@ describe('HRMS Backend Automated Test Suite', () => {
             await SettingModel.updateOne({}, { $set: { days_worked_convention: 'payable' } });
         });
     });
+    describe('35. SuperAdmin Payslip Export (Excel all, PDF per employee)', () => {
+        const Department = require('../models/Department');
+        const EmployeeModel = require('../models/Employee');
+        const PayrollModel = require('../models/Payroll');
+        const SettingModel = require('../models/Setting');
+        const XLSX = require('xlsx');
+
+        let s35AdminToken;
+        let s35MgrToken;
+        let s35EmpToken;
+        let s35DeptId;
+        let s35Emp1;
+        let s35Emp2;
+        let s35Payroll1;
+        let s35Payroll2;
+
+        beforeAll(async () => {
+            const passwordHash = await bcrypt.hash('S35Pass123!', 10);
+            const dept = await Department.create({ name: 'S35 Dept' });
+            s35DeptId = dept._id;
+
+            await EmployeeModel.create({
+                id: 'S35_ADMIN',
+                name: 'S35 Admin',
+                email: 's35_admin@test.com',
+                password_hash: passwordHash,
+                role: 'admin',
+                status: 'active',
+                department_id: s35DeptId
+            });
+            s35AdminToken = jwt.sign({ id: 'S35_ADMIN', role: 'admin', email: 's35_admin@test.com' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+            await EmployeeModel.create({
+                id: 'S35_MGR',
+                name: 'S35 Manager',
+                email: 's35_mgr@test.com',
+                password_hash: passwordHash,
+                role: 'manager',
+                status: 'active',
+                department_id: s35DeptId
+            });
+            s35MgrToken = jwt.sign({ id: 'S35_MGR', role: 'manager', email: 's35_mgr@test.com' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+            s35Emp1 = await EmployeeModel.create({
+                id: 'S35_EMP1',
+                name: 'Alice S35',
+                email: 's35_emp1@test.com',
+                password_hash: passwordHash,
+                role: 'employee',
+                status: 'active',
+                department_id: s35DeptId
+            });
+            s35EmpToken = jwt.sign({ id: 'S35_EMP1', role: 'employee', email: 's35_emp1@test.com' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+            s35Emp2 = await EmployeeModel.create({
+                id: 'S35_EMP2',
+                name: 'Bob S35',
+                email: 's35_emp2@test.com',
+                password_hash: passwordHash,
+                role: 'employee',
+                status: 'active',
+                department_id: s35DeptId
+            });
+
+            // Seed November 2026 payrolls
+            s35Payroll1 = await PayrollModel.create({
+                employee_id: s35Emp1.id,
+                month: 11,
+                year: 2026,
+                basic: 30000,
+                da: 0,
+                oa: 0,
+                leave_wages: 0,
+                leave_deduction: 0,
+                unpaid_leave_days: 2,
+                unpaid_leave_deduction: 2000,
+                unpaid_leave_adjustment: 0,
+                other_deductions: 0,
+                days_worked: 30,
+                days_worked_convention: 'payable',
+                status: 'paid'
+            });
+
+            s35Payroll2 = await PayrollModel.create({
+                employee_id: s35Emp2.id,
+                month: 11,
+                year: 2026,
+                basic: 40000,
+                da: 5000,
+                oa: 5000,
+                leave_wages: 0,
+                leave_deduction: 0,
+                unpaid_leave_days: 0,
+                unpaid_leave_deduction: 0,
+                unpaid_leave_adjustment: 0,
+                other_deductions: 0,
+                days_worked: 30,
+                days_worked_convention: 'payable',
+                status: 'pending'
+            });
+        });
+
+        afterAll(async () => {
+            await EmployeeModel.deleteMany({ id: { $regex: /^S35_/ } });
+            await PayrollModel.deleteMany({ employee_id: { $regex: /^S35_/ } });
+        });
+
+        it('35.1: SuperAdmin GET /payslips/export?month=11&year=2026 returns 200 and xlsx content type with workbook rows', async () => {
+            const res = await request(app)
+                .get('/api/payroll/payslips/export?month=11&year=2026')
+                .set('Authorization', `Bearer ${s35AdminToken}`)
+                .buffer(true)
+                .parse((r, cb) => {
+                    const data = [];
+                    r.on('data', chunk => data.push(chunk));
+                    r.on('end', () => cb(null, Buffer.concat(data)));
+                });
+
+            expect(res.status).toBe(200);
+            expect(res.headers['content-type']).toContain('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            expect(res.headers['content-disposition']).toContain('attachment; filename="payslips-2026-11.xlsx"');
+
+            const wb = XLSX.read(res.body, { type: 'buffer' });
+            expect(wb.SheetNames).toContain('Payslips');
+            const sheet = wb.Sheets['Payslips'];
+            const rows = XLSX.utils.sheet_to_json(sheet);
+            const s35Rows = rows.filter(r => r['Employee ID'] && r['Employee ID'].startsWith('S35_'));
+            expect(s35Rows.length).toBe(2);
+            expect(s35Rows[0]['Employee ID']).toBe('S35_EMP1');
+            expect(s35Rows[0]['Name']).toBe('Alice S35');
+            expect(s35Rows[0]['Basic']).toBe(30000);
+            expect(s35Rows[0]['Unpaid Leave Days']).toBe(2);
+            expect(s35Rows[0]['Unpaid Leave Deduction']).toBe(2000);
+            expect(s35Rows[0]['Actual Payable']).toBe(28000);
+
+            expect(s35Rows[1]['Employee ID']).toBe('S35_EMP2');
+            expect(s35Rows[1]['Name']).toBe('Bob S35');
+            expect(s35Rows[1]['Basic']).toBe(40000);
+        });
+
+        it('35.2: Manager and employee get 403 on both routes', async () => {
+            // Manager on Excel export
+            const mgrResExcel = await request(app)
+                .get('/api/payroll/payslips/export?month=11&year=2026')
+                .set('Authorization', `Bearer ${s35MgrToken}`);
+            expect(mgrResExcel.status).toBe(403);
+
+            // Employee on Excel export
+            const empResExcel = await request(app)
+                .get('/api/payroll/payslips/export?month=11&year=2026')
+                .set('Authorization', `Bearer ${s35EmpToken}`);
+            expect(empResExcel.status).toBe(403);
+
+            // Manager on PDF export
+            const mgrResPdf = await request(app)
+                .get(`/api/payroll/payslip/${s35Payroll1._id}/pdf`)
+                .set('Authorization', `Bearer ${s35MgrToken}`);
+            expect(mgrResPdf.status).toBe(403);
+
+            // Employee on PDF export
+            const empResPdf = await request(app)
+                .get(`/api/payroll/payslip/${s35Payroll1._id}/pdf`)
+                .set('Authorization', `Bearer ${s35EmpToken}`);
+            expect(empResPdf.status).toBe(403);
+        });
+
+        it('35.3: GET /payslip/:id/pdf for seeded record returns 200, application/pdf, starts with %PDF', async () => {
+            const res = await request(app)
+                .get(`/api/payroll/payslip/${s35Payroll1._id}/pdf`)
+                .set('Authorization', `Bearer ${s35AdminToken}`)
+                .buffer(true)
+                .parse((r, cb) => {
+                    const data = [];
+                    r.on('data', chunk => data.push(chunk));
+                    r.on('end', () => cb(null, Buffer.concat(data)));
+                });
+
+            expect(res.status).toBe(200);
+            expect(res.headers['content-type']).toContain('application/pdf');
+            expect(res.headers['content-disposition']).toContain('attachment; filename="payslip-S35_EMP1-2026-11.pdf"');
+            expect(Buffer.isBuffer(res.body)).toBe(true);
+            expect(res.body.slice(0, 4).toString()).toBe('%PDF');
+        });
+
+        it('35.4: Missing month returns 400. Unknown id returns 404', async () => {
+            // Missing month
+            const resMissingMonth = await request(app)
+                .get('/api/payroll/payslips/export?year=2026')
+                .set('Authorization', `Bearer ${s35AdminToken}`);
+            expect(resMissingMonth.status).toBe(400);
+
+            // Invalid month
+            const resInvalidMonth = await request(app)
+                .get('/api/payroll/payslips/export?month=13&year=2026')
+                .set('Authorization', `Bearer ${s35AdminToken}`);
+            expect(resInvalidMonth.status).toBe(400);
+
+            // Unknown valid ObjectId
+            const unknownId = new mongoose.Types.ObjectId();
+            const resUnknown = await request(app)
+                .get(`/api/payroll/payslip/${unknownId}/pdf`)
+                .set('Authorization', `Bearer ${s35AdminToken}`);
+            expect(resUnknown.status).toBe(404);
+
+            // Invalid id
+            const resInvalidId = await request(app)
+                .get('/api/payroll/payslip/not-a-valid-id/pdf')
+                .set('Authorization', `Bearer ${s35AdminToken}`);
+            expect(resInvalidId.status).toBe(404);
+        });
+
+        it('35.5: Export does not change the record', async () => {
+            // Fetch stored record before export
+            const beforeDoc = await PayrollModel.findById(s35Payroll1._id).lean();
+            expect(beforeDoc.unpaid_leave_deduction).toBe(2000);
+            expect(beforeDoc.basic).toBe(30000);
+
+            // Trigger Excel export
+            const resExcel = await request(app)
+                .get('/api/payroll/payslips/export?month=11&year=2026')
+                .set('Authorization', `Bearer ${s35AdminToken}`);
+            expect(resExcel.status).toBe(200);
+
+            // Trigger PDF export
+            const resPdf = await request(app)
+                .get(`/api/payroll/payslip/${s35Payroll1._id}/pdf`)
+                .set('Authorization', `Bearer ${s35AdminToken}`);
+            expect(resPdf.status).toBe(200);
+
+            // Fetch stored record after export
+            const afterDoc = await PayrollModel.findById(s35Payroll1._id).lean();
+            expect(afterDoc.unpaid_leave_deduction).toBe(2000);
+            expect(afterDoc.unpaid_leave_deduction).toBe(beforeDoc.unpaid_leave_deduction);
+            expect(afterDoc.basic).toBe(beforeDoc.basic);
+            expect(afterDoc.days_worked).toBe(beforeDoc.days_worked);
+            expect(afterDoc.status).toBe(beforeDoc.status);
+            expect(afterDoc.updatedAt.getTime()).toBe(beforeDoc.updatedAt.getTime());
+
+            const countTotal = await PayrollModel.countDocuments({ employee_id: s35Emp1.id, month: 11, year: 2026 });
+            expect(countTotal).toBe(1);
+        });
+    });
 
 });

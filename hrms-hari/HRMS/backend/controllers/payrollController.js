@@ -10,6 +10,8 @@ const { sendEmail } = require('../utils/emailService');
 const { toISTDateString, getISTDayStart, getISTDayEnd } = require('../utils/istDate');
 const { splitLeaveByMonth, computeMonthlyDeduction, round2 } = require('../utils/leaveDeduction');
 const XLSX = require('xlsx');
+const mongoose = require('mongoose');
+const PDFDocument = require('pdfkit');
 
 // Helper: compute gross/net from a plain object
 const computeSalary = (p, conventionOverride) => {
@@ -748,6 +750,213 @@ const reconcilePayroll = async (req, res) => {
     }
 };
 
+// ─── GET /api/payroll/payslips/export ─────────────────────────
+const exportPayslipsExcel = async (req, res) => {
+    if (!checkAdminRole(req, res)) return;
+    try {
+        const { month, year } = req.query;
+        if (!month || !year || isNaN(+month) || isNaN(+year) || +month < 1 || +month > 12) {
+            return res.status(400).json({ success: false, message: 'Invalid or missing month and year.' });
+        }
+
+        const payrolls = await Payroll.find({ month: +month, year: +year }).sort({ employee_id: 1 }).lean();
+        const empIds = [...new Set(payrolls.map(p => p.employee_id))];
+        const emps = await Employee.find({ id: { $in: empIds } }).lean();
+        const empMap = Object.fromEntries(emps.map(e => [e.id, e]));
+
+        const rows = payrolls.map(p => {
+            const emp = empMap[p.employee_id] || {};
+            const { gross_salary, total_deductions, net_salary, actual_payable } = computeSalary(p);
+            return {
+                'Employee ID': p.employee_id,
+                'Name': emp.name || '',
+                'Month': p.month,
+                'Year': p.year,
+                'Days Worked': p.days_worked || 0,
+                'Days Convention': p.days_worked_convention || 'payable',
+                'Basic': p.basic || 0,
+                'DA': p.da || 0,
+                'OA': p.oa || 0,
+                'Leave Wages': p.leave_wages || 0,
+                'Gross': gross_salary,
+                'Provident Fund': p.provident_fund || 0,
+                'ESI': p.esi_deduction || 0,
+                'PT': p.pt || 0,
+                'LWF': p.lwf || 0,
+                'TDS': p.tds || 0,
+                'Manual Leave Deduction': p.leave_deduction || 0,
+                'Unpaid Leave Days': p.unpaid_leave_days || 0,
+                'Unpaid Leave Deduction': p.unpaid_leave_deduction || 0,
+                'Late Leave Adjustment': p.unpaid_leave_adjustment || 0,
+                'Other Deductions': p.other_deductions || 0,
+                'Total Deductions': total_deductions,
+                'Net Salary': net_salary,
+                'Actual Payable': actual_payable,
+                'Status': p.status || 'pending',
+            };
+        });
+
+        const ws = XLSX.utils.json_to_sheet(rows);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Payslips');
+        const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+        const padM = String(+month).padStart(2, '0');
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="payslips-${year}-${padM}.xlsx"`);
+        res.send(buf);
+    } catch (err) {
+        console.error('[exportPayslipsExcel]', err);
+        res.status(500).json({ success: false, message: 'Export failed.' });
+    }
+};
+
+// ─── GET /api/payroll/payslip/:id/pdf ─────────────────────────
+const exportPayslipPdf = async (req, res) => {
+    if (!checkAdminRole(req, res)) return;
+    try {
+        const { id } = req.params;
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(404).json({ success: false, message: 'Payroll record not found.' });
+        }
+        const payroll = await Payroll.findById(id).lean();
+        if (!payroll) {
+            return res.status(404).json({ success: false, message: 'Payroll record not found.' });
+        }
+
+        const employee = await Employee.findOne({ id: payroll.employee_id }).lean();
+        const empName = employee?.name || '';
+
+        const setting = await Setting.findOne().select('company_name').lean();
+        const companyName = setting?.company_name || 'Zograha Technologies';
+
+        const { gross_salary, total_deductions, net_salary, actual_payable } = computeSalary(payroll);
+
+        const padM = String(payroll.month).padStart(2, '0');
+        const filename = `payslip-${payroll.employee_id}-${payroll.year}-${padM}.pdf`;
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+        const doc = new PDFDocument({ margin: 40, size: 'A4' });
+        doc.pipe(res);
+
+        const fmt = (val) => Number(val || 0).toFixed(2);
+
+        // Header
+        doc.fontSize(18).font('Helvetica-Bold').text(companyName, { align: 'center' });
+        doc.moveDown(0.25);
+        doc.fontSize(12).font('Helvetica').text('SALARY PAYSLIP', { align: 'center' });
+        doc.moveDown(0.5);
+
+        // Divider
+        doc.strokeColor('#cccccc').lineWidth(1).moveTo(40, doc.y).lineTo(555, doc.y).stroke();
+        doc.moveDown(0.8);
+
+        // Employee & Period Details
+        const startY = doc.y;
+        doc.fontSize(10).font('Helvetica-Bold');
+        doc.text('Employee ID: ', 40, startY, { continued: true }).font('Helvetica').text(payroll.employee_id);
+        doc.font('Helvetica-Bold').text('Employee Name: ', 40, startY + 16, { continued: true }).font('Helvetica').text(empName || '-');
+        doc.font('Helvetica-Bold').text('Days Worked: ', 40, startY + 32, { continued: true }).font('Helvetica').text(String(payroll.days_worked || 0));
+
+        doc.font('Helvetica-Bold').text('Pay Period: ', 320, startY, { continued: true }).font('Helvetica').text(`${payroll.month} / ${payroll.year}`);
+        doc.font('Helvetica-Bold').text('Days Convention: ', 320, startY + 16, { continued: true }).font('Helvetica').text(payroll.days_worked_convention || 'payable');
+        doc.font('Helvetica-Bold').text('Status: ', 320, startY + 32, { continued: true }).font('Helvetica').text(payroll.status ? payroll.status.toUpperCase() : 'PENDING');
+
+        doc.y = startY + 54;
+        doc.moveDown(0.5);
+        doc.strokeColor('#cccccc').lineWidth(1).moveTo(40, doc.y).lineTo(555, doc.y).stroke();
+        doc.moveDown(0.8);
+
+        // Earnings and Deductions Sections
+        const tableTop = doc.y;
+
+        // Column 1: Earnings
+        doc.fontSize(11).font('Helvetica-Bold').text('EARNINGS', 40, tableTop);
+        doc.fontSize(11).font('Helvetica-Bold').text('AMOUNT', 220, tableTop, { width: 65, align: 'right' });
+        let eY = tableTop + 18;
+        doc.strokeColor('#e5e7eb').lineWidth(0.5).moveTo(40, eY).lineTo(285, eY).stroke();
+        eY += 6;
+
+        const earningsItems = [
+            ['Basic Salary', fmt(payroll.basic)],
+            ['Dearness Allowance (DA)', fmt(payroll.da)],
+            ['Other Allowances (OA)', fmt(payroll.oa)],
+            ['Leave Wages', fmt(payroll.leave_wages)],
+        ];
+        earningsItems.forEach(([label, amt]) => {
+            doc.fontSize(9).font('Helvetica').text(label, 40, eY);
+            doc.text(amt, 220, eY, { width: 65, align: 'right' });
+            eY += 16;
+        });
+
+        // Column 2: Deductions
+        doc.fontSize(11).font('Helvetica-Bold').text('DEDUCTIONS', 310, tableTop);
+        doc.fontSize(11).font('Helvetica-Bold').text('AMOUNT', 490, tableTop, { width: 65, align: 'right' });
+        let dY = tableTop + 18;
+        doc.strokeColor('#e5e7eb').lineWidth(0.5).moveTo(310, dY).lineTo(555, dY).stroke();
+        dY += 6;
+
+        const deductionItems = [
+            ['Provident Fund (PF)', fmt(payroll.provident_fund)],
+            ['ESI Deduction', fmt(payroll.esi_deduction)],
+            ['Professional Tax (PT)', fmt(payroll.pt)],
+            ['Labour Welfare Fund (LWF)', fmt(payroll.lwf)],
+            ['TDS', fmt(payroll.tds)],
+            ['Manual Leave Deduction', fmt(payroll.leave_deduction)],
+        ];
+
+        // Include unpaid leave rows only when non-zero
+        if ((payroll.unpaid_leave_days || 0) > 0 || (payroll.unpaid_leave_deduction || 0) > 0) {
+            deductionItems.push([`Unpaid Leave (${payroll.unpaid_leave_days || 0} day(s))`, fmt(payroll.unpaid_leave_deduction)]);
+        }
+        if ((payroll.unpaid_leave_adjustment || 0) > 0) {
+            deductionItems.push(['Late Leave Adjustment', fmt(payroll.unpaid_leave_adjustment)]);
+        }
+        deductionItems.push(['Other Deductions', fmt(payroll.other_deductions)]);
+
+        deductionItems.forEach(([label, amt]) => {
+            doc.fontSize(9).font('Helvetica').text(label, 310, dY);
+            doc.text(amt, 490, dY, { width: 65, align: 'right' });
+            dY += 16;
+        });
+
+        const maxY = Math.max(eY, dY) + 10;
+        doc.strokeColor('#cccccc').lineWidth(1).moveTo(40, maxY).lineTo(555, maxY).stroke();
+
+        // Summary Totals
+        let sY = maxY + 10;
+        doc.fontSize(10).font('Helvetica-Bold').text('Gross Salary:', 40, sY);
+        doc.font('Helvetica').text(fmt(gross_salary), 220, sY, { width: 65, align: 'right' });
+
+        doc.font('Helvetica-Bold').text('Total Deductions:', 310, sY);
+        doc.font('Helvetica').text(fmt(total_deductions), 490, sY, { width: 65, align: 'right' });
+
+        sY += 20;
+        doc.strokeColor('#e5e7eb').lineWidth(0.5).moveTo(40, sY).lineTo(555, sY).stroke();
+        sY += 10;
+
+        doc.fontSize(11).font('Helvetica-Bold').text('Net Salary:', 40, sY);
+        doc.font('Helvetica-Bold').text(fmt(net_salary), 220, sY, { width: 65, align: 'right' });
+
+        doc.fontSize(12).font('Helvetica-Bold').text('Actual Payable:', 310, sY);
+        doc.font('Helvetica-Bold').text(fmt(actual_payable), 470, sY, { width: 85, align: 'right' });
+
+        sY += 30;
+        doc.strokeColor('#cccccc').lineWidth(1).moveTo(40, sY).lineTo(555, sY).stroke();
+
+        doc.fontSize(8).font('Helvetica-Oblique').text('This is a computer-generated payslip and requires no signature.', 40, sY + 12, { align: 'center', width: 515 });
+
+        doc.end();
+    } catch (err) {
+        console.error('[exportPayslipPdf]', err);
+        if (!res.headersSent) {
+            res.status(500).json({ success: false, message: 'PDF export failed.' });
+        }
+    }
+};
+
 module.exports = { 
     getEmployeePayroll, 
     getAllPayroll, 
@@ -761,5 +970,7 @@ module.exports = {
     reconcilePayroll,
     syncPendingPayrollForMonth,
     consumePendingAdjustmentsForPayroll,
-    computeSalary
+    computeSalary,
+    exportPayslipsExcel,
+    exportPayslipPdf
 };

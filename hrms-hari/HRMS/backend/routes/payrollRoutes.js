@@ -3,7 +3,7 @@ const router = express.Router();
 const auth = require('../middleware/auth');
 const checkSubscription = require('../middleware/subscription');
 const multer = require('multer');
-const { getEmployeePayroll, getAllPayroll, getAnalytics, createPayroll, markAsPaid, bulkMarkAsPaid, exportPayroll, importPayroll, downloadPayrollTemplate, reconcilePayroll } = require('../controllers/payrollController');
+const { getEmployeePayroll, getAllPayroll, getAnalytics, createPayroll, markAsPaid, bulkMarkAsPaid, exportPayroll, importPayroll, downloadPayrollTemplate, reconcilePayroll, exportPayslipsExcel, exportPayslipPdf } = require('../controllers/payrollController');
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -24,6 +24,8 @@ router.get('/analytics', getAnalytics);
 router.get('/export', exportPayroll);
 router.get('/template', downloadPayrollTemplate);
 router.get('/reconcile', reconcilePayroll);
+router.get('/payslips/export', exportPayslipsExcel);
+router.get('/payslip/:id/pdf', exportPayslipPdf);
 router.post('/import', upload.single('file'), importPayroll);
 router.post('/create', createPayroll);
 router.put('/bulk-pay', bulkMarkAsPaid);
