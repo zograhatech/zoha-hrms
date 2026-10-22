@@ -273,8 +273,10 @@ const approveLeave = async (req, res) => {
         const isNewRule = startIst >= '2026-10-01';
 
         let computedFreeDays = null;
-        let balanceDecrement = leave.total_days;
 
+        // Known race: If two separate pending leave applications for the same employee
+        // and month are approved concurrently, both could read alreadyFreeUsedThisMonth
+        // before either updates, causing both to grant free days up to allowance.
         if (isNewRule) {
             const holidays = await Holiday.find({}).select('date').lean();
             const holidayDates = holidays.map(h => typeof h.date === 'string' ? h.date : toISTDateString(h.date));
@@ -299,17 +301,21 @@ const approveLeave = async (req, res) => {
                 if (requestedInMonth <= 0) continue;
 
                 const otherInMonth = otherApproved.filter(l => {
-                    const lStartIst = toISTDateString(l.start_date);
-                    if (lStartIst < '2026-10-01') return false;
-                    const lDaysByMonth = splitLeaveByMonth(lStartIst, toISTDateString(l.end_date), holidayDates);
+                    const lDaysByMonth = splitLeaveByMonth(toISTDateString(l.start_date), toISTDateString(l.end_date), holidayDates);
                     return Boolean(lDaysByMonth[monthKey]);
                 });
 
                 let alreadyFreeUsedThisMonth = 0;
                 for (const otherLeave of otherInMonth) {
+                    const otherDaysInMonth = splitLeaveByMonth(toISTDateString(otherLeave.start_date), toISTDateString(otherLeave.end_date), holidayDates)[monthKey] || 0;
                     if (typeof otherLeave.free_days === 'number') {
-                        const otherDaysInMonth = splitLeaveByMonth(toISTDateString(otherLeave.start_date), toISTDateString(otherLeave.end_date), holidayDates)[monthKey] || 0;
                         alreadyFreeUsedThisMonth += Math.min(otherLeave.free_days, otherDaysInMonth);
+                    } else {
+                        // Pre-deployment October leave with free_days null: count days in this month if start_date >= 2026-10-01 IST
+                        const oStartIst = toISTDateString(otherLeave.start_date);
+                        if (oStartIst >= '2026-10-01') {
+                            alreadyFreeUsedThisMonth += otherDaysInMonth;
+                        }
                     }
                 }
 
@@ -322,7 +328,6 @@ const approveLeave = async (req, res) => {
             }
 
             computedFreeDays = totalFree;
-            balanceDecrement = computedFreeDays;
         }
 
         // Conditional update: ensures double-click cannot approve the same leave twice
@@ -343,7 +348,9 @@ const approveLeave = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Leave is not pending or was already processed.' });
         }
 
-        // Deduct balance by free_days (new rule) or total_days (legacy)
+        // Deduct balance: strictly decided by stored value (free_days if number, total_days if null/missing)
+        const balanceDecrement = (typeof updatedLeave.free_days === 'number') ? updatedLeave.free_days : (updatedLeave.total_days || 0);
+
         const TRACKED = { casual: 'casual_leave', sick: 'sick_leave', earned: 'earned_leave', maternity: 'maternity_leave', paternity: 'paternity_leave' };
         if (TRACKED[leave.leave_type] && balanceDecrement > 0) {
             await LeaveBalance.findOneAndUpdate(

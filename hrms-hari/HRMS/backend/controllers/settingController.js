@@ -150,9 +150,7 @@ const updateSettings = async (req, res) => {
                 approvedLeaves.forEach(l => {
                     const key = `${l.leave_type}_leave`;
                     if (usedMapping[key] !== undefined) {
-                        const istDate = toISTDateString(l.start_date);
-                        const isNewRule = istDate >= '2026-10-01';
-                        const effectiveUsed = isNewRule ? (l.free_days ?? 0) : (l.total_days || 0);
+                        const effectiveUsed = (typeof l.free_days === 'number') ? l.free_days : (l.total_days || 0);
                         usedMapping[key] += effectiveUsed;
                     }
                 });

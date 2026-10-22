@@ -8593,6 +8593,91 @@ describe('HRMS Backend Automated Test Suite', () => {
             const bal = await LeaveBalanceModel.findOne({ employee_id: 'C4_EMP', year: 2026 }).lean();
             expect(bal.sick_leave).toBe(11);
         });
+
+        it('7. Pre-deployment October leave: approved with free_days null causes new October leave to get free_days 0 and balance drop 0', async () => {
+            await EmployeeModel.create({
+                id: 'C4_PRE_EMP',
+                name: 'C4 Pre Emp',
+                email: 'c4_pre@test.com',
+                password_hash: testEmpObj.password_hash,
+                role: 'employee',
+                status: 'active',
+                department_id: testDeptId
+            });
+
+            await LeaveBalanceModel.create({
+                employee_id: 'C4_PRE_EMP',
+                year: 2026,
+                sick_leave: 11
+            });
+
+            // Pre-deployment approved leave: free_days is null, total_days is 1
+            await LeaveModel.create({
+                employee_id: 'C4_PRE_EMP',
+                leave_type: 'sick',
+                start_date: new Date('2026-10-02T00:00:00.000Z'),
+                end_date: new Date('2026-10-02T00:00:00.000Z'),
+                total_days: 1,
+                reason: 'Pre-deployment Oct leave',
+                status: 'approved',
+                free_days: null
+            });
+
+            // New 1-day October leave pending
+            const newOctLeave = await LeaveModel.create({
+                employee_id: 'C4_PRE_EMP',
+                leave_type: 'sick',
+                start_date: new Date('2026-10-05T00:00:00.000Z'),
+                end_date: new Date('2026-10-05T00:00:00.000Z'),
+                total_days: 1,
+                reason: 'New Oct leave after pre-deployment leave',
+                status: 'pending'
+            });
+
+            const balBefore = await LeaveBalanceModel.findOne({ employee_id: 'C4_PRE_EMP', year: 2026 }).lean();
+            expect(balBefore.sick_leave).toBe(11);
+
+            const res = await request(app)
+                .put(`/api/leaves/${newOctLeave._id}/approve`)
+                .set('Authorization', `Bearer ${adminUserToken}`);
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+
+            const upd = await LeaveModel.findById(newOctLeave._id).lean();
+            expect(upd.status).toBe('approved');
+            expect(upd.free_days).toBe(0);
+
+            // Balance drops by 0 (free_days: 0)
+            const balAfter = await LeaveBalanceModel.findOne({ employee_id: 'C4_PRE_EMP', year: 2026 }).lean();
+            expect(balAfter.sick_leave).toBe(11);
+        });
+
+        it('8. Quota sync with pre-deployment October leave uses total_days (1) and new leave uses free_days (0)', async () => {
+            // C4_PRE_EMP has:
+            // 1 pre-deployment Oct leave: free_days null, total_days 1 -> used = 1
+            // 1 new Oct leave: free_days 0, total_days 1 -> used = 0
+            // Total used for C4_PRE_EMP = 1 + 0 = 1
+            // When setting sick_leave policy to 14:
+            // Recalculated balance should be: Math.max(0, 14 - 1) = 13.
+            const res = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${adminUserToken}`)
+                .send({
+                    leave_policies: {
+                        casual_leave: 12,
+                        sick_leave: 14,
+                        earned_leave: 15,
+                        maternity_leave: 0,
+                        paternity_leave: 0
+                    }
+                });
+
+            expect(res.status).toBe(200);
+
+            const bal = await LeaveBalanceModel.findOne({ employee_id: 'C4_PRE_EMP', year: 2026 }).lean();
+            expect(bal.sick_leave).toBe(13);
+        });
     });
 });
 
