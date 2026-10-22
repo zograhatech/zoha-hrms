@@ -7950,6 +7950,156 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(ids).not.toContain(empEngineering.id);
         });
     });
+
+    // 30. Monthly Leave Allowance Setting Tests
+    describe('30. Monthly Leave Allowance Setting Tests', () => {
+        let mlaAdminToken, mlaMgrToken, mlaTLToken, mlaEmpToken;
+        let SettingModel, EmployeeModel;
+
+        beforeAll(async () => {
+            SettingModel = require('../models/Setting');
+            EmployeeModel = require('../models/Employee');
+
+            const salt = await bcrypt.genSalt(10);
+            const password = await bcrypt.hash('Password123!', salt);
+
+            await EmployeeModel.deleteMany({ id: { $in: ['MLA_ADMIN', 'MLA_MGR', 'MLA_TL', 'MLA_EMP'] } });
+
+            await EmployeeModel.create({
+                id: 'MLA_ADMIN',
+                name: 'MLA Admin',
+                email: 'mla_admin@test.com',
+                password_hash: password,
+                role: 'admin',
+                status: 'active',
+                department_id: testDeptId
+            });
+
+            await EmployeeModel.create({
+                id: 'MLA_MGR',
+                name: 'MLA Manager',
+                email: 'mla_mgr@test.com',
+                password_hash: password,
+                role: 'manager',
+                permissions: ['manage_settings'],
+                status: 'active',
+                department_id: testDeptId
+            });
+
+            await EmployeeModel.create({
+                id: 'MLA_TL',
+                name: 'MLA Team Lead',
+                email: 'mla_tl@test.com',
+                password_hash: password,
+                role: 'team_lead',
+                status: 'active',
+                department_id: testDeptId
+            });
+
+            await EmployeeModel.create({
+                id: 'MLA_EMP',
+                name: 'MLA Employee',
+                email: 'mla_emp@test.com',
+                password_hash: password,
+                role: 'employee',
+                status: 'active',
+                department_id: testDeptId
+            });
+
+            mlaAdminToken = jwt.sign({ id: 'MLA_ADMIN', role: 'admin', email: 'mla_admin@test.com' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+            mlaMgrToken = jwt.sign({ id: 'MLA_MGR', role: 'manager', email: 'mla_mgr@test.com' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+            mlaTLToken = jwt.sign({ id: 'MLA_TL', role: 'team_lead', email: 'mla_tl@test.com' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+            mlaEmpToken = jwt.sign({ id: 'MLA_EMP', role: 'employee', email: 'mla_emp@test.com' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+        });
+
+        it('1. GET /api/settings as an employee returns monthly_leave_allowance (not hidden)', async () => {
+            const res = await request(app)
+                .get('/api/settings')
+                .set('Authorization', `Bearer ${mlaEmpToken}`);
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+            expect(res.body.settings).toBeDefined();
+            expect(res.body.settings.monthly_leave_allowance).toBeDefined();
+            expect(typeof res.body.settings.monthly_leave_allowance).toBe('number');
+            // Confirm sensitive fields are stripped for employee, but monthly_leave_allowance is retained
+            expect(res.body.settings.email_settings).toBeUndefined();
+            expect(res.body.settings.roles_permissions).toBeUndefined();
+        });
+
+        it('2. Setting document without monthly_leave_allowance returns fallback 1 on GET', async () => {
+            await SettingModel.updateOne({}, { $unset: { monthly_leave_allowance: 1 } });
+            const res = await request(app)
+                .get('/api/settings')
+                .set('Authorization', `Bearer ${mlaEmpToken}`);
+
+            expect(res.status).toBe(200);
+            expect(res.body.settings.monthly_leave_allowance).toBe(1);
+        });
+
+        it('3. SuperAdmin can update monthly_leave_allowance and it persists', async () => {
+            const res = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${mlaAdminToken}`)
+                .send({ monthly_leave_allowance: 2 });
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+            expect(res.body.settings.monthly_leave_allowance).toBe(2);
+
+            const check = await SettingModel.findOne().lean();
+            expect(check.monthly_leave_allowance).toBe(2);
+        });
+
+        it('4. Manager with manage_settings permission gets 403 when updating monthly_leave_allowance and stored value is unchanged', async () => {
+            // Confirm starting value in DB is 2
+            const before = await SettingModel.findOne().lean();
+            expect(before.monthly_leave_allowance).toBe(2);
+
+            const res = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${mlaMgrToken}`)
+                .send({ monthly_leave_allowance: 5 });
+
+            expect(res.status).toBe(403);
+            expect(res.body.success).toBe(false);
+            expect(res.body.message).toMatch(/Only SuperAdmin can edit monthly_leave_allowance/i);
+
+            // Confirm stored value in DB did NOT change
+            const after = await SettingModel.findOne().lean();
+            expect(after.monthly_leave_allowance).toBe(2);
+        });
+
+        it('5. Team lead and employee get 403 when attempting to update monthly_leave_allowance', async () => {
+            const tlRes = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${mlaTLToken}`)
+                .send({ monthly_leave_allowance: 3 });
+            expect(tlRes.status).toBe(403);
+
+            const empRes = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${mlaEmpToken}`)
+                .send({ monthly_leave_allowance: 3 });
+            expect(empRes.status).toBe(403);
+        });
+
+        it('6. Negative value is rejected with 400 and not saved', async () => {
+            const before = await SettingModel.findOne().lean();
+
+            const res = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${mlaAdminToken}`)
+                .send({ monthly_leave_allowance: -2 });
+
+            expect(res.status).toBe(400);
+            expect(res.body.success).toBe(false);
+            expect(res.body.message).toMatch(/monthly_leave_allowance must be a non-negative number/i);
+
+            const after = await SettingModel.findOne().lean();
+            expect(after.monthly_leave_allowance).toBe(before.monthly_leave_allowance);
+        });
+    });
 });
 
 

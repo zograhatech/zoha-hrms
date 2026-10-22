@@ -15,6 +15,10 @@ const getSettings = async (req, res) => {
 
         const obj = settings.toObject();
 
+        if (obj.monthly_leave_allowance === undefined || obj.monthly_leave_allowance === null) {
+            obj.monthly_leave_allowance = 1;
+        }
+
         const isAdmin = req.user && ['admin', 'manager', 'team_lead', 'hr_manager', 'hr', 'hrmanager'].includes(req.user.role.toLowerCase());
 
         // Security: Remove sensitive email settings for regular employees / unauth
@@ -82,6 +86,25 @@ const updateSettings = async (req, res) => {
 
         console.log('[updateSettings] Current roles in DB:', Object.keys(settings.roles_permissions || {}));
         console.log('[updateSettings] Received updateData roles:', Object.keys(updateData.roles_permissions || {}));
+
+        // monthly_leave_allowance: SuperAdmin only, non-negative number check before any writes
+        if (updateData.monthly_leave_allowance !== undefined) {
+            const userRole = (req.user?.role || '').toLowerCase();
+            if (userRole !== 'admin') {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Only SuperAdmin can edit monthly_leave_allowance.'
+                });
+            }
+            const allowanceVal = Number(updateData.monthly_leave_allowance);
+            if (isNaN(allowanceVal) || allowanceVal < 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'monthly_leave_allowance must be a non-negative number.'
+                });
+            }
+            settings.monthly_leave_allowance = allowanceVal;
+        }
 
         // Explicitly update fields to ensure Mongoose tracks changes
         if (updateData.company_name) settings.company_name = updateData.company_name;
