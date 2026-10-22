@@ -42,6 +42,7 @@ const payrollSchema = new mongoose.Schema({
     bank_ac_no: { type: String, default: '' },
     paid_date: { type: Date },
     status: { type: String, enum: ['pending', 'paid'], default: 'pending' },
+    days_worked_convention: { type: String, enum: ['payable', 'attended'], default: 'payable' },
 }, { timestamps: true });
 
 // Virtual computed fields
@@ -54,13 +55,16 @@ payrollSchema.virtual('total_deductions').get(function () {
 payrollSchema.virtual('net_salary').get(function () {
     return this.gross_salary - this.total_deductions;
 });
-// Note: actual_payable virtual uses the 'payable' convention by default.
-// Controllers load days_worked_convention ('payable' | 'attended') from Setting.
+// Note: actual_payable virtual uses this.days_worked_convention ('payable' | 'attended').
+// Defaults to the 'payable' formula when missing or 'payable'.
 payrollSchema.virtual('actual_payable').get(function () {
     const standardDeductions = (this.provident_fund || 0) + (this.esi_deduction || 0) + (this.pt || 0) + (this.lwf || 0) + (this.tds || 0) + (this.leave_deduction || 0);
     const monthlyNet = this.gross_salary - standardDeductions;
     const daysInMonth = new Date(this.year, this.month, 0).getDate();
     const proRated = daysInMonth > 0 ? (monthlyNet / daysInMonth) * (this.days_worked || 0) : 0;
+    if (this.days_worked_convention === 'attended') {
+        return proRated - (this.other_deductions || 0) - (this.unpaid_leave_adjustment || 0);
+    }
     return proRated - (this.other_deductions || 0) - (this.unpaid_leave_deduction || 0) - (this.unpaid_leave_adjustment || 0);
 });
 

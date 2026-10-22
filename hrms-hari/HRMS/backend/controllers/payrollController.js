@@ -12,7 +12,8 @@ const { splitLeaveByMonth, computeMonthlyDeduction, round2 } = require('../utils
 const XLSX = require('xlsx');
 
 // Helper: compute gross/net from a plain object
-const computeSalary = (p, convention = 'payable') => {
+const computeSalary = (p, conventionOverride) => {
+    const convention = conventionOverride || p?.days_worked_convention || 'payable';
     const gross = (p.basic || 0) + (p.da || 0) + (p.oa || 0) + (p.leave_wages || 0);
     const standardDed = (p.provident_fund || 0) + (p.esi_deduction || 0) + (p.pt || 0) + (p.lwf || 0) + (p.tds || 0) + (p.leave_deduction || 0);
     const totalDed = standardDed + (p.unpaid_leave_deduction || 0) + (p.unpaid_leave_adjustment || 0) + (p.other_deductions || 0);
@@ -166,7 +167,6 @@ const getEmployeePayroll = async (req, res) => {
     try {
         const { employeeId } = req.params;
         const { month, year } = req.query;
-        const convention = await getDaysWorkedConvention();
 
         const emp = await Employee.findOne({ id: employeeId }).lean();
         if (!emp) return res.status(404).json({ success: false, message: 'Employee not found.' });
@@ -182,7 +182,7 @@ const getEmployeePayroll = async (req, res) => {
         if (month && year) {
             const payroll = await Payroll.findOne({ employee_id: employeeId, month: +month, year: +year }).lean();
             if (payroll) {
-                const { gross_salary, total_deductions, net_salary, actual_payable } = computeSalary(payroll, convention);
+                const { gross_salary, total_deductions, net_salary, actual_payable } = computeSalary(payroll);
                 return res.json({ 
                     success: true, 
                     payroll: { ...payroll, gross_salary, total_deductions, net_salary, actual_payable }, 
@@ -194,7 +194,7 @@ const getEmployeePayroll = async (req, res) => {
 
         const payrolls = await Payroll.find({ employee_id: employeeId }).sort({ year: -1, month: -1 }).lean();
         const result = payrolls.map(p => {
-            const { gross_salary, total_deductions, net_salary, actual_payable } = computeSalary(p, convention);
+            const { gross_salary, total_deductions, net_salary, actual_payable } = computeSalary(p);
             return { ...p, gross_salary, total_deductions, net_salary, actual_payable };
         });
         res.json({ success: true, payroll: result, employee: empInfo });
@@ -208,7 +208,6 @@ const getAllPayroll = async (req, res) => {
     if (!checkAdminRole(req, res)) return;
     try {
         const { month, year } = req.query;
-        const convention = await getDaysWorkedConvention();
         const filter = {};
         if (month) filter.month = +month;
         if (year) filter.year = +year;
@@ -224,7 +223,7 @@ const getAllPayroll = async (req, res) => {
 
         const result = payrolls.map(p => {
             const emp = empMap[p.employee_id] || {};
-            const { gross_salary, total_deductions, net_salary, actual_payable } = computeSalary(p, convention);
+            const { gross_salary, total_deductions, net_salary, actual_payable } = computeSalary(p);
             return {
                 ...p,
                 employee_name: emp.name || '',
@@ -248,7 +247,6 @@ const getAnalytics = async (req, res) => {
     if (!checkAdminRole(req, res)) return;
     try {
         const { month, year } = req.query;
-        const convention = await getDaysWorkedConvention();
         const filter = {};
         if (month) filter.month = +month;
         if (year) filter.year = +year;
@@ -261,7 +259,7 @@ const getAnalytics = async (req, res) => {
         let paidEmployees = 0;
 
         payrolls.forEach(p => {
-            const { gross_salary, total_deductions, net_salary } = computeSalary(p, convention);
+            const { gross_salary, total_deductions, net_salary } = computeSalary(p);
             totalDeductions += total_deductions;
             if (p.status === 'paid') {
                 totalSalaryPaid += net_salary;
@@ -301,6 +299,8 @@ const createPayroll = async (req, res) => {
         const existing = await Payroll.findOne({ employee_id, month, year });
         if (existing) return res.status(400).json({ success: false, message: 'Payroll for this month already exists.' });
 
+        const convention = await getDaysWorkedConvention();
+
         // Step 1: Compute unpaid leave days & deduction before creating payroll
         const { unpaid_leave_days, unpaid_leave_deduction } = await syncPendingPayrollForMonth({
             employee_id,
@@ -333,6 +333,7 @@ const createPayroll = async (req, res) => {
             unpaid_leave_days,
             unpaid_leave_deduction,
             unpaid_leave_adjustment: 0,
+            days_worked_convention: convention,
             status: 'pending'
         });
 
@@ -354,9 +355,8 @@ const createPayroll = async (req, res) => {
             console.error('[createPayroll] notification error:', notifErr.message);
         }
 
-        const convention = await getDaysWorkedConvention();
         const pObj = payroll.toJSON();
-        const { actual_payable } = computeSalary(pObj, convention);
+        const { actual_payable } = computeSalary(pObj);
         pObj.actual_payable = actual_payable;
         res.status(201).json({ success: true, message: 'Payroll record created.', payroll: pObj });
     } catch (err) {
@@ -376,7 +376,6 @@ const markAsPaid = async (req, res) => {
         );
         if (!payroll) return res.status(404).json({ success: false, message: 'Payroll record not found.' });
 
-        const convention = await getDaysWorkedConvention();
         const emp = await Employee.findOne({ id: payroll.employee_id }).lean();
         if (emp?._id) {
             try {
@@ -395,7 +394,7 @@ const markAsPaid = async (req, res) => {
         if (emp?.email) {
             const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
             const monthName = months[payroll.month - 1];
-            const { actual_payable } = computeSalary(payroll.toObject(), convention);
+            const { actual_payable } = computeSalary(payroll.toObject());
 
             sendEmail({
                 to: emp.email,
@@ -465,7 +464,6 @@ const bulkMarkAsPaid = async (req, res) => {
 const exportPayroll = async (req, res) => {
     if (!checkAdminRole(req, res)) return;
     try {
-        const convention = await getDaysWorkedConvention();
         const payrolls = await Payroll.find({}).lean();
         const empIds = [...new Set(payrolls.map(p => p.employee_id))];
         const emps = await Employee.find({ id: { $in: empIds } }).lean();
@@ -473,7 +471,7 @@ const exportPayroll = async (req, res) => {
 
         const rows = payrolls.map(p => {
             const emp = empMap[p.employee_id] || {};
-            const { gross_salary, total_deductions, net_salary, actual_payable } = computeSalary(p, convention);
+            const { gross_salary, total_deductions, net_salary, actual_payable } = computeSalary(p);
             return {
                 employee_id: p.employee_id,
                 employee_name: emp.name || '',
@@ -554,6 +552,7 @@ const importPayroll = async (req, res) => {
         // Batch pre-fetch: Setting, Holidays, Employees, Leaves
         const settings = await Setting.findOne().lean();
         const allowance = (settings && typeof settings.monthly_leave_allowance === 'number') ? settings.monthly_leave_allowance : 1;
+        const convention = (settings && settings.days_worked_convention === 'attended') ? 'attended' : 'payable';
         const holidays = await Holiday.find({}).select('date').lean();
         const holidayDates = holidays.map(h => typeof h.date === 'string' ? h.date : toISTDateString(h.date));
 
@@ -653,6 +652,7 @@ const importPayroll = async (req, res) => {
                 unpaid_leave_days,
                 unpaid_leave_deduction,
                 unpaid_leave_adjustment: 0,
+                days_worked_convention: convention,
                 status: 'pending',
             });
 

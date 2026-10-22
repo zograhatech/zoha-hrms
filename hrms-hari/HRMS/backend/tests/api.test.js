@@ -9503,6 +9503,7 @@ describe('HRMS Backend Automated Test Suite', () => {
                 unpaid_leave_adjustment: 0,
                 other_deductions: 0,
                 days_worked: 30,
+                days_worked_convention: 'payable',
                 status: 'pending'
             });
 
@@ -9517,6 +9518,7 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(resPayable.body.payroll.actual_payable).toBe(28000.00);
 
             // Attended mode
+            await PayrollModel.updateOne({ employee_id: s34Emp.id, month: 11, year: 2026 }, { $set: { days_worked_convention: 'attended' } });
             await SettingModel.updateOne({}, { $set: { days_worked_convention: 'attended' } });
             const resAttended = await request(app)
                 .get(`/api/payroll/${s34Emp.id}?month=11&year=2026`)
@@ -9539,7 +9541,7 @@ describe('HRMS Backend Automated Test Suite', () => {
             // attended mode = 27000.00
             await PayrollModel.updateOne(
                 { employee_id: s34Emp.id, month: 11, year: 2026 },
-                { $set: { days_worked: 27 } }
+                { $set: { days_worked: 27, days_worked_convention: 'payable' } }
             );
 
             // Payable mode
@@ -9553,6 +9555,10 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(resPayable.body.payroll.actual_payable).toBe(25000.00);
 
             // Attended mode
+            await PayrollModel.updateOne(
+                { employee_id: s34Emp.id, month: 11, year: 2026 },
+                { $set: { days_worked_convention: 'attended' } }
+            );
             await SettingModel.updateOne({}, { $set: { days_worked_convention: 'attended' } });
             const resAttended = await request(app)
                 .get(`/api/payroll/${s34Emp.id}?month=11&year=2026`)
@@ -9566,6 +9572,159 @@ describe('HRMS Backend Automated Test Suite', () => {
             const updatedPayroll = await PayrollModel.findOne({ employee_id: s34Emp.id, month: 11, year: 2026 }).lean();
             expect(computeSalary(updatedPayroll, 'payable').actual_payable).toBe(25000.00);
             expect(computeSalary(updatedPayroll, 'attended').actual_payable).toBe(27000.00);
+        });
+
+        it('34.5: Create November 2026 payroll with setting "payable", then change setting to "attended" and verify record is unchanged', async () => {
+            const emp34_5 = await EmployeeModel.create({
+                id: 'S34_EMP_5',
+                name: 'S34 Employee 5',
+                email: 's34_emp_5@test.com',
+                password_hash: s34Emp.password_hash,
+                role: 'employee',
+                status: 'active',
+                department_id: s34DeptId
+            });
+
+            // Setting set to "payable"
+            await SettingModel.updateOne({}, { $set: { days_worked_convention: 'payable' } });
+
+            // Create a November 2026 payroll (basic 30000, days_worked 30, unpaid_leave_deduction 2000 via setup as the existing 34.3 does)
+            const p34_5 = await PayrollModel.create({
+                employee_id: emp34_5.id,
+                month: 11,
+                year: 2026,
+                basic: 30000,
+                da: 0,
+                oa: 0,
+                leave_wages: 0,
+                leave_deduction: 0,
+                unpaid_leave_deduction: 2000,
+                unpaid_leave_adjustment: 0,
+                other_deductions: 0,
+                days_worked: 30,
+                days_worked_convention: 'payable',
+                status: 'pending'
+            });
+
+            // Confirm stored days_worked_convention = "payable" and actual_payable = 28000.00
+            const stored5 = await PayrollModel.findById(p34_5._id).lean();
+            expect(stored5.days_worked_convention).toBe('payable');
+
+            const resPayable = await request(app)
+                .get(`/api/payroll/${emp34_5.id}?month=11&year=2026`)
+                .set('Authorization', `Bearer ${s34AdminToken}`);
+
+            expect(resPayable.status).toBe(200);
+            expect(resPayable.body.success).toBe(true);
+            expect(resPayable.body.payroll.days_worked_convention).toBe('payable');
+            expect(resPayable.body.payroll.actual_payable).toBe(28000.00);
+
+            // Then PUT the setting to "attended"
+            const resPut = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${s34AdminToken}`)
+                .send({ days_worked_convention: 'attended' });
+            expect(resPut.status).toBe(200);
+
+            // GET the same record: actual_payable must still be 28000.00, and days_worked_convention must still be "payable"
+            const resAfterPut = await request(app)
+                .get(`/api/payroll/${emp34_5.id}?month=11&year=2026`)
+                .set('Authorization', `Bearer ${s34AdminToken}`);
+
+            expect(resAfterPut.status).toBe(200);
+            expect(resAfterPut.body.success).toBe(true);
+            expect(resAfterPut.body.payroll.days_worked_convention).toBe('payable');
+            expect(resAfterPut.body.payroll.actual_payable).toBe(28000.00);
+        });
+
+        it('34.6: With setting at "attended", create second November record: confirm stored "attended" and actual_payable = 30000.00, unaffected when reverted to "payable"', async () => {
+            const emp34_6 = await EmployeeModel.create({
+                id: 'S34_EMP_6',
+                name: 'S34 Employee 6',
+                email: 's34_emp_6@test.com',
+                password_hash: s34Emp.password_hash,
+                role: 'employee',
+                status: 'active',
+                department_id: s34DeptId
+            });
+
+            // Confirm setting is at "attended"
+            const currentSetting = await SettingModel.findOne().lean();
+            expect(currentSetting.days_worked_convention).toBe('attended');
+
+            // With the setting at "attended", create a second November record for a different employee
+            const p34_6 = await PayrollModel.create({
+                employee_id: emp34_6.id,
+                month: 11,
+                year: 2026,
+                basic: 30000,
+                da: 0,
+                oa: 0,
+                leave_wages: 0,
+                leave_deduction: 0,
+                unpaid_leave_deduction: 2000,
+                unpaid_leave_adjustment: 0,
+                other_deductions: 0,
+                days_worked: 30,
+                days_worked_convention: 'attended',
+                status: 'pending'
+            });
+
+            // Confirm stored days_worked_convention = "attended" and actual_payable = 30000.00
+            const stored6 = await PayrollModel.findById(p34_6._id).lean();
+            expect(stored6.days_worked_convention).toBe('attended');
+
+            const resAttended = await request(app)
+                .get(`/api/payroll/${emp34_6.id}?month=11&year=2026`)
+                .set('Authorization', `Bearer ${s34AdminToken}`);
+
+            expect(resAttended.status).toBe(200);
+            expect(resAttended.body.success).toBe(true);
+            expect(resAttended.body.payroll.days_worked_convention).toBe('attended');
+            expect(resAttended.body.payroll.actual_payable).toBe(30000.00);
+
+            // Also test via POST /api/payroll/create that createPayroll sets days_worked_convention from setting ('attended')
+            const emp34_6b = await EmployeeModel.create({
+                id: 'S34_EMP_6B',
+                name: 'S34 Employee 6B',
+                email: 's34_emp_6b@test.com',
+                password_hash: s34Emp.password_hash,
+                role: 'employee',
+                status: 'active',
+                department_id: s34DeptId
+            });
+            const resCreate = await request(app)
+                .post('/api/payroll/create')
+                .set('Authorization', `Bearer ${s34AdminToken}`)
+                .send({
+                    employee_id: emp34_6b.id,
+                    month: 11,
+                    year: 2026,
+                    basic: 30000,
+                    days_worked: 30,
+                    days_worked_convention: 'payable' // Sending 'payable' in body must be ignored
+                });
+            expect(resCreate.status).toBe(201);
+            expect(resCreate.body.payroll.days_worked_convention).toBe('attended');
+
+            // Then set the setting back to "payable" and confirm the attended record still returns 30000.00
+            const resRevert = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${s34AdminToken}`)
+                .send({ days_worked_convention: 'payable' });
+            expect(resRevert.status).toBe(200);
+
+            const resAfterRevert = await request(app)
+                .get(`/api/payroll/${emp34_6.id}?month=11&year=2026`)
+                .set('Authorization', `Bearer ${s34AdminToken}`);
+
+            expect(resAfterRevert.status).toBe(200);
+            expect(resAfterRevert.body.success).toBe(true);
+            expect(resAfterRevert.body.payroll.days_worked_convention).toBe('attended');
+            expect(resAfterRevert.body.payroll.actual_payable).toBe(30000.00);
+
+            // Reset the setting to "payable" at the end of the section
+            await SettingModel.updateOne({}, { $set: { days_worked_convention: 'payable' } });
         });
     });
 
