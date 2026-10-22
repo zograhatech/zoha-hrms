@@ -9303,6 +9303,82 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(importedP.unpaid_leave_days).toBe(1);
             expect(importedP.unpaid_leave_deduction).toBe(1500);
         });
+
+        it('33.11. Late-approval integrity guard prevents cascading corruption on missing adjustments', async () => {
+            const guardEmp = await EmployeeModel.create({
+                id: 'S33_GUARD_EMP',
+                name: 'Guard Emp',
+                email: 'guard@test.com',
+                password_hash: s33Emp.password_hash,
+                role: 'employee',
+                status: 'active',
+                department_id: s33DeptId
+            });
+
+            await LeaveBalanceModel.create({
+                employee_id: guardEmp.id,
+                year: 2026,
+                sick_leave: 12
+            });
+
+            // Paid October 2026 payroll with adjustment_notes containing one entry
+            // {source_month: 10, source_year: 2026, amount: 1000}, basic 30000, da 0, oa 0
+            await PayrollModel.create({
+                employee_id: guardEmp.id,
+                month: 10,
+                year: 2026,
+                basic: 30000,
+                da: 0,
+                oa: 0,
+                status: 'paid',
+                adjustment_notes: [{
+                    leave_id: new mongoose.Types.ObjectId(),
+                    source_month: 10,
+                    source_year: 2026,
+                    amount: 1000
+                }]
+            });
+
+            // Zero records in UnpaidLeaveAdjustment for that employee and month
+            const countBefore = await UnpaidLeaveAdjustmentModel.countDocuments({
+                employee_id: guardEmp.id,
+                source_month: 10
+            });
+            expect(countBefore).toBe(0);
+
+            // Action: approve a further late leave for October 2026 (for example Oct 20 to Oct 21)
+            const guardLeave = await LeaveModel.create({
+                employee_id: guardEmp.id,
+                leave_type: 'sick',
+                start_date: new Date('2026-10-20T00:00:00.000Z'),
+                end_date: new Date('2026-10-21T00:00:00.000Z'),
+                total_days: 2,
+                reason: 'Oct late leave triggering guard',
+                status: 'pending'
+            });
+
+            const res = await request(app)
+                .put(`/api/leaves/${guardLeave._id}/approve`)
+                .set('Authorization', `Bearer ${s33AdminToken}`);
+
+            // Expected: HTTP 200, success true, warning contains "Adjustment audit mismatch"
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+            expect(res.body.warning).toBeDefined();
+            expect(res.body.warning).toContain('Adjustment audit mismatch');
+
+            // Leave status 'approved'
+            const updLeave = await LeaveModel.findById(guardLeave._id);
+            expect(updLeave.status).toBe('approved');
+
+            // No new UnpaidLeaveAdjustment document created: assert count before and after
+            const countAfter = await UnpaidLeaveAdjustmentModel.countDocuments({
+                employee_id: guardEmp.id,
+                source_month: 10
+            });
+            expect(countAfter).toBe(countBefore);
+            expect(countAfter).toBe(0);
+        });
     });
 
 });
