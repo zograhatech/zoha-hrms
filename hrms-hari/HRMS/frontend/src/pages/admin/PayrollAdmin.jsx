@@ -9,7 +9,7 @@ import {
 } from 'react-icons/fi';
 import { useToast } from '../../context/ToastContext';
 import { formatDate } from '../../utils/dateFormatter';
-import { isManagerRole } from '../../utils/roleHelper';
+import { isManagerRole, isSuperAdmin } from '../../utils/roleHelper';
 
 const MONTHS = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -173,6 +173,38 @@ export default function PayrollAdmin() {
         } catch { showToast('Export failed.', 'error'); }
     };
 
+    const handleExportPayslipsExcel = async () => {
+        try {
+            const res = await API.get(`/payroll/payslips/export?month=${month}&year=${year}`, { responseType: 'blob' });
+            const padM = String(month).padStart(2, '0');
+            const url = window.URL.createObjectURL(new Blob([res.data]));
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `payslips-${year}-${padM}.xlsx`;
+            a.click();
+            window.URL.revokeObjectURL(url);
+            showToast('Payslips Exported', 'success');
+        } catch {
+            showToast('Export failed.', 'error');
+        }
+    };
+
+    const handleDownloadPayslipPdf = async (payrollRecord) => {
+        try {
+            const res = await API.get(`/payroll/payslip/${payrollRecord._id}/pdf`, { responseType: 'blob' });
+            const padM = String(payrollRecord.month).padStart(2, '0');
+            const url = window.URL.createObjectURL(new Blob([res.data]));
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `payslip-${payrollRecord.employee_id}-${payrollRecord.year}-${padM}.pdf`;
+            a.click();
+            window.URL.revokeObjectURL(url);
+            showToast('Payslip PDF downloaded', 'success');
+        } catch {
+            showToast('Download failed.', 'error');
+        }
+    };
+
     const handlePayrollTemplate = async () => {
         try {
             const res = await API.get('/payroll/template', { responseType: 'blob' });
@@ -252,6 +284,16 @@ export default function PayrollAdmin() {
                         >
                             <FiDownload size={14} /> <span>Export Excel</span>
                         </button>
+
+                        {isSuperAdmin(user) && (
+                            <button
+                                className="btn btn-outline btn-sm"
+                                onClick={handleExportPayslipsExcel}
+                                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, borderColor: 'rgba(99,102,241,0.4)', color: '#6366f1' }}
+                            >
+                                <FiDownload size={14} /> <span>Export Payslips (Excel)</span>
+                            </button>
+                        )}
 
                         <button
                             className="btn btn-outline btn-sm"
@@ -603,9 +645,21 @@ export default function PayrollAdmin() {
                                                 <td style={tdS}>{formatDate(p.paid_date) || (p.status === 'paid' ? 'N/A' : 'Pending')}</td>
                                                 {canManage && (
                                                     <td style={tdS}>
-                                                        {p.status === 'pending' && (
-                                                            <button className="btn btn-sm btn-success" onClick={() => markPaid(p._id)}>Pay</button>
-                                                        )}
+                                                        <div style={{ display: 'flex', gap: 6, justifyContent: 'center', alignItems: 'center' }}>
+                                                            {p.status === 'pending' && (
+                                                                <button className="btn btn-sm btn-success" onClick={() => markPaid(p._id)}>Pay</button>
+                                                            )}
+                                                            {isSuperAdmin(user) && (
+                                                                <button
+                                                                    className="btn btn-sm btn-outline"
+                                                                    onClick={() => handleDownloadPayslipPdf(p)}
+                                                                    title="Download Payslip PDF"
+                                                                    style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                                                                >
+                                                                    <FiFileText size={12} /> <span>Payslip PDF</span>
+                                                                </button>
+                                                            )}
+                                                        </div>
                                                     </td>
                                                 )}
                                             </tr>
@@ -659,11 +713,18 @@ export default function PayrollAdmin() {
                                     </div>
                                 </div>
 
-                                {canManage && p.status === 'pending' && (
-                                    <div style={{ padding: 12, background: 'var(--bg-primary)', borderTop: '1px solid var(--border-color)' }}>
-                                        <button className="btn btn-success w-full" onClick={() => markPaid(p._id)}>
-                                            <FiCheckCircle style={{ marginRight: 8 }} /> Mark as Paid
-                                        </button>
+                                {canManage && (p.status === 'pending' || isSuperAdmin(user)) && (
+                                    <div style={{ padding: 12, background: 'var(--bg-primary)', borderTop: '1px solid var(--border-color)', display: 'flex', gap: 8 }}>
+                                        {p.status === 'pending' && (
+                                            <button className="btn btn-success" style={{ flex: 1 }} onClick={() => markPaid(p._id)}>
+                                                <FiCheckCircle style={{ marginRight: 8 }} /> Mark as Paid
+                                            </button>
+                                        )}
+                                        {isSuperAdmin(user) && (
+                                            <button className="btn btn-outline" style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 }} onClick={() => handleDownloadPayslipPdf(p)}>
+                                                <FiFileText size={14} /> Payslip PDF
+                                            </button>
+                                        )}
                                     </div>
                                 )}
                             </div>
