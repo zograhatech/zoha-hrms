@@ -172,20 +172,6 @@ const applyLeave = async (req, res) => {
         });
         if (overlap) return res.status(400).json({ success: false, message: 'You already have a leave request for overlapping dates.' });
 
-        // Check monthly sick leave limit - one per calendar month
-        // Count pending and approved sick leaves in the same month as start_date
-        const monthStart = new Date(start.getFullYear(), start.getMonth(), 1);
-        const monthEnd = new Date(start.getFullYear(), start.getMonth() + 1, 0, 23, 59, 59);
-        const monthlyCount = await Leave.countDocuments({
-            employee_id: applicantId,
-            leave_type: 'sick',
-            status: { $in: ['pending', 'approved'] },
-            start_date: { $gte: monthStart, $lte: monthEnd }
-        });
-        if (monthlyCount > 0) {
-            return res.status(400).json({ success: false, message: 'Monthly sick leave limit reached.' });
-        }
-
         const leave = await Leave.create({ employee_id: applicantId, leave_type, start_date: start, end_date: end, total_days: days, reason });
 
         // Create notifications for manager, team lead, and Super Admins

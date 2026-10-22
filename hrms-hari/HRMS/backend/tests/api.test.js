@@ -1293,8 +1293,8 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(res.body.message).toContain('Only sick leave');
         });
 
-        // Second sick leave in the same month: 400
-        it('Second sick leave in the same month: 400', async () => {
+        // Second sick leave in the same month: 201
+        it('Second sick leave in the same month: 201', async () => {
             const start = getWeekdayDate(3, 1);
             const end = getWeekdayDate(3, 2);
 
@@ -1324,9 +1324,55 @@ describe('HRMS Backend Automated Test Suite', () => {
                     reason: 'Second sick leave'
                 });
 
-            expect(res.status).toBe(400);
-            expect(res.body.success).toBe(false);
-            expect(res.body.message).toBe('Monthly sick leave limit reached.');
+            expect(res.status).toBe(201);
+            expect(res.body.success).toBe(true);
+            expect(res.body.leave.leave_type).toBe('sick');
+        });
+
+        // Three applications in one month are all accepted
+        it('Three applications in one month are all accepted: 201', async () => {
+            const start1 = getWeekdayDate(7, 1);
+            const end1 = getWeekdayDate(7, 2);
+            const start2 = getWeekdayDate(7, 8);
+            const end2 = getWeekdayDate(7, 9);
+            const start3 = getWeekdayDate(7, 15);
+            const end3 = getWeekdayDate(7, 16);
+
+            const res1 = await request(app)
+                .post('/api/leaves/apply')
+                .set('Authorization', `Bearer ${empToken2}`)
+                .send({
+                    leave_type: 'sick',
+                    start_date: start1,
+                    end_date: end1,
+                    reason: 'Sick leave #1'
+                });
+            expect(res1.status).toBe(201);
+            expect(res1.body.success).toBe(true);
+
+            const res2 = await request(app)
+                .post('/api/leaves/apply')
+                .set('Authorization', `Bearer ${empToken2}`)
+                .send({
+                    leave_type: 'sick',
+                    start_date: start2,
+                    end_date: end2,
+                    reason: 'Sick leave #2'
+                });
+            expect(res2.status).toBe(201);
+            expect(res2.body.success).toBe(true);
+
+            const res3 = await request(app)
+                .post('/api/leaves/apply')
+                .set('Authorization', `Bearer ${empToken2}`)
+                .send({
+                    leave_type: 'sick',
+                    start_date: start3,
+                    end_date: end3,
+                    reason: 'Sick leave #3'
+                });
+            expect(res3.status).toBe(201);
+            expect(res3.body.success).toBe(true);
         });
 
         // Same request in the next month: 200

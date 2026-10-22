@@ -50,7 +50,7 @@ export default function Leave() {
             <div className="page-header">
                 <div>
                     <div className="page-title"><FiActivity style={{ marginRight: 8, verticalAlign: 'middle' }} /> Sick Leave Management</div>
-                    <div className="page-subtitle">View your sick leave balance and apply for sick leave (one per calendar month)</div>
+                    <div className="page-subtitle">View your sick leave balance and apply for sick leave</div>
                 </div>
                 <button className="btn btn-primary" onClick={() => { setShowForm(true); setMsg({ text: '', type: '' }); }} style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
                     <FiPlus /> Apply Sick Leave
@@ -68,7 +68,7 @@ export default function Leave() {
                         </div>
                         <div style={{ fontSize: '1.8rem', fontWeight: 900, color: '#f59e0b' }}>{bal.sick_leave}</div>
                         <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: 4 }}>Sick Leave Available</div>
-                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 2 }}>of {data?.policies?.sick_leave || 0} total per month (1 application limit)</div>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 2 }}>of {data?.policies?.sick_leave || 0} total</div>
                     </div>
                 </div>
             )}
@@ -90,7 +90,7 @@ export default function Leave() {
                                     <select className="form-select" value="sick" disabled style={{ backgroundColor: 'var(--bg-secondary)', cursor: 'not-allowed' }}>
                                         <option value="sick">Sick Leave</option>
                                     </select>
-                                    <small style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Only sick leave applications are allowed (max 1 per calendar month)</small>
+                                    <small style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Only sick leave applications are allowed</small>
                                 </div>
                                 <div className="grid-2">
                                     <div className="form-group">
