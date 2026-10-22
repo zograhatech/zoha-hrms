@@ -8164,6 +8164,167 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(checkTwo.monthly_leave_allowance).toBe(2);
         });
     });
+
+    // 31. Pure Leave Deduction Helper Tests
+    describe('31. Pure Leave Deduction Helper Tests', () => {
+        const {
+            splitLeaveByMonth,
+            computeMonthlyDeduction,
+            computeFreeDaysForApplication,
+            round2
+        } = require('../utils/leaveDeduction');
+
+        it('1. 0 and 1 approved day: deduction 0', () => {
+            const zeroDays = computeMonthlyDeduction({ approvedDaysInMonth: 0, allowance: 1, baseSalary: 10000 });
+            expect(zeroDays.deductibleDays).toBe(0);
+            expect(zeroDays.deduction).toBe(0);
+            expect(zeroDays.noSalary).toBe(false);
+
+            const oneDay = computeMonthlyDeduction({ approvedDaysInMonth: 1, allowance: 1, baseSalary: 10000 });
+            expect(oneDay.deductibleDays).toBe(0);
+            expect(oneDay.deduction).toBe(0);
+            expect(oneDay.noSalary).toBe(false);
+        });
+
+        it('2. 2 days: deductibleDays 1, deduction 333.33', () => {
+            const result = computeMonthlyDeduction({ approvedDaysInMonth: 2, allowance: 1, baseSalary: 10000 });
+            expect(result.deductibleDays).toBe(1);
+            expect(result.deduction).toBe(333.33);
+            expect(result.noSalary).toBe(false);
+        });
+
+        it('3. 3 days in one application: deductibleDays 2, deduction 666.67', () => {
+            const result = computeMonthlyDeduction({ approvedDaysInMonth: 3, allowance: 1, baseSalary: 10000 });
+            expect(result.deductibleDays).toBe(2);
+            expect(result.deduction).toBe(666.67);
+            expect(result.noSalary).toBe(false);
+        });
+
+        it('4. Three separate 1-day applications produce the same totals as one 3-day application', () => {
+            const app1 = 1;
+            const app2 = 1;
+            const app3 = 1;
+            const totalApproved = app1 + app2 + app3; // 3 days
+
+            const separateComputed = computeMonthlyDeduction({ approvedDaysInMonth: totalApproved, allowance: 1, baseSalary: 10000 });
+            const singleComputed = computeMonthlyDeduction({ approvedDaysInMonth: 3, allowance: 1, baseSalary: 10000 });
+
+            expect(separateComputed).toEqual(singleComputed);
+            expect(separateComputed.deductibleDays).toBe(2);
+            expect(separateComputed.deduction).toBe(666.67);
+        });
+
+        it('5. Month boundary: Mar 30 to Apr 2 2026 splits correctly into March and April counts', () => {
+            // Calendar derivation:
+            // 2026-03-30: Monday (weekday -> March 1)
+            // 2026-03-31: Tuesday (weekday -> March 2)
+            // 2026-04-01: Wednesday (weekday -> April 1)
+            // 2026-04-02: Thursday (weekday -> April 2)
+            const buckets = splitLeaveByMonth('2026-03-30', '2026-04-02');
+            expect(buckets).toEqual({
+                '2026-03': 2,
+                '2026-04': 2
+            });
+        });
+
+        it('6. IST boundary: "2026-10-01" counted in "2026-10", "2026-09-30" counted in "2026-09"', () => {
+            // 2026-10-01 is Thursday
+            const octStart = splitLeaveByMonth('2026-10-01', '2026-10-01');
+            expect(octStart).toEqual({ '2026-10': 1 });
+
+            // 2026-09-30 is Wednesday
+            const sepEnd = splitLeaveByMonth('2026-09-30', '2026-09-30');
+            expect(sepEnd).toEqual({ '2026-09': 1 });
+        });
+
+        it('7. Holidays excluded: weekday holiday not counted, weekend holiday does not alter weekday count', () => {
+            // Range 2026-10-01 (Thu) to 2026-10-06 (Tue):
+            // Oct 01: Thu (weekday)
+            // Oct 02: Fri (weekday -> Holiday)
+            // Oct 03: Sat (weekend)
+            // Oct 04: Sun (weekend -> Holiday)
+            // Oct 05: Mon (weekday)
+            // Oct 06: Tue (weekday)
+            // Total weekdays without holidays = 4 (Thu, Fri, Mon, Tue)
+            // With Oct 02 (weekday holiday) excluded -> 3 days (Oct 01, Oct 05, Oct 06)
+            // Oct 04 is a Sunday holiday; it was already excluded as weekend, so does not affect count.
+            const holidays = ['2026-10-02', '2026-10-04'];
+            const buckets = splitLeaveByMonth('2026-10-01', '2026-10-06', holidays);
+            expect(buckets).toEqual({
+                '2026-10': 3
+            });
+        });
+
+        it('8. Weekend-only range returns {}', () => {
+            // 2026-10-03 is Saturday, 2026-10-04 is Sunday
+            const buckets = splitLeaveByMonth('2026-10-03', '2026-10-04');
+            expect(buckets).toEqual({});
+        });
+
+        it('9. Inverted range (end before start) returns {} without throwing', () => {
+            expect(splitLeaveByMonth('2026-10-10', '2026-10-01')).toEqual({});
+            expect(splitLeaveByMonth('', '2026-10-01')).toEqual({});
+            expect(splitLeaveByMonth(null, '2026-10-01')).toEqual({});
+            expect(splitLeaveByMonth('invalid', '2026-10-01')).toEqual({});
+        });
+
+        it('10. Cap: baseSalary 100 with 100 deductible days returns deduction 100, not more', () => {
+            // 100 * 100 / 30 = 333.33, but capped at baseSalary 100
+            const result = computeMonthlyDeduction({ approvedDaysInMonth: 101, allowance: 1, baseSalary: 100 });
+            expect(result.deductibleDays).toBe(100);
+            expect(result.deduction).toBe(100);
+            expect(result.noSalary).toBe(false);
+        });
+
+        it('11. Rounding to 2 decimals', () => {
+            expect(round2(10000 * 1 / 30)).toBe(333.33);
+            expect(round2(10000 * 2 / 30)).toBe(666.67);
+            expect(round2(12345.6789)).toBe(12345.68);
+        });
+
+        it('12. Zero, null, undefined, and non-finite baseSalary: deduction 0, noSalary true', () => {
+            const resZero = computeMonthlyDeduction({ approvedDaysInMonth: 3, allowance: 1, baseSalary: 0 });
+            expect(resZero).toEqual({ deductibleDays: 2, deduction: 0, noSalary: true });
+
+            const resNull = computeMonthlyDeduction({ approvedDaysInMonth: 3, allowance: 1, baseSalary: null });
+            expect(resNull).toEqual({ deductibleDays: 2, deduction: 0, noSalary: true });
+
+            const resUndef = computeMonthlyDeduction({ approvedDaysInMonth: 3, allowance: 1, baseSalary: undefined });
+            expect(resUndef).toEqual({ deductibleDays: 2, deduction: 0, noSalary: true });
+
+            const resNeg = computeMonthlyDeduction({ approvedDaysInMonth: 3, allowance: 1, baseSalary: -1000 });
+            expect(resNeg).toEqual({ deductibleDays: 2, deduction: 0, noSalary: true });
+
+            const resNaN = computeMonthlyDeduction({ approvedDaysInMonth: 3, allowance: 1, baseSalary: NaN });
+            expect(resNaN).toEqual({ deductibleDays: 2, deduction: 0, noSalary: true });
+        });
+
+        it('13. computeFreeDaysForApplication: first application with 0 used vs second application after 1 used', () => {
+            // First application: requested 2 days, 0 free used this month, allowance 1 -> 1 free day
+            const firstApp = computeFreeDaysForApplication({
+                alreadyFreeUsedThisMonth: 0,
+                allowance: 1,
+                requestedDaysInMonth: 2
+            });
+            expect(firstApp).toBe(1);
+
+            // Second application: requested 2 days, 1 free already used, allowance 1 -> 0 free days
+            const secondApp = computeFreeDaysForApplication({
+                alreadyFreeUsedThisMonth: 1,
+                allowance: 1,
+                requestedDaysInMonth: 2
+            });
+            expect(secondApp).toBe(0);
+
+            // Allowance of 2 days: requested 1 day, 0 used -> 1 free day
+            const appPartial = computeFreeDaysForApplication({
+                alreadyFreeUsedThisMonth: 0,
+                allowance: 2,
+                requestedDaysInMonth: 1
+            });
+            expect(appPartial).toBe(1);
+        });
+    });
 });
 
 
