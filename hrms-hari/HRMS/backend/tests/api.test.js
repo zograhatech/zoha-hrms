@@ -8325,6 +8325,275 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(appPartial).toBe(1);
         });
     });
+
+    // 32. Balance Uses Free Days Only (Monthly Allowance) Tests
+    describe('32. Balance Uses Free Days Only (Monthly Allowance) Tests', () => {
+        let adminUserToken, testEmpObj;
+        let LeaveModel, LeaveBalanceModel, EmployeeModel, SettingModel;
+
+        beforeAll(async () => {
+            LeaveModel = require('../models/Leave');
+            LeaveBalanceModel = require('../models/LeaveBalance');
+            EmployeeModel = require('../models/Employee');
+            SettingModel = require('../models/Setting');
+
+            const salt = await bcrypt.genSalt(10);
+            const password_hash = await bcrypt.hash('Password123!', salt);
+
+            await EmployeeModel.deleteMany({ id: { $in: ['C4_ADMIN', 'C4_EMP', 'C4_EMP_ZERO', 'C4_EMP_MULTI'] } });
+            await LeaveModel.deleteMany({ employee_id: { $in: ['C4_EMP', 'C4_EMP_ZERO', 'C4_EMP_MULTI'] } });
+            await LeaveBalanceModel.deleteMany({ employee_id: { $in: ['C4_EMP', 'C4_EMP_ZERO', 'C4_EMP_MULTI'] } });
+
+            await EmployeeModel.create({
+                id: 'C4_ADMIN',
+                name: 'C4 Admin',
+                email: 'c4_admin@test.com',
+                password_hash,
+                role: 'admin',
+                status: 'active',
+                department_id: testDeptId
+            });
+
+            testEmpObj = await EmployeeModel.create({
+                id: 'C4_EMP',
+                name: 'C4 Employee',
+                email: 'c4_emp@test.com',
+                password_hash,
+                role: 'employee',
+                status: 'active',
+                department_id: testDeptId
+            });
+
+            await LeaveBalanceModel.create({
+                employee_id: 'C4_EMP',
+                year: 2026,
+                sick_leave: 12,
+                casual_leave: 12,
+                earned_leave: 15
+            });
+
+            adminUserToken = jwt.sign({ id: 'C4_ADMIN', role: 'admin', email: 'c4_admin@test.com' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+            // Ensure allowance setting is 1
+            await SettingModel.updateOne({}, { $set: { monthly_leave_allowance: 1 } });
+        });
+
+        it('1. Approve a 3-day October leave: balance drops by 1, free_days is 1', async () => {
+            // 2026-10-05 (Mon) to 2026-10-07 (Wed) = 3 working days
+            const leave = await LeaveModel.create({
+                employee_id: 'C4_EMP',
+                leave_type: 'sick',
+                start_date: new Date('2026-10-05T00:00:00.000Z'),
+                end_date: new Date('2026-10-07T00:00:00.000Z'),
+                total_days: 3,
+                reason: '3-day sick leave in Oct',
+                status: 'pending'
+            });
+
+            const res = await request(app)
+                .put(`/api/leaves/${leave._id}/approve`)
+                .set('Authorization', `Bearer ${adminUserToken}`);
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+
+            const updated = await LeaveModel.findById(leave._id).lean();
+            expect(updated.status).toBe('approved');
+            expect(updated.free_days).toBe(1);
+
+            const bal = await LeaveBalanceModel.findOne({ employee_id: 'C4_EMP', year: 2026 }).lean();
+            // Started with 12, dropped by free_days (1) -> 11
+            expect(bal.sick_leave).toBe(11);
+        });
+
+        it('2. Double-approve the same leave: second call is refused and balance is not decremented twice', async () => {
+            // Pick the leave approved in test 1
+            const leave = await LeaveModel.findOne({ employee_id: 'C4_EMP', status: 'approved' });
+            const balBefore = await LeaveBalanceModel.findOne({ employee_id: 'C4_EMP', year: 2026 }).lean();
+
+            const res = await request(app)
+                .put(`/api/leaves/${leave._id}/approve`)
+                .set('Authorization', `Bearer ${adminUserToken}`);
+
+            expect(res.status).toBe(400);
+            expect(res.body.success).toBe(false);
+
+            const balAfter = await LeaveBalanceModel.findOne({ employee_id: 'C4_EMP', year: 2026 }).lean();
+            expect(balAfter.sick_leave).toBe(balBefore.sick_leave);
+        });
+
+        it('3. Approve three separate 1-day October leaves: total drop is 1 across them', async () => {
+            await EmployeeModel.create({
+                id: 'C4_EMP_MULTI',
+                name: 'C4 Multi Emp',
+                email: 'c4_multi@test.com',
+                password_hash: testEmpObj.password_hash,
+                role: 'employee',
+                status: 'active',
+                department_id: testDeptId
+            });
+
+            await LeaveBalanceModel.create({
+                employee_id: 'C4_EMP_MULTI',
+                year: 2026,
+                sick_leave: 12
+            });
+
+            // Leave 1: 2026-10-12 (Mon)
+            const l1 = await LeaveModel.create({
+                employee_id: 'C4_EMP_MULTI',
+                leave_type: 'sick',
+                start_date: new Date('2026-10-12T00:00:00.000Z'),
+                end_date: new Date('2026-10-12T00:00:00.000Z'),
+                total_days: 1,
+                reason: 'Day 1',
+                status: 'pending'
+            });
+
+            // Leave 2: 2026-10-13 (Tue)
+            const l2 = await LeaveModel.create({
+                employee_id: 'C4_EMP_MULTI',
+                leave_type: 'sick',
+                start_date: new Date('2026-10-13T00:00:00.000Z'),
+                end_date: new Date('2026-10-13T00:00:00.000Z'),
+                total_days: 1,
+                reason: 'Day 2',
+                status: 'pending'
+            });
+
+            // Leave 3: 2026-10-14 (Wed)
+            const l3 = await LeaveModel.create({
+                employee_id: 'C4_EMP_MULTI',
+                leave_type: 'sick',
+                start_date: new Date('2026-10-14T00:00:00.000Z'),
+                end_date: new Date('2026-10-14T00:00:00.000Z'),
+                total_days: 1,
+                reason: 'Day 3',
+                status: 'pending'
+            });
+
+            // Approve Leave 1
+            const res1 = await request(app).put(`/api/leaves/${l1._id}/approve`).set('Authorization', `Bearer ${adminUserToken}`);
+            expect(res1.status).toBe(200);
+            const upd1 = await LeaveModel.findById(l1._id).lean();
+            expect(upd1.free_days).toBe(1);
+
+            // Approve Leave 2
+            const res2 = await request(app).put(`/api/leaves/${l2._id}/approve`).set('Authorization', `Bearer ${adminUserToken}`);
+            expect(res2.status).toBe(200);
+            const upd2 = await LeaveModel.findById(l2._id).lean();
+            expect(upd2.free_days).toBe(0);
+
+            // Approve Leave 3
+            const res3 = await request(app).put(`/api/leaves/${l3._id}/approve`).set('Authorization', `Bearer ${adminUserToken}`);
+            expect(res3.status).toBe(200);
+            const upd3 = await LeaveModel.findById(l3._id).lean();
+            expect(upd3.free_days).toBe(0);
+
+            // Total drop across them is 1 (12 - 1 = 11)
+            const multiBal = await LeaveBalanceModel.findOne({ employee_id: 'C4_EMP_MULTI', year: 2026 }).lean();
+            expect(multiBal.sick_leave).toBe(11);
+        });
+
+        it('4. Approve when the balance is 0: succeeds', async () => {
+            await EmployeeModel.create({
+                id: 'C4_EMP_ZERO',
+                name: 'C4 Zero Emp',
+                email: 'c4_zero@test.com',
+                password_hash: testEmpObj.password_hash,
+                role: 'employee',
+                status: 'active',
+                department_id: testDeptId
+            });
+
+            await LeaveBalanceModel.create({
+                employee_id: 'C4_EMP_ZERO',
+                year: 2026,
+                sick_leave: 0
+            });
+
+            const zeroLeave = await LeaveModel.create({
+                employee_id: 'C4_EMP_ZERO',
+                leave_type: 'sick',
+                start_date: new Date('2026-10-19T00:00:00.000Z'),
+                end_date: new Date('2026-10-19T00:00:00.000Z'),
+                total_days: 1,
+                reason: 'Leave when balance 0',
+                status: 'pending'
+            });
+
+            const res = await request(app)
+                .put(`/api/leaves/${zeroLeave._id}/approve`)
+                .set('Authorization', `Bearer ${adminUserToken}`);
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+
+            const upd = await LeaveModel.findById(zeroLeave._id).lean();
+            expect(upd.status).toBe('approved');
+            expect(upd.free_days).toBe(1);
+
+            const bal = await LeaveBalanceModel.findOne({ employee_id: 'C4_EMP_ZERO', year: 2026 }).lean();
+            expect(bal.sick_leave).toBe(-1); // Decremented from 0 to -1, never blocked
+        });
+
+        it('5. Approve a September 2026 leave: balance drops by total_days, free_days is null', async () => {
+            // September 14 to September 16, 2026 (3 working days)
+            const sepLeave = await LeaveModel.create({
+                employee_id: 'C4_EMP',
+                leave_type: 'sick',
+                start_date: new Date('2026-09-14T00:00:00.000Z'),
+                end_date: new Date('2026-09-16T00:00:00.000Z'),
+                total_days: 3,
+                reason: 'September legacy leave',
+                status: 'pending'
+            });
+
+            const balBefore = await LeaveBalanceModel.findOne({ employee_id: 'C4_EMP', year: 2026 }).lean();
+
+            const res = await request(app)
+                .put(`/api/leaves/${sepLeave._id}/approve`)
+                .set('Authorization', `Bearer ${adminUserToken}`);
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+
+            const upd = await LeaveModel.findById(sepLeave._id).lean();
+            expect(upd.status).toBe('approved');
+            expect(upd.free_days).toBeNull();
+
+            const balAfter = await LeaveBalanceModel.findOne({ employee_id: 'C4_EMP', year: 2026 }).lean();
+            // Decrements by total_days (3), not free_days
+            expect(balAfter.sick_leave).toBe(balBefore.sick_leave - 3);
+        });
+
+        it('6. Quota update after an October leave: recalculated using free_days, not total_days', async () => {
+            // C4_EMP has:
+            // 1 October leave of 3 days with free_days = 1
+            // 1 September leave of 3 days (legacy) with total_days = 3
+            // Total used for C4_EMP = 1 (Oct free_days) + 3 (Sep legacy) = 4
+            // When setting sick_leave policy to 15:
+            // Recalculated balance should be: Math.max(0, 15 - 4) = 11.
+            // (If Oct used total_days=3, balance would be 15 - 6 = 9).
+            const res = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${adminUserToken}`)
+                .send({
+                    leave_policies: {
+                        casual_leave: 12,
+                        sick_leave: 15,
+                        earned_leave: 15,
+                        maternity_leave: 0,
+                        paternity_leave: 0
+                    }
+                });
+
+            expect(res.status).toBe(200);
+
+            const bal = await LeaveBalanceModel.findOne({ employee_id: 'C4_EMP', year: 2026 }).lean();
+            expect(bal.sick_leave).toBe(11);
+        });
+    });
 });
 
 

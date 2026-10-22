@@ -11,6 +11,7 @@ const leaveSchema = new mongoose.Schema({
     approved_by: { type: String, ref: 'Employee', default: null },
     approved_date: { type: Date },
     rejection_reason: { type: String },
+    free_days: { type: Number, default: null },
 }, { timestamps: true });
 
 leaveSchema.index({ employee_id: 1, status: 1 });

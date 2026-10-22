@@ -6,6 +6,9 @@ const Department = require('../models/Department');
 const Notification = require('../models/Notification');
 const { sendEmail } = require('../utils/emailService');
 const Setting = require('../models/Setting');
+const Holiday = require('../models/Holiday');
+const { toISTDateString } = require('../utils/istDate');
+const { splitLeaveByMonth, computeFreeDaysForApplication } = require('../utils/leaveDeduction');
 
 const normalizeRole = (role) => {
     const r = (role || '').toLowerCase().replace(/\s+/g, '');
@@ -265,17 +268,87 @@ const approveLeave = async (req, res) => {
             return res.status(authCheck.status || 403).json({ success: false, message: authCheck.message });
         }
 
-        leave.status = 'approved';
-        leave.approved_by = req.user.id;
-        leave.approved_date = new Date();
-        await leave.save();
+        const startIst = toISTDateString(leave.start_date);
+        const endIst = toISTDateString(leave.end_date);
+        const isNewRule = startIst >= '2026-10-01';
 
-        // Deduct balance
+        let computedFreeDays = null;
+        let balanceDecrement = leave.total_days;
+
+        if (isNewRule) {
+            const holidays = await Holiday.find({}).select('date').lean();
+            const holidayDates = holidays.map(h => typeof h.date === 'string' ? h.date : toISTDateString(h.date));
+
+            const leaveDaysByMonth = splitLeaveByMonth(startIst, endIst, holidayDates);
+            const monthsTouched = Object.keys(leaveDaysByMonth);
+
+            const settings = await Setting.findOne().lean();
+            const allowance = (settings && typeof settings.monthly_leave_allowance === 'number')
+                ? settings.monthly_leave_allowance
+                : 1;
+
+            const otherApproved = await Leave.find({
+                _id: { $ne: leave._id },
+                employee_id: leave.employee_id,
+                status: 'approved'
+            }).lean();
+
+            let totalFree = 0;
+            for (const monthKey of monthsTouched) {
+                const requestedInMonth = leaveDaysByMonth[monthKey] || 0;
+                if (requestedInMonth <= 0) continue;
+
+                const otherInMonth = otherApproved.filter(l => {
+                    const lStartIst = toISTDateString(l.start_date);
+                    if (lStartIst < '2026-10-01') return false;
+                    const lDaysByMonth = splitLeaveByMonth(lStartIst, toISTDateString(l.end_date), holidayDates);
+                    return Boolean(lDaysByMonth[monthKey]);
+                });
+
+                let alreadyFreeUsedThisMonth = 0;
+                for (const otherLeave of otherInMonth) {
+                    if (typeof otherLeave.free_days === 'number') {
+                        const otherDaysInMonth = splitLeaveByMonth(toISTDateString(otherLeave.start_date), toISTDateString(otherLeave.end_date), holidayDates)[monthKey] || 0;
+                        alreadyFreeUsedThisMonth += Math.min(otherLeave.free_days, otherDaysInMonth);
+                    }
+                }
+
+                const freeInMonth = computeFreeDaysForApplication({
+                    alreadyFreeUsedThisMonth,
+                    allowance,
+                    requestedDaysInMonth: requestedInMonth
+                });
+                totalFree += freeInMonth;
+            }
+
+            computedFreeDays = totalFree;
+            balanceDecrement = computedFreeDays;
+        }
+
+        // Conditional update: ensures double-click cannot approve the same leave twice
+        const updatedLeave = await Leave.findOneAndUpdate(
+            { _id: req.params.id, status: 'pending' },
+            {
+                $set: {
+                    status: 'approved',
+                    approved_by: req.user.id,
+                    approved_date: new Date(),
+                    free_days: computedFreeDays
+                }
+            },
+            { new: true }
+        );
+
+        if (!updatedLeave) {
+            return res.status(400).json({ success: false, message: 'Leave is not pending or was already processed.' });
+        }
+
+        // Deduct balance by free_days (new rule) or total_days (legacy)
         const TRACKED = { casual: 'casual_leave', sick: 'sick_leave', earned: 'earned_leave', maternity: 'maternity_leave', paternity: 'paternity_leave' };
-        if (TRACKED[leave.leave_type]) {
+        if (TRACKED[leave.leave_type] && balanceDecrement > 0) {
             await LeaveBalance.findOneAndUpdate(
                 { employee_id: leave.employee_id, year: leave.start_date.getFullYear() },
-                { $inc: { [TRACKED[leave.leave_type]]: -leave.total_days } }
+                { $inc: { [TRACKED[leave.leave_type]]: -balanceDecrement } }
             );
         }
 

@@ -1,4 +1,5 @@
 const Setting = require('../models/Setting');
+const { toISTDateString } = require('../utils/istDate');
 const LeaveBalance = require('../models/LeaveBalance');
 const Leave = require('../models/Leave');
 const Employee = require('../models/Employee');
@@ -149,7 +150,10 @@ const updateSettings = async (req, res) => {
                 approvedLeaves.forEach(l => {
                     const key = `${l.leave_type}_leave`;
                     if (usedMapping[key] !== undefined) {
-                        usedMapping[key] += (l.total_days || 0);
+                        const istDate = toISTDateString(l.start_date);
+                        const isNewRule = istDate >= '2026-10-01';
+                        const effectiveUsed = isNewRule ? (l.free_days ?? 0) : (l.total_days || 0);
+                        usedMapping[key] += effectiveUsed;
                     }
                 });
 
