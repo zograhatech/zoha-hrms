@@ -30,7 +30,7 @@ export default function PayrollAdmin() {
     const [analytics, setAnalytics] = useState(null);
     const [showForm, setShowForm] = useState(false);
     const [employees, setEmployees] = useState([]);
-    const emptyForm = { employee_id: '', days_worked: 0, basic: 0, da: 0, oa: 0, leave_wages: 0, esi_wages: 0, epf_wages: 0, provident_fund: 0, esi_deduction: 0, pt: 0, lwf: 0, tds: 0, leave_deduction: 0, other_deductions: 0, employer_pf: 0, employer_esi: 0, bank_ac_no: '' };
+    const emptyForm = { employee_id: '', days_worked: 0, basic: 0, da: 0, oa: 0, leave_wages: 0, esi_wages: 0, epf_wages: 0, provident_fund: 0, esi_deduction: 0, pt: 0, lwf: 0, tds: 0, leave_deduction: 0, other_deductions: 0, employer_pf: 0, employer_esi: 0, bank_ac_no: '', unpaid_leave_days: 0, unpaid_leave_deduction: 0, unpaid_leave_adjustment: 0 };
     const [form, setForm] = useState({ ...emptyForm });
     const [submitting, setSubmitting] = useState(false);
     const [, setImporting] = useState(false);
@@ -446,6 +446,9 @@ export default function PayrollAdmin() {
                                         <div className="form-group"><label className="form-label">LWF (Labour Welfare Fund)</label><input type="number" className="form-input" value={form.lwf} onChange={e => setForm({ ...form, lwf: e.target.value })} /></div>
                                         <div className="form-group"><label className="form-label">TDS</label><input type="number" className="form-input" value={form.tds} onChange={e => setForm({ ...form, tds: e.target.value })} /></div>
                                         <div className="form-group"><label className="form-label">Leave Deduction</label><input type="number" className="form-input" value={form.leave_deduction} onChange={e => setForm({ ...form, leave_deduction: e.target.value })} /></div>
+                                        <div className="form-group"><label className="form-label">Unpaid Leave Days</label><input type="number" className="form-input" value={form.unpaid_leave_days || 0} disabled readOnly /></div>
+                                        <div className="form-group"><label className="form-label">Unpaid Leave Deduction</label><input type="number" className="form-input" value={form.unpaid_leave_deduction || 0} disabled readOnly /></div>
+                                        <div className="form-group"><label className="form-label">Late Leave Adjustment</label><input type="number" className="form-input" value={form.unpaid_leave_adjustment || 0} disabled readOnly /></div>
                                         <div className="form-group"><label className="form-label">Other (Advance & Fine)</label><input type="number" className="form-input" value={form.other_deductions} onChange={e => setForm({ ...form, other_deductions: e.target.value })} /></div>
                                     </div>
                                 </div>

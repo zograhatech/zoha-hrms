@@ -104,6 +104,8 @@ export default function Payroll() {
         { label: 'LWF', val: p?.lwf || 0, ytd: getYTD('lwf') },
         { label: 'TDS', val: p?.tds || 0, ytd: getYTD('tds') },
         { label: 'Leave Deduction', val: p?.leave_deduction || 0, ytd: getYTD('leave_deduction') },
+        ...(p?.unpaid_leave_days > 0 ? [{ label: `Unpaid Leave (${p.unpaid_leave_days} day(s))`, val: p?.unpaid_leave_deduction || 0, ytd: getYTD('unpaid_leave_deduction') }] : []),
+        ...(p?.unpaid_leave_adjustment > 0 ? [{ label: 'Late Leave Adjustment', val: p?.unpaid_leave_adjustment || 0, ytd: getYTD('unpaid_leave_adjustment') }] : []),
         { label: 'Advance & Fine', val: p?.other_deductions || 0, ytd: getYTD('other_deductions') }
     ];
 
