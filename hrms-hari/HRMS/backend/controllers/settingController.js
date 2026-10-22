@@ -87,7 +87,7 @@ const updateSettings = async (req, res) => {
         console.log('[updateSettings] Current roles in DB:', Object.keys(settings.roles_permissions || {}));
         console.log('[updateSettings] Received updateData roles:', Object.keys(updateData.roles_permissions || {}));
 
-        // monthly_leave_allowance: SuperAdmin only, non-negative number check before any writes
+        // monthly_leave_allowance: SuperAdmin only, non-negative whole integer check before any writes
         if (updateData.monthly_leave_allowance !== undefined) {
             const userRole = (req.user?.role || '').toLowerCase();
             if (userRole !== 'admin') {
@@ -96,11 +96,18 @@ const updateSettings = async (req, res) => {
                     message: 'Only SuperAdmin can edit monthly_leave_allowance.'
                 });
             }
-            const allowanceVal = Number(updateData.monthly_leave_allowance);
-            if (isNaN(allowanceVal) || allowanceVal < 0) {
+            const rawVal = updateData.monthly_leave_allowance;
+            if (rawVal === null || typeof rawVal === 'boolean' || (typeof rawVal === 'string' && rawVal.trim() === '')) {
                 return res.status(400).json({
                     success: false,
-                    message: 'monthly_leave_allowance must be a non-negative number.'
+                    message: 'monthly_leave_allowance must be a non-negative whole integer.'
+                });
+            }
+            const allowanceVal = Number(rawVal);
+            if (!Number.isInteger(allowanceVal) || allowanceVal < 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'monthly_leave_allowance must be a non-negative whole integer.'
                 });
             }
             settings.monthly_leave_allowance = allowanceVal;

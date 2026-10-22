@@ -8094,10 +8094,74 @@ describe('HRMS Backend Automated Test Suite', () => {
 
             expect(res.status).toBe(400);
             expect(res.body.success).toBe(false);
-            expect(res.body.message).toMatch(/monthly_leave_allowance must be a non-negative number/i);
+            expect(res.body.message).toMatch(/monthly_leave_allowance must be a non-negative whole integer/i);
 
             const after = await SettingModel.findOne().lean();
             expect(after.monthly_leave_allowance).toBe(before.monthly_leave_allowance);
+        });
+
+        it('7. Rejects non-integers, empty strings, booleans, and whitespace-only strings with 400; accepts 0 and 2', async () => {
+            const before = await SettingModel.findOne().lean();
+
+            // 1.5 returns 400
+            const resFloat = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${mlaAdminToken}`)
+                .send({ monthly_leave_allowance: 1.5 });
+            expect(resFloat.status).toBe(400);
+            expect(resFloat.body.success).toBe(false);
+            const checkFloat = await SettingModel.findOne().lean();
+            expect(checkFloat.monthly_leave_allowance).toBe(before.monthly_leave_allowance);
+
+            // "" returns 400
+            const resEmpty = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${mlaAdminToken}`)
+                .send({ monthly_leave_allowance: "" });
+            expect(resEmpty.status).toBe(400);
+            expect(resEmpty.body.success).toBe(false);
+            const checkEmpty = await SettingModel.findOne().lean();
+            expect(checkEmpty.monthly_leave_allowance).toBe(before.monthly_leave_allowance);
+
+            // whitespace-only returns 400
+            const resWs = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${mlaAdminToken}`)
+                .send({ monthly_leave_allowance: "   " });
+            expect(resWs.status).toBe(400);
+            expect(resWs.body.success).toBe(false);
+            const checkWs = await SettingModel.findOne().lean();
+            expect(checkWs.monthly_leave_allowance).toBe(before.monthly_leave_allowance);
+
+            // true returns 400
+            const resBool = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${mlaAdminToken}`)
+                .send({ monthly_leave_allowance: true });
+            expect(resBool.status).toBe(400);
+            expect(resBool.body.success).toBe(false);
+            const checkBool = await SettingModel.findOne().lean();
+            expect(checkBool.monthly_leave_allowance).toBe(before.monthly_leave_allowance);
+
+            // 0 is accepted
+            const resZero = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${mlaAdminToken}`)
+                .send({ monthly_leave_allowance: 0 });
+            expect(resZero.status).toBe(200);
+            expect(resZero.body.settings.monthly_leave_allowance).toBe(0);
+            const checkZero = await SettingModel.findOne().lean();
+            expect(checkZero.monthly_leave_allowance).toBe(0);
+
+            // 2 is accepted
+            const resTwo = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${mlaAdminToken}`)
+                .send({ monthly_leave_allowance: 2 });
+            expect(resTwo.status).toBe(200);
+            expect(resTwo.body.settings.monthly_leave_allowance).toBe(2);
+            const checkTwo = await SettingModel.findOne().lean();
+            expect(checkTwo.monthly_leave_allowance).toBe(2);
         });
     });
 });
