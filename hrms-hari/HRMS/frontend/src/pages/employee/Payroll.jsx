@@ -142,7 +142,7 @@ export default function Payroll() {
                         <tbody>
                             {allPayroll.length > 0 ? allPayroll.map(pr => {
                                 const g = (pr.basic || 0) + (pr.da || 0) + (pr.oa || 0) + (pr.leave_wages || 0);
-                                const d = (pr.provident_fund || 0) + (pr.esi_deduction || 0) + (pr.pt || 0) + (pr.lwf || 0) + (pr.tds || 0) + (pr.leave_deduction || 0) + (pr.other_deductions || 0);
+                                const d = (pr.provident_fund || 0) + (pr.esi_deduction || 0) + (pr.pt || 0) + (pr.lwf || 0) + (pr.tds || 0) + (pr.leave_deduction || 0) + (pr.unpaid_leave_deduction || 0) + (pr.unpaid_leave_adjustment || 0) + (pr.other_deductions || 0);
                                 const n = pr.actual_payable ?? 0;
                                 return (
                                     <tr key={pr._id}>
