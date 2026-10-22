@@ -211,13 +211,17 @@ export default function Settings() {
 
         try {
             const dataToSave = customSettings || settings;
-            const payload = { ...dataToSave };
+            let payload;
             if (!isSuperAdmin(user)) {
-                delete payload.monthly_leave_allowance;
-            } else if (payload.monthly_leave_allowance === '' || payload.monthly_leave_allowance === undefined || payload.monthly_leave_allowance === null) {
-                payload.monthly_leave_allowance = 1;
+                const { monthly_leave_allowance, ...rest } = dataToSave;
+                payload = rest;
             } else {
-                payload.monthly_leave_allowance = Number(payload.monthly_leave_allowance);
+                payload = {
+                    ...dataToSave,
+                    monthly_leave_allowance: (dataToSave.monthly_leave_allowance === '' || dataToSave.monthly_leave_allowance === undefined || dataToSave.monthly_leave_allowance === null)
+                        ? 1
+                        : Number(dataToSave.monthly_leave_allowance)
+                };
             }
             const formData = new FormData();
             formData.append('settings', JSON.stringify(payload));
@@ -754,7 +758,7 @@ export default function Settings() {
                                 <input type="number" name="casual_leave" className="form-input" value={settings.leave_policies.casual_leave} onChange={(e) => handleChange(e, 'leave_policies')} />
                             </div>
                             <div className="form-group">
-                                <label className="form-label">Sick Leave (per month)</label>
+                                <label className="form-label">Sick Leave (per year)</label>
                                 <input type="number" name="sick_leave" className="form-input" value={settings.leave_policies.sick_leave} onChange={(e) => handleChange(e, 'leave_policies')} />
                             </div>
                             <div className="form-group">
