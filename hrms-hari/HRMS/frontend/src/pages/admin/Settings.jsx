@@ -32,6 +32,7 @@ export default function Settings() {
         company_email: '',
         company_phone: '',
         company_gstin: '',
+        monthly_leave_allowance: 1,
         leave_policies: {
             casual_leave: 12,
             sick_leave: 12,
@@ -143,6 +144,9 @@ export default function Settings() {
                 if (!Array.isArray(s.idle_exempt_app_names)) {
                     s.idle_exempt_app_names = [];
                 }
+                if (s.monthly_leave_allowance === undefined || s.monthly_leave_allowance === null) {
+                    s.monthly_leave_allowance = 1;
+                }
                 setSettings(s);
             }
             if (resShi && resShi.data.shifts) setShifts(resShi.data.shifts);
@@ -207,8 +211,16 @@ export default function Settings() {
 
         try {
             const dataToSave = customSettings || settings;
+            const payload = { ...dataToSave };
+            if (!isSuperAdmin(user)) {
+                delete payload.monthly_leave_allowance;
+            } else if (payload.monthly_leave_allowance === '' || payload.monthly_leave_allowance === undefined || payload.monthly_leave_allowance === null) {
+                payload.monthly_leave_allowance = 1;
+            } else {
+                payload.monthly_leave_allowance = Number(payload.monthly_leave_allowance);
+            }
             const formData = new FormData();
-            formData.append('settings', JSON.stringify(dataToSave));
+            formData.append('settings', JSON.stringify(payload));
             if (logoFile && !customSettings) {
                 formData.append('logo', logoFile);
             }
@@ -756,6 +768,25 @@ export default function Settings() {
                             <div className="form-group">
                                 <label className="form-label">Paternity Leave</label>
                                 <input type="number" name="paternity_leave" className="form-input" value={settings.leave_policies.paternity_leave} onChange={(e) => handleChange(e, 'leave_policies')} />
+                            </div>
+                            <div className="form-group">
+                                <label className="form-label">Monthly free leave days (per employee)</label>
+                                <input
+                                    type="number"
+                                    min="0"
+                                    step="1"
+                                    name="monthly_leave_allowance"
+                                    className="form-input"
+                                    value={settings.monthly_leave_allowance ?? 1}
+                                    disabled={!isSuperAdmin(user)}
+                                    onChange={(e) => {
+                                        const val = e.target.value === '' ? '' : parseInt(e.target.value, 10);
+                                        setSettings(prev => ({ ...prev, monthly_leave_allowance: val }));
+                                    }}
+                                />
+                                <small style={{ color: 'var(--text-muted)', display: 'block', marginTop: 4, fontSize: '0.75rem' }}>
+                                    Leave beyond this many days per calendar month is deducted from salary.
+                                </small>
                             </div>
                         </div>
                     </div>
