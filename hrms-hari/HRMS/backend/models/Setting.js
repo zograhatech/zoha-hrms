@@ -73,7 +73,8 @@ const settingSchema = new mongoose.Schema({
     idle_exempt_app_names: { type: [String], default: [] },
     idle_auto_clockout_enabled: { type: Boolean, default: false },
     companion_download_url: { type: String, default: '' },
-    monthly_leave_allowance: { type: Number, default: 1, min: 0 }
+    monthly_leave_allowance: { type: Number, default: 1, min: 0 },
+    days_worked_convention: { type: String, enum: ['payable', 'attended'], default: 'payable' }
 }, { timestamps: true });
 
 module.exports = mongoose.models.Setting || mongoose.model('Setting', settingSchema);

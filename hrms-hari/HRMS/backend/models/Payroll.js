@@ -54,6 +54,8 @@ payrollSchema.virtual('total_deductions').get(function () {
 payrollSchema.virtual('net_salary').get(function () {
     return this.gross_salary - this.total_deductions;
 });
+// Note: actual_payable virtual uses the 'payable' convention by default.
+// Controllers load days_worked_convention ('payable' | 'attended') from Setting.
 payrollSchema.virtual('actual_payable').get(function () {
     const standardDeductions = (this.provident_fund || 0) + (this.esi_deduction || 0) + (this.pt || 0) + (this.lwf || 0) + (this.tds || 0) + (this.leave_deduction || 0);
     const monthlyNet = this.gross_salary - standardDeductions;

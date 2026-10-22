@@ -9381,4 +9381,192 @@ describe('HRMS Backend Automated Test Suite', () => {
         });
     });
 
+    describe('34. Setting: days_worked_convention and actual_payable calculations', () => {
+        const Department = require('../models/Department');
+        const EmployeeModel = require('../models/Employee');
+        const PayrollModel = require('../models/Payroll');
+        const SettingModel = require('../models/Setting');
+        const { computeSalary } = require('../controllers/payrollController');
+
+        let s34AdminToken;
+        let s34MgrToken;
+        let s34EmpToken;
+        let s34Emp;
+        let s34DeptId;
+
+        beforeAll(async () => {
+            const passwordHash = await bcrypt.hash('S34Pass123!', 10);
+            const dept = await Department.create({ name: 'S34 Dept' });
+            s34DeptId = dept._id;
+
+            await EmployeeModel.create({
+                id: 'S34_ADMIN',
+                name: 'S34 Admin',
+                email: 's34_admin@test.com',
+                password_hash: passwordHash,
+                role: 'admin',
+                status: 'active',
+                department_id: s34DeptId
+            });
+            s34AdminToken = jwt.sign({ id: 'S34_ADMIN', role: 'admin', email: 's34_admin@test.com' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+            await EmployeeModel.create({
+                id: 'S34_MGR',
+                name: 'S34 Manager',
+                email: 's34_mgr@test.com',
+                password_hash: passwordHash,
+                role: 'manager',
+                status: 'active',
+                department_id: s34DeptId
+            });
+            s34MgrToken = jwt.sign({ id: 'S34_MGR', role: 'manager', email: 's34_mgr@test.com' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+            s34Emp = await EmployeeModel.create({
+                id: 'S34_EMP',
+                name: 'S34 Employee',
+                email: 's34_emp@test.com',
+                password_hash: passwordHash,
+                role: 'employee',
+                status: 'active',
+                department_id: s34DeptId
+            });
+            s34EmpToken = jwt.sign({ id: 'S34_EMP', role: 'employee', email: 's34_emp@test.com' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+        });
+
+        afterAll(async () => {
+            await SettingModel.updateOne({}, { $set: { days_worked_convention: 'payable' } });
+            await EmployeeModel.deleteMany({ id: { $regex: /^S34_/ } });
+            await PayrollModel.deleteMany({ employee_id: { $regex: /^S34_/ } });
+        });
+
+        it('34.1. Default GET settings returns "payable"', async () => {
+            await SettingModel.updateOne({}, { $unset: { days_worked_convention: 1 } });
+            const res = await request(app)
+                .get('/api/settings')
+                .set('Authorization', `Bearer ${s34EmpToken}`);
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+            expect(res.body.settings.days_worked_convention).toBe('payable');
+        });
+
+        it('34.2. Admin PUT with "attended" succeeds and persists; Manager PUT with "attended" returns 403; Value "foo" returns 400', async () => {
+            // Admin PUT 'attended' succeeds and persists
+            const resAdmin = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${s34AdminToken}`)
+                .send({ days_worked_convention: 'attended' });
+
+            expect(resAdmin.status).toBe(200);
+            expect(resAdmin.body.success).toBe(true);
+            expect(resAdmin.body.settings.days_worked_convention).toBe('attended');
+
+            const savedSetting = await SettingModel.findOne().lean();
+            expect(savedSetting.days_worked_convention).toBe('attended');
+
+            // Manager PUT 'attended' returns 403
+            const resMgr = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${s34MgrToken}`)
+                .send({ days_worked_convention: 'attended' });
+
+            expect(resMgr.status).toBe(403);
+            expect(resMgr.body.success).toBe(false);
+
+            // Value "foo" returns 400
+            const resInvalid = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${s34AdminToken}`)
+                .send({ days_worked_convention: 'foo' });
+
+            expect(resInvalid.status).toBe(400);
+            expect(resInvalid.body.success).toBe(false);
+
+            // DB setting still 'attended'
+            const checkSetting = await SettingModel.findOne().lean();
+            expect(checkSetting.days_worked_convention).toBe('attended');
+        });
+
+        it('34.3. November payroll with days_worked 30: payable mode actual_payable = 28000.00, attended mode = 30000.00', async () => {
+            // With a payroll record basic 30000, days_worked 30, leave_deduction 0, unpaid_leave_deduction 2000, adjustment 0, gross 30000, month 11 (30 days):
+            // payable mode actual_payable = 28000.00, attended mode = 30000.00
+            const payroll = await PayrollModel.create({
+                employee_id: s34Emp.id,
+                month: 11,
+                year: 2026,
+                basic: 30000,
+                da: 0,
+                oa: 0,
+                leave_wages: 0,
+                leave_deduction: 0,
+                unpaid_leave_deduction: 2000,
+                unpaid_leave_adjustment: 0,
+                other_deductions: 0,
+                days_worked: 30,
+                status: 'pending'
+            });
+
+            // Payable mode
+            await SettingModel.updateOne({}, { $set: { days_worked_convention: 'payable' } });
+            const resPayable = await request(app)
+                .get(`/api/payroll/${s34Emp.id}?month=11&year=2026`)
+                .set('Authorization', `Bearer ${s34AdminToken}`);
+
+            expect(resPayable.status).toBe(200);
+            expect(resPayable.body.success).toBe(true);
+            expect(resPayable.body.payroll.actual_payable).toBe(28000.00);
+
+            // Attended mode
+            await SettingModel.updateOne({}, { $set: { days_worked_convention: 'attended' } });
+            const resAttended = await request(app)
+                .get(`/api/payroll/${s34Emp.id}?month=11&year=2026`)
+                .set('Authorization', `Bearer ${s34AdminToken}`);
+
+            expect(resAttended.status).toBe(200);
+            expect(resAttended.body.success).toBe(true);
+            expect(resAttended.body.payroll.actual_payable).toBe(30000.00);
+
+            // Also verify computeSalary unit calculation directly
+            const plainPayroll = payroll.toObject();
+            expect(computeSalary(plainPayroll, 'payable').actual_payable).toBe(28000.00);
+            expect(computeSalary(plainPayroll, 'attended').actual_payable).toBe(30000.00);
+        });
+
+        it('34.4. November payroll with days_worked 27: payable mode actual_payable = 25000.00, attended mode = 27000.00', async () => {
+            // Same record with days_worked 27:
+            // proRated = 30000 / 30 * 27 = 27000.00
+            // payable mode = 27000 - 2000 = 25000.00
+            // attended mode = 27000.00
+            await PayrollModel.updateOne(
+                { employee_id: s34Emp.id, month: 11, year: 2026 },
+                { $set: { days_worked: 27 } }
+            );
+
+            // Payable mode
+            await SettingModel.updateOne({}, { $set: { days_worked_convention: 'payable' } });
+            const resPayable = await request(app)
+                .get(`/api/payroll/${s34Emp.id}?month=11&year=2026`)
+                .set('Authorization', `Bearer ${s34AdminToken}`);
+
+            expect(resPayable.status).toBe(200);
+            expect(resPayable.body.success).toBe(true);
+            expect(resPayable.body.payroll.actual_payable).toBe(25000.00);
+
+            // Attended mode
+            await SettingModel.updateOne({}, { $set: { days_worked_convention: 'attended' } });
+            const resAttended = await request(app)
+                .get(`/api/payroll/${s34Emp.id}?month=11&year=2026`)
+                .set('Authorization', `Bearer ${s34AdminToken}`);
+
+            expect(resAttended.status).toBe(200);
+            expect(resAttended.body.success).toBe(true);
+            expect(resAttended.body.payroll.actual_payable).toBe(27000.00);
+
+            // Also verify computeSalary unit calculation directly
+            const updatedPayroll = await PayrollModel.findOne({ employee_id: s34Emp.id, month: 11, year: 2026 }).lean();
+            expect(computeSalary(updatedPayroll, 'payable').actual_payable).toBe(25000.00);
+            expect(computeSalary(updatedPayroll, 'attended').actual_payable).toBe(27000.00);
+        });
+    });
+
 });

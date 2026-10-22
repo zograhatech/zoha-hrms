@@ -19,6 +19,9 @@ const getSettings = async (req, res) => {
         if (obj.monthly_leave_allowance === undefined || obj.monthly_leave_allowance === null) {
             obj.monthly_leave_allowance = 1;
         }
+        if (!obj.days_worked_convention || !['payable', 'attended'].includes(obj.days_worked_convention)) {
+            obj.days_worked_convention = 'payable';
+        }
 
         const isAdmin = req.user && ['admin', 'manager', 'team_lead', 'hr_manager', 'hr', 'hrmanager'].includes(req.user.role.toLowerCase());
 
@@ -87,6 +90,25 @@ const updateSettings = async (req, res) => {
 
         console.log('[updateSettings] Current roles in DB:', Object.keys(settings.roles_permissions || {}));
         console.log('[updateSettings] Received updateData roles:', Object.keys(updateData.roles_permissions || {}));
+
+        // days_worked_convention: SuperAdmin only, enum ['payable', 'attended']
+        if (updateData.days_worked_convention !== undefined) {
+            const userRole = (req.user?.role || '').toLowerCase();
+            if (userRole !== 'admin') {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Only SuperAdmin can edit days_worked_convention.'
+                });
+            }
+            const convention = updateData.days_worked_convention;
+            if (convention !== 'payable' && convention !== 'attended') {
+                return res.status(400).json({
+                    success: false,
+                    message: 'days_worked_convention must be either "payable" or "attended".'
+                });
+            }
+            settings.days_worked_convention = convention;
+        }
 
         // monthly_leave_allowance: SuperAdmin only, non-negative whole integer check before any writes
         if (updateData.monthly_leave_allowance !== undefined) {
