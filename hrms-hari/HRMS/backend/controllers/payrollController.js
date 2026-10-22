@@ -2,18 +2,24 @@ const Payroll = require('../models/Payroll');
 const Employee = require('../models/Employee');
 const Department = require('../models/Department');
 const Notification = require('../models/Notification');
+const Holiday = require('../models/Holiday');
+const Leave = require('../models/Leave');
+const Setting = require('../models/Setting');
+const UnpaidLeaveAdjustment = require('../models/UnpaidLeaveAdjustment');
 const { sendEmail } = require('../utils/emailService');
+const { toISTDateString, getISTDayStart, getISTDayEnd } = require('../utils/istDate');
+const { splitLeaveByMonth, computeMonthlyDeduction, round2 } = require('../utils/leaveDeduction');
 const XLSX = require('xlsx');
 
 // Helper: compute gross/net from a plain object
 const computeSalary = (p) => {
     const gross = (p.basic || 0) + (p.da || 0) + (p.oa || 0) + (p.leave_wages || 0);
     const standardDed = (p.provident_fund || 0) + (p.esi_deduction || 0) + (p.pt || 0) + (p.lwf || 0) + (p.tds || 0) + (p.leave_deduction || 0);
-    const totalDed = standardDed + (p.other_deductions || 0);
+    const totalDed = standardDed + (p.unpaid_leave_deduction || 0) + (p.unpaid_leave_adjustment || 0) + (p.other_deductions || 0);
     const monthlyNet = gross - standardDed;
     const daysInMonth = (p.month && p.year) ? new Date(p.year, p.month, 0).getDate() : 30;
     const proRated = daysInMonth > 0 ? (monthlyNet / daysInMonth) * (p.days_worked || 0) : 0;
-    const actualPayable = proRated - (p.other_deductions || 0);
+    const actualPayable = proRated - (p.other_deductions || 0) - (p.unpaid_leave_deduction || 0) - (p.unpaid_leave_adjustment || 0);
 
     return { 
         gross_salary: gross, 
@@ -31,6 +37,116 @@ const checkAdminRole = (req, res) => {
         return false;
     }
     return true;
+};
+
+// Shared calculation and synchronization function
+const syncPendingPayrollForMonth = async ({ employee_id, month, year, baseSalary = null, payrollDoc = null, dryRun = false }) => {
+    const monthKey = `${year}-${String(month).padStart(2, '0')}`;
+    if (monthKey < '2026-10') {
+        return { unpaid_leave_days: 0, unpaid_leave_deduction: 0, payroll: payrollDoc };
+    }
+
+    let targetPayroll = payrollDoc;
+    if (!targetPayroll && !dryRun) {
+        targetPayroll = await Payroll.findOne({ employee_id, month, year, status: 'pending' });
+    }
+    if (!targetPayroll && !dryRun) {
+        return { unpaid_leave_days: 0, unpaid_leave_deduction: 0, payroll: null };
+    }
+
+    const padM = String(month).padStart(2, '0');
+    const lastDay = new Date(year, month, 0).getDate();
+    const padD = String(lastDay).padStart(2, '0');
+    const monthStartUtc = getISTDayStart(`${year}-${padM}-01`);
+    const monthEndUtc = getISTDayEnd(`${year}-${padM}-${padD}`);
+
+    const [holidays, overlappingApprovedLeaves, settings] = await Promise.all([
+        Holiday.find({}).select('date').lean(),
+        Leave.find({
+            employee_id,
+            status: 'approved',
+            start_date: { $lt: monthEndUtc },
+            end_date: { $gte: monthStartUtc }
+        }).lean(),
+        Setting.findOne().lean()
+    ]);
+
+    const holidayDates = holidays.map(h => typeof h.date === 'string' ? h.date : toISTDateString(h.date));
+    let approvedDaysInMonth = 0;
+    for (const l of overlappingApprovedLeaves) {
+        const daysByMonth = splitLeaveByMonth(toISTDateString(l.start_date), toISTDateString(l.end_date), holidayDates);
+        approvedDaysInMonth += (daysByMonth[monthKey] || 0);
+    }
+
+    const allowance = (settings && typeof settings.monthly_leave_allowance === 'number')
+        ? settings.monthly_leave_allowance
+        : 1;
+
+    const computedBase = (baseSalary != null)
+        ? baseSalary
+        : ((targetPayroll?.basic || 0) + (targetPayroll?.da || 0) + (targetPayroll?.oa || 0));
+
+    const { deductibleDays, deduction } = computeMonthlyDeduction({
+        approvedDaysInMonth,
+        allowance,
+        baseSalary: computedBase,
+        divisor: 30
+    });
+
+    if (!dryRun && targetPayroll) {
+        targetPayroll.unpaid_leave_days = deductibleDays;
+        targetPayroll.unpaid_leave_deduction = deduction;
+        await targetPayroll.save();
+    }
+
+    return {
+        unpaid_leave_days: deductibleDays,
+        unpaid_leave_deduction: deduction,
+        payroll: targetPayroll
+    };
+};
+
+// Consumes pending adjustments from earlier paid months
+const consumePendingAdjustmentsForPayroll = async (payroll) => {
+    const pending = await UnpaidLeaveAdjustment.find({
+        employee_id: payroll.employee_id,
+        status: 'pending',
+        $or: [
+            { source_year: { $lt: payroll.year } },
+            { source_year: payroll.year, source_month: { $lt: payroll.month } }
+        ]
+    });
+
+    if (!pending.length) return;
+
+    const totalAdjustment = round2(pending.reduce((sum, a) => sum + (a.amount || 0), 0));
+    payroll.unpaid_leave_adjustment = round2((payroll.unpaid_leave_adjustment || 0) + totalAdjustment);
+
+    for (const a of pending) {
+        payroll.adjustment_notes.push({
+            leave_id: a.leave_id,
+            source_month: a.source_month,
+            source_year: a.source_year,
+            amount: a.amount,
+            reason: 'Late approved leave after payroll paid',
+            applied_at: new Date()
+        });
+    }
+
+    // Step 1: Save the payroll first. If this throws, adjustments remain 'pending'.
+    await payroll.save();
+
+    // Step 2: Only after payroll.save succeeds, mark adjustments 'applied'
+    await UnpaidLeaveAdjustment.updateMany(
+        { _id: { $in: pending.map(a => a._id) } },
+        {
+            $set: {
+                status: 'applied',
+                applied_payroll_id: payroll._id,
+                applied_at: new Date()
+            }
+        }
+    );
 };
 
 // ─── GET /api/payroll/:employeeId ─────────────────────────────
@@ -98,55 +214,58 @@ const getAllPayroll = async (req, res) => {
             const { gross_salary, total_deductions, net_salary, actual_payable } = computeSalary(p);
             return {
                 ...p,
+                employee_name: emp.name || '',
+                department_name: deptMap[emp.department_id?.toString()] || '',
+                designation: emp.designation || '',
                 gross_salary,
                 total_deductions,
                 net_salary,
                 actual_payable,
-                employee_name: emp.name || p.employee_id,
-                gender: emp.gender || '',
-                designation: emp.designation || '',
-                department_name: emp.department_id ? deptMap[emp.department_id.toString()] : null,
             };
         });
 
-        res.json({ success: true, payroll: result });
+        res.json({ success: true, payrolls: result });
     } catch (err) {
         res.status(500).json({ success: false, message: 'Server error.' });
     }
 };
 
-// ─── GET /api/payroll/analytics?year=YYYY ────────────────────
+// ─── GET /api/payroll/analytics ──────────────────────────────
 const getAnalytics = async (req, res) => {
     if (!checkAdminRole(req, res)) return;
     try {
-        const year = parseInt(req.query.year) || new Date().getFullYear();
-        const analytics = await Payroll.aggregate([
-            { $match: { year } },
-            {
-                $group: {
-                    _id: '$month',
-                    total: {
-                        $sum: {
-                            $subtract: [
-                                { $add: ['$basic', '$da', '$oa', '$leave_wages'] },
-                                { $add: ['$provident_fund', '$esi_deduction', '$other_deductions', '$pt', '$lwf', '$tds', '$leave_deduction'] }
-                            ]
-                        }
-                    },
-                    employees: { $sum: 1 },
-                    avgSalary: {
-                        $avg: {
-                            $subtract: [
-                                { $add: ['$basic', '$da', '$oa', '$leave_wages'] },
-                                { $add: ['$provident_fund', '$esi_deduction', '$other_deductions', '$pt', '$lwf', '$tds', '$leave_deduction'] }
-                            ]
-                        }
-                    },
-                },
-            },
-            { $project: { _id: 0, month: '$_id', total: 1, employees: 1, avgSalary: { $round: ['$avgSalary', 0] } } },
-            { $sort: { month: 1 } },
-        ]);
+        const { month, year } = req.query;
+        const filter = {};
+        if (month) filter.month = +month;
+        if (year) filter.year = +year;
+
+        const payrolls = await Payroll.find(filter).lean();
+
+        let totalSalaryPaid = 0;
+        let totalDeductions = 0;
+        let pendingPayments = 0;
+        let paidEmployees = 0;
+
+        payrolls.forEach(p => {
+            const { gross_salary, total_deductions, net_salary } = computeSalary(p);
+            totalDeductions += total_deductions;
+            if (p.status === 'paid') {
+                totalSalaryPaid += net_salary;
+                paidEmployees++;
+            } else {
+                pendingPayments += net_salary;
+            }
+        });
+
+        const analytics = {
+            total_records: payrolls.length,
+            total_salary_paid: totalSalaryPaid,
+            total_deductions: totalDeductions,
+            pending_payments: pendingPayments,
+            paid_count: paidEmployees,
+            pending_count: payrolls.length - paidEmployees
+        };
+
         res.json({ success: true, analytics });
     } catch (err) {
         res.status(500).json({ success: false, message: 'Server error.' });
@@ -168,6 +287,16 @@ const createPayroll = async (req, res) => {
         const existing = await Payroll.findOne({ employee_id, month, year });
         if (existing) return res.status(400).json({ success: false, message: 'Payroll for this month already exists.' });
 
+        // Step 1: Compute unpaid leave days & deduction before creating payroll
+        const { unpaid_leave_days, unpaid_leave_deduction } = await syncPendingPayrollForMonth({
+            employee_id,
+            month: +month,
+            year: +year,
+            baseSalary: (basic || 0) + (da || 0) + (oa || 0),
+            dryRun: true
+        });
+
+        // Step 2: Create Payroll document with computed values
         const payroll = await Payroll.create({
             employee_id, month, year,
             days_worked: days_worked || 0,
@@ -187,8 +316,14 @@ const createPayroll = async (req, res) => {
             employer_pf: employer_pf || 0,
             employer_esi: employer_esi || 0,
             bank_ac_no: bank_ac_no || '',
+            unpaid_leave_days,
+            unpaid_leave_deduction,
+            unpaid_leave_adjustment: 0,
             status: 'pending'
         });
+
+        // Step 3: Consume any pending adjustments from earlier paid months after create
+        await consumePendingAdjustmentsForPayroll(payroll);
 
         try {
             const emp = await Employee.findOne({ id: employee_id }).select('_id').lean();
@@ -329,7 +464,12 @@ const exportPayroll = async (req, res) => {
                 basic: p.basic, da: p.da, oa: p.oa,
                 leave_wages: p.leave_wages, esi_wages: p.esi_wages, epf_wages: p.epf_wages,
                 gross_salary,
-                provident_fund: p.provident_fund, esi_deduction: p.esi_deduction, other_deductions: p.other_deductions,
+                provident_fund: p.provident_fund, esi_deduction: p.esi_deduction, pt: p.pt, lwf: p.lwf, tds: p.tds,
+                leave_deduction: p.leave_deduction || 0,
+                unpaid_leave_days: p.unpaid_leave_days || 0,
+                unpaid_leave_deduction: p.unpaid_leave_deduction || 0,
+                unpaid_leave_adjustment: p.unpaid_leave_adjustment || 0,
+                other_deductions: p.other_deductions,
                 total_deductions, 
                 net_salary,
                 actual_payable,
@@ -391,6 +531,27 @@ const importPayroll = async (req, res) => {
         const errors = [];
         const importNotifs = [];
 
+        // Batch pre-fetch: Setting, Holidays, Employees, Leaves
+        const settings = await Setting.findOne().lean();
+        const allowance = (settings && typeof settings.monthly_leave_allowance === 'number') ? settings.monthly_leave_allowance : 1;
+        const holidays = await Holiday.find({}).select('date').lean();
+        const holidayDates = holidays.map(h => typeof h.date === 'string' ? h.date : toISTDateString(h.date));
+
+        const empIds = [...new Set(rows.map(r => String(r.employee_id || '').trim().toUpperCase()).filter(Boolean))];
+        const allEmps = await Employee.find({ id: { $in: empIds } }).lean();
+        const empMap = new Map(allEmps.map(e => [e.id, e]));
+
+        const allApprovedLeaves = await Leave.find({
+            employee_id: { $in: empIds },
+            status: 'approved'
+        }).lean();
+
+        const leavesByEmp = new Map();
+        for (const l of allApprovedLeaves) {
+            if (!leavesByEmp.has(l.employee_id)) leavesByEmp.set(l.employee_id, []);
+            leavesByEmp.get(l.employee_id).push(l);
+        }
+
         for (let i = 0; i < rows.length; i++) {
             const row = rows[i];
             const rowNum = i + 2;
@@ -401,7 +562,8 @@ const importPayroll = async (req, res) => {
                 skipped++; continue;
             }
 
-            const emp = await Employee.findOne({ id: String(row.employee_id).trim().toUpperCase() }).lean();
+            const rowEmpId = String(row.employee_id).trim().toUpperCase();
+            const emp = empMap.get(rowEmpId);
             if (!emp) {
                 errors.push(`Row ${rowNum}: Employee "${row.employee_id}" not found.`);
                 skipped++; continue;
@@ -413,7 +575,42 @@ const importPayroll = async (req, res) => {
                 skipped++; continue;
             }
 
-            await Payroll.create({
+            // In-memory unpaid leave computation for imported row
+            const monthKey = `${+row.year}-${String(+row.month).padStart(2, '0')}`;
+            let unpaid_leave_days = 0;
+            let unpaid_leave_deduction = 0;
+
+            if (monthKey >= '2026-10') {
+                const padM = String(+row.month).padStart(2, '0');
+                const lastDay = new Date(+row.year, +row.month, 0).getDate();
+                const padD = String(lastDay).padStart(2, '0');
+                const monthStartUtc = getISTDayStart(`${+row.year}-${padM}-01`);
+                const monthEndUtc = getISTDayEnd(`${+row.year}-${padM}-${padD}`);
+
+                const empLeaves = (leavesByEmp.get(emp.id) || []).filter(l => {
+                    const startUtc = new Date(l.start_date);
+                    const endUtc = new Date(l.end_date);
+                    return startUtc < monthEndUtc && endUtc >= monthStartUtc;
+                });
+
+                let approvedDaysInMonth = 0;
+                for (const l of empLeaves) {
+                    const daysByMonth = splitLeaveByMonth(toISTDateString(l.start_date), toISTDateString(l.end_date), holidayDates);
+                    approvedDaysInMonth += (daysByMonth[monthKey] || 0);
+                }
+
+                const baseSalary = (parseFloat(row.basic) || 0) + (parseFloat(row.da) || 0) + (parseFloat(row.oa) || 0);
+                const deductionResult = computeMonthlyDeduction({
+                    approvedDaysInMonth,
+                    allowance,
+                    baseSalary,
+                    divisor: 30
+                });
+                unpaid_leave_days = deductionResult.deductibleDays;
+                unpaid_leave_deduction = deductionResult.deduction;
+            }
+
+            const payroll = await Payroll.create({
                 employee_id: emp.id,
                 month: +row.month, year: +row.year,
                 days_worked: parseFloat(row.days_worked) || 0,
@@ -433,8 +630,14 @@ const importPayroll = async (req, res) => {
                 employer_pf: parseFloat(row.employer_pf) || 0,
                 employer_esi: parseFloat(row.employer_esi) || 0,
                 bank_ac_no: String(row.bank_ac_no || ''),
+                unpaid_leave_days,
+                unpaid_leave_deduction,
+                unpaid_leave_adjustment: 0,
                 status: 'pending',
             });
+
+            await consumePendingAdjustmentsForPayroll(payroll);
+
             importNotifs.push({
                 recipient: emp._id,
                 type: 'general',
@@ -460,4 +663,82 @@ const importPayroll = async (req, res) => {
     }
 };
 
-module.exports = { getEmployeePayroll, getAllPayroll, getAnalytics, createPayroll, markAsPaid, bulkMarkAsPaid, exportPayroll, importPayroll, downloadPayrollTemplate };
+// ─── GET /api/payroll/reconcile ────────────────────────────────
+const reconcilePayroll = async (req, res) => {
+    if (!checkAdminRole(req, res)) return;
+    try {
+        const { month, year } = req.query;
+        if (!month || !year) {
+            return res.status(400).json({ success: false, message: 'month and year are required query parameters.' });
+        }
+
+        const pendingPayrolls = await Payroll.find({ month: +month, year: +year, status: 'pending' }).lean();
+        const mismatches = [];
+
+        for (const p of pendingPayrolls) {
+            const expected = await syncPendingPayrollForMonth({
+                employee_id: p.employee_id,
+                month: +month,
+                year: +year,
+                payrollDoc: p,
+                dryRun: true
+            });
+
+            const dayMismatch = (p.unpaid_leave_days || 0) !== expected.unpaid_leave_days;
+            const deductionMismatch = Math.abs((p.unpaid_leave_deduction || 0) - expected.unpaid_leave_deduction) > 0.01;
+
+            const linkedAdjustments = await UnpaidLeaveAdjustment.find({ applied_payroll_id: p._id }).lean();
+            const linkedSum = round2(linkedAdjustments.reduce((sum, a) => sum + (a.amount || 0), 0));
+            const adjustmentMismatch = Math.abs((p.unpaid_leave_adjustment || 0) - linkedSum) > 0.01;
+
+            if (dayMismatch || deductionMismatch || adjustmentMismatch) {
+                mismatches.push({
+                    employee_id: p.employee_id,
+                    payroll_id: p._id,
+                    stored: {
+                        unpaid_leave_days: p.unpaid_leave_days || 0,
+                        unpaid_leave_deduction: p.unpaid_leave_deduction || 0,
+                        unpaid_leave_adjustment: p.unpaid_leave_adjustment || 0
+                    },
+                    expected: {
+                        unpaid_leave_days: expected.unpaid_leave_days,
+                        unpaid_leave_deduction: expected.unpaid_leave_deduction,
+                        unpaid_leave_adjustment: linkedSum
+                    },
+                    difference: {
+                        days: expected.unpaid_leave_days - (p.unpaid_leave_days || 0),
+                        deduction: round2(expected.unpaid_leave_deduction - (p.unpaid_leave_deduction || 0)),
+                        adjustment: round2(linkedSum - (p.unpaid_leave_adjustment || 0))
+                    }
+                });
+            }
+        }
+
+        res.json({
+            success: true,
+            month: +month,
+            year: +year,
+            total_checked: pendingPayrolls.length,
+            mismatches_count: mismatches.length,
+            mismatches
+        });
+    } catch (err) {
+        console.error('[reconcilePayroll]', err);
+        res.status(500).json({ success: false, message: 'Reconciliation failed: ' + err.message });
+    }
+};
+
+module.exports = { 
+    getEmployeePayroll, 
+    getAllPayroll, 
+    getAnalytics, 
+    createPayroll, 
+    markAsPaid, 
+    bulkMarkAsPaid, 
+    exportPayroll, 
+    importPayroll, 
+    downloadPayrollTemplate,
+    reconcilePayroll,
+    syncPendingPayrollForMonth,
+    consumePendingAdjustmentsForPayroll
+};

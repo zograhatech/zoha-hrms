@@ -22,6 +22,17 @@ const payrollSchema = new mongoose.Schema({
     tds: { type: Number, default: 0 },
     leave_deduction: { type: Number, default: 0 },
     other_deductions: { type: Number, default: 0 }, // Advance & Fine
+    unpaid_leave_days: { type: Number, default: 0, min: 0 },
+    unpaid_leave_deduction: { type: Number, default: 0, min: 0 },
+    unpaid_leave_adjustment: { type: Number, default: 0, min: 0 },
+    adjustment_notes: [{
+        leave_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Leave', required: true },
+        source_month: { type: Number, required: true },
+        source_year: { type: Number, required: true },
+        amount: { type: Number, required: true },
+        reason: { type: String, default: 'Late approved leave after payroll paid' },
+        applied_at: { type: Date, default: Date.now }
+    }],
 
     // ── Employer Contributions ───────────────────
     employer_pf: { type: Number, default: 0 },
@@ -38,16 +49,17 @@ payrollSchema.virtual('gross_salary').get(function () {
     return this.basic + this.da + this.oa + this.leave_wages;
 });
 payrollSchema.virtual('total_deductions').get(function () {
-    return this.provident_fund + this.esi_deduction + this.pt + this.lwf + this.tds + this.leave_deduction + this.other_deductions;
+    return (this.provident_fund || 0) + (this.esi_deduction || 0) + (this.pt || 0) + (this.lwf || 0) + (this.tds || 0) + (this.leave_deduction || 0) + (this.unpaid_leave_deduction || 0) + (this.unpaid_leave_adjustment || 0) + (this.other_deductions || 0);
 });
 payrollSchema.virtual('net_salary').get(function () {
     return this.gross_salary - this.total_deductions;
 });
 payrollSchema.virtual('actual_payable').get(function () {
-    const standardDeductions = this.provident_fund + this.esi_deduction + this.pt + this.lwf + this.tds + this.leave_deduction;
+    const standardDeductions = (this.provident_fund || 0) + (this.esi_deduction || 0) + (this.pt || 0) + (this.lwf || 0) + (this.tds || 0) + (this.leave_deduction || 0);
     const monthlyNet = this.gross_salary - standardDeductions;
     const daysInMonth = new Date(this.year, this.month, 0).getDate();
-    return (daysInMonth > 0 ? (monthlyNet / daysInMonth) * (this.days_worked || 0) : 0) - this.other_deductions;
+    const proRated = daysInMonth > 0 ? (monthlyNet / daysInMonth) * (this.days_worked || 0) : 0;
+    return proRated - (this.other_deductions || 0) - (this.unpaid_leave_deduction || 0) - (this.unpaid_leave_adjustment || 0);
 });
 
 payrollSchema.set('toJSON', { virtuals: true });

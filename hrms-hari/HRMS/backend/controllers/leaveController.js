@@ -7,8 +7,11 @@ const Notification = require('../models/Notification');
 const { sendEmail } = require('../utils/emailService');
 const Setting = require('../models/Setting');
 const Holiday = require('../models/Holiday');
-const { toISTDateString } = require('../utils/istDate');
-const { splitLeaveByMonth, computeFreeDaysForApplication } = require('../utils/leaveDeduction');
+const Payroll = require('../models/Payroll');
+const UnpaidLeaveAdjustment = require('../models/UnpaidLeaveAdjustment');
+const { toISTDateString, getISTDayStart, getISTDayEnd } = require('../utils/istDate');
+const { splitLeaveByMonth, computeFreeDaysForApplication, computeMonthlyDeduction, round2 } = require('../utils/leaveDeduction');
+const { syncPendingPayrollForMonth } = require('./payrollController');
 
 const normalizeRole = (role) => {
     const r = (role || '').toLowerCase().replace(/\s+/g, '');
@@ -399,7 +402,165 @@ const approveLeave = async (req, res) => {
             }).catch(e => console.error('[approveLeave] email error:', e.message));
         }
 
-        res.json({ success: true, message: 'Leave approved successfully and employee notified.' });
+        let payrollWarning = null;
+        try {
+            const holidays = await Holiday.find({}).select('date').lean();
+            const holidayDates = holidays.map(h => typeof h.date === 'string' ? h.date : toISTDateString(h.date));
+
+            const leaveStartIst = toISTDateString(updatedLeave.start_date);
+            const leaveEndIst = toISTDateString(updatedLeave.end_date);
+            const touchedMonths = Object.keys(splitLeaveByMonth(leaveStartIst, leaveEndIst, holidayDates));
+
+            for (const monthKey of touchedMonths) {
+                if (monthKey < '2026-10') continue;
+                const [targetYear, targetMonth] = monthKey.split('-').map(Number);
+
+                // Call 1: Check payroll for target month
+                const payroll = await Payroll.findOne({
+                    employee_id: updatedLeave.employee_id,
+                    month: targetMonth,
+                    year: targetYear
+                });
+
+                if (payroll && payroll.status === 'pending') {
+                    // Update pending payroll using shared function (calls Payroll.findOne internally if payrollDoc omitted)
+                    await syncPendingPayrollForMonth({
+                        employee_id: updatedLeave.employee_id,
+                        month: targetMonth,
+                        year: targetYear
+                    });
+                } else if (payroll && payroll.status === 'paid') {
+                    // Paid payroll late-approval branch
+                    const paidRecord = await Payroll.findOne({
+                        employee_id: updatedLeave.employee_id,
+                        month: targetMonth,
+                        year: targetYear,
+                        status: 'paid'
+                    }).lean();
+
+                    if (!paidRecord) continue;
+
+                    // Audit check: verify existing adjustments match notes to prevent cascading corruption
+                    const existingAdjustments = await UnpaidLeaveAdjustment.find({
+                        employee_id: updatedLeave.employee_id,
+                        source_month: targetMonth,
+                        source_year: targetYear
+                    }).lean();
+
+                    const storedAdjustmentAmount = round2(existingAdjustments.reduce((sum, a) => sum + (a.amount || 0), 0));
+                    const notedAmount = round2((paidRecord.adjustment_notes || []).reduce((sum, n) => {
+                        return (n.source_month === targetMonth && n.source_year === targetYear) ? sum + (n.amount || 0) : sum;
+                    }, 0));
+
+                    if (notedAmount > storedAdjustmentAmount) {
+                        throw new Error(
+                            `Adjustment audit mismatch: prior late approval for ${targetMonth}/${targetYear} is missing from UnpaidLeaveAdjustment collection. Run reconciliation to repair before approving additional late leaves for this month.`
+                        );
+                    }
+
+                    // Compute expected total deduction for this month from all approved leaves
+                    const padM = String(targetMonth).padStart(2, '0');
+                    const lastDay = new Date(targetYear, targetMonth, 0).getDate();
+                    const padD = String(lastDay).padStart(2, '0');
+                    const monthStartUtc = getISTDayStart(`${targetYear}-${padM}-01`);
+                    const monthEndUtc = getISTDayEnd(`${targetYear}-${padM}-${padD}`);
+
+                    const allApprovedInMonth = await Leave.find({
+                        employee_id: updatedLeave.employee_id,
+                        status: 'approved',
+                        start_date: { $lt: monthEndUtc },
+                        end_date: { $gte: monthStartUtc }
+                    }).lean();
+
+                    let approvedDaysInMonth = 0;
+                    for (const l of allApprovedInMonth) {
+                        const daysByMonth = splitLeaveByMonth(toISTDateString(l.start_date), toISTDateString(l.end_date), holidayDates);
+                        approvedDaysInMonth += (daysByMonth[monthKey] || 0);
+                    }
+
+                    const settingsDoc = await Setting.findOne().lean();
+                    const allowance = (settingsDoc && typeof settingsDoc.monthly_leave_allowance === 'number')
+                        ? settingsDoc.monthly_leave_allowance
+                        : 1;
+
+                    const baseSalary = (paidRecord.basic || 0) + (paidRecord.da || 0) + (paidRecord.oa || 0);
+                    const { deduction: expectedTotalDeduction } = computeMonthlyDeduction({
+                        approvedDaysInMonth,
+                        allowance,
+                        baseSalary,
+                        divisor: 30
+                    });
+
+                    // Known race: If two separate pending leave applications for the same employee
+                    // and month are approved concurrently after payroll is paid, both could read
+                    // alreadyCarriedForMonth before either writes its adjustment record, causing both
+                    // to carry over an overlapping owed amount.
+                    const alreadyCarriedForMonth = storedAdjustmentAmount;
+                    const owed = round2(expectedTotalDeduction - (paidRecord.unpaid_leave_deduction || 0) - alreadyCarriedForMonth);
+
+                    if (owed > 0) {
+                        // Call 2: Look for next pending payroll
+                        const nextPending = await Payroll.findOne({
+                            employee_id: updatedLeave.employee_id,
+                            status: 'pending',
+                            $or: [
+                                { year: { $gt: targetYear } },
+                                { year: targetYear, month: { $gt: targetMonth } }
+                            ]
+                        }).sort({ year: 1, month: 1 });
+
+                        if (nextPending) {
+                            const appliedAt = new Date();
+                            nextPending.unpaid_leave_adjustment = round2((nextPending.unpaid_leave_adjustment || 0) + owed);
+                            nextPending.adjustment_notes.push({
+                                leave_id: updatedLeave._id,
+                                source_month: targetMonth,
+                                source_year: targetYear,
+                                amount: owed,
+                                reason: 'Late approved leave after payroll paid',
+                                applied_at: appliedAt
+                            });
+
+                            // Step 1: Save nextPending FIRST
+                            await nextPending.save();
+
+                            // Step 2: Only after save succeeds, insert adjustment record as 'applied'
+                            await UnpaidLeaveAdjustment.create({
+                                employee_id: updatedLeave.employee_id,
+                                leave_id: updatedLeave._id,
+                                source_month: targetMonth,
+                                source_year: targetYear,
+                                amount: owed,
+                                status: 'applied',
+                                applied_payroll_id: nextPending._id,
+                                applied_at: appliedAt
+                            });
+                        } else {
+                            // Queue as 'pending' for future creation
+                            await UnpaidLeaveAdjustment.create({
+                                employee_id: updatedLeave.employee_id,
+                                leave_id: updatedLeave._id,
+                                source_month: targetMonth,
+                                source_year: targetYear,
+                                amount: owed,
+                                status: 'pending',
+                                applied_payroll_id: null,
+                                applied_at: null
+                            });
+                        }
+                    }
+                }
+            }
+        } catch (payrollErr) {
+            console.error(`[approveLeave] Payroll recalculation failed for employee ${leave.employee_id}, leave ${leave._id}:`, payrollErr);
+            payrollWarning = `Leave approved, but payroll recalculation failed: ${payrollErr.message}. Run payroll reconciliation.`;
+        }
+
+        res.json({ 
+            success: true, 
+            message: 'Leave approved successfully and employee notified.',
+            ...(payrollWarning ? { warning: payrollWarning } : {})
+        });
     } catch (err) {
         res.status(500).json({ success: false, message: 'Server error.' });
     }

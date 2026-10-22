@@ -8679,11 +8679,630 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(bal.sick_leave).toBe(13);
         });
     });
+    describe('33. Payroll Wiring: Unpaid Leave Deductions, Late-Approval Carryover & Reconciliation', () => {
+        const Department = require('../models/Department');
+        const EmployeeModel = require('../models/Employee');
+        const LeaveModel = require('../models/Leave');
+        const LeaveBalanceModel = require('../models/LeaveBalance');
+        const PayrollModel = require('../models/Payroll');
+        const SettingModel = require('../models/Setting');
+        const UnpaidLeaveAdjustmentModel = require('../models/UnpaidLeaveAdjustment');
+        const XLSX = require('xlsx');
+
+        let s33AdminToken;
+        let s33Emp;
+        let s33DeptId;
+
+        beforeAll(async () => {
+            const password_hash = await bcrypt.hash('Secret123!', 10);
+            const dept = await Department.create({ name: 'S33 Payroll Dept' });
+            s33DeptId = dept._id;
+
+            await EmployeeModel.create({
+                id: 'S33_ADMIN',
+                name: 'S33 Admin',
+                email: 's33_admin@test.com',
+                password_hash,
+                role: 'admin',
+                status: 'active',
+                department_id: s33DeptId
+            });
+            s33AdminToken = jwt.sign({ id: 'S33_ADMIN', role: 'admin', email: 's33_admin@test.com' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+            s33Emp = await EmployeeModel.create({
+                id: 'S33_EMP',
+                name: 'S33 Employee',
+                email: 's33_emp@test.com',
+                password_hash,
+                role: 'employee',
+                status: 'active',
+                department_id: s33DeptId
+            });
+
+            await LeaveBalanceModel.create({
+                employee_id: 'S33_EMP',
+                year: 2026,
+                sick_leave: 12,
+                casual_leave: 12,
+                earned_leave: 15
+            });
+
+            await SettingModel.updateOne({}, { $set: { monthly_leave_allowance: 1 } });
+        });
+
+        it('33.1. Model schema defaults and virtual calculations', async () => {
+            const payroll = await PayrollModel.create({
+                employee_id: s33Emp.id,
+                month: 1,
+                year: 2025,
+                basic: 20000,
+                da: 5000,
+                oa: 5000,
+                leave_deduction: 500,
+                unpaid_leave_deduction: 1000,
+                unpaid_leave_adjustment: 500
+            });
+
+            expect(payroll.unpaid_leave_days).toBe(0);
+            expect(payroll.gross_salary).toBe(30000);
+            expect(payroll.total_deductions).toBe(2000);
+            expect(payroll.net_salary).toBe(28000);
+        });
+
+        it('33.2. POST /api/payroll/create computes unpaid leave deduction', async () => {
+            // Employee with 3 approved leave days in November 2026: Nov 9, 10, 11 (Mon-Wed)
+            await LeaveModel.create({
+                employee_id: s33Emp.id,
+                leave_type: 'sick',
+                start_date: new Date('2026-11-09T00:00:00.000Z'),
+                end_date: new Date('2026-11-11T00:00:00.000Z'),
+                total_days: 3,
+                reason: 'Nov 3 days',
+                status: 'approved',
+                free_days: 1
+            });
+
+            const res = await request(app)
+                .post('/api/payroll/create')
+                .set('Authorization', `Bearer ${s33AdminToken}`)
+                .send({
+                    employee_id: s33Emp.id,
+                    month: 11,
+                    year: 2026,
+                    days_worked: 30,
+                    basic: 30000,
+                    da: 0,
+                    oa: 0,
+                    leave_wages: 5000,
+                    leave_deduction: 500
+                });
+
+            expect(res.status).toBe(201);
+            const p = res.body.payroll;
+            expect(p.unpaid_leave_days).toBe(2);
+            expect(p.unpaid_leave_deduction).toBe(2000);
+            expect(p.unpaid_leave_adjustment).toBe(0);
+            expect(p.leave_deduction).toBe(500);
+            expect(p.gross_salary).toBe(35000);
+            expect(p.total_deductions).toBe(2500);
+            expect(p.net_salary).toBe(32500);
+            expect(p.actual_payable).toBe(32500);
+        });
+
+        it('33.3. Pre-October 2026 exemption', async () => {
+            await LeaveModel.create({
+                employee_id: s33Emp.id,
+                leave_type: 'sick',
+                start_date: new Date('2026-08-10T00:00:00.000Z'),
+                end_date: new Date('2026-08-12T00:00:00.000Z'),
+                total_days: 3,
+                reason: 'Aug leave',
+                status: 'approved',
+                free_days: null
+            });
+
+            const res = await request(app)
+                .post('/api/payroll/create')
+                .set('Authorization', `Bearer ${s33AdminToken}`)
+                .send({
+                    employee_id: s33Emp.id,
+                    month: 8,
+                    year: 2026,
+                    days_worked: 30,
+                    basic: 30000
+                });
+
+            expect(res.status).toBe(201);
+            expect(res.body.payroll.unpaid_leave_days).toBe(0);
+            expect(res.body.payroll.unpaid_leave_deduction).toBe(0);
+        });
+
+        it('33.4. IST Month Boundary Precision with real UTC-Midnight dates', async () => {
+            const boundEmp = await EmployeeModel.create({
+                id: 'S33_BOUND_EMP',
+                name: 'Bound Emp',
+                email: 'bound@test.com',
+                password_hash: s33Emp.password_hash,
+                role: 'employee',
+                status: 'active',
+                department_id: s33DeptId
+            });
+
+            // Leave A: ending Oct 1 (new Date('2026-10-01') = UTC midnight = 05:30 IST) -> 1 day in Oct
+            await LeaveModel.create({
+                employee_id: boundEmp.id,
+                leave_type: 'sick',
+                start_date: new Date('2026-10-01T00:00:00.000Z'),
+                end_date: new Date('2026-10-01T00:00:00.000Z'),
+                total_days: 1,
+                reason: 'Oct 1 day',
+                status: 'approved',
+                free_days: 1
+            });
+
+            // Leave B: Sep 29 to Sep 30 (new Date('2026-09-30') ends before Oct 1 00:00 IST) -> 0 days in Oct
+            await LeaveModel.create({
+                employee_id: boundEmp.id,
+                leave_type: 'sick',
+                start_date: new Date('2026-09-29T00:00:00.000Z'),
+                end_date: new Date('2026-09-30T00:00:00.000Z'),
+                total_days: 2,
+                reason: 'Sep days',
+                status: 'approved',
+                free_days: null
+            });
+
+            const res = await request(app)
+                .post('/api/payroll/create')
+                .set('Authorization', `Bearer ${s33AdminToken}`)
+                .send({
+                    employee_id: boundEmp.id,
+                    month: 10,
+                    year: 2026,
+                    basic: 30000
+                });
+
+            expect(res.status).toBe(201);
+            expect(res.body.payroll.unpaid_leave_days).toBe(0);
+            expect(res.body.payroll.unpaid_leave_deduction).toBe(0);
+        });
+
+        it('33.5. Dynamic recalculation on PUT /api/leaves/:id/approve for pending payroll', async () => {
+            const recapEmp = await EmployeeModel.create({
+                id: 'S33_RECAP_EMP',
+                name: 'Recap Emp',
+                email: 'recap@test.com',
+                password_hash: s33Emp.password_hash,
+                role: 'employee',
+                status: 'active',
+                department_id: s33DeptId
+            });
+
+            await LeaveBalanceModel.create({
+                employee_id: recapEmp.id,
+                year: 2026,
+                sick_leave: 12
+            });
+
+            // Pending payroll for October 2026
+            const p = await PayrollModel.create({
+                employee_id: recapEmp.id,
+                month: 10,
+                year: 2026,
+                basic: 60000,
+                status: 'pending'
+            });
+
+            // Pending leave for 3 days in October: Oct 12, 13, 14 (Mon-Wed)
+            const l = await LeaveModel.create({
+                employee_id: recapEmp.id,
+                leave_type: 'sick',
+                start_date: new Date('2026-10-12T00:00:00.000Z'),
+                end_date: new Date('2026-10-14T00:00:00.000Z'),
+                total_days: 3,
+                reason: 'Oct 3 days',
+                status: 'pending'
+            });
+
+            const res = await request(app)
+                .put(`/api/leaves/${l._id}/approve`)
+                .set('Authorization', `Bearer ${s33AdminToken}`);
+
+            expect(res.status).toBe(200);
+
+            const updatedP = await PayrollModel.findById(p._id);
+            expect(updatedP.unpaid_leave_days).toBe(2);
+            expect(updatedP.unpaid_leave_deduction).toBe(4000);
+        });
+
+        it('33.6a. First late approval carryover to paid payroll (dependent on late-approval path)', async () => {
+            const lateEmp = await EmployeeModel.create({
+                id: 'S33_LATE_EMP',
+                name: 'Late Emp',
+                email: 'late@test.com',
+                password_hash: s33Emp.password_hash,
+                role: 'employee',
+                status: 'active',
+                department_id: s33DeptId
+            });
+
+            await LeaveBalanceModel.create({
+                employee_id: lateEmp.id,
+                year: 2026,
+                sick_leave: 12
+            });
+
+            // Existing 3 approved days in October
+            await LeaveModel.create({
+                employee_id: lateEmp.id,
+                leave_type: 'sick',
+                start_date: new Date('2026-10-05T00:00:00.000Z'),
+                end_date: new Date('2026-10-07T00:00:00.000Z'),
+                total_days: 3,
+                reason: 'Oct 3 days initial',
+                status: 'approved',
+                free_days: 1
+            });
+
+            // October payroll already marked paid with unpaid_leave_deduction: 2000
+            const octPaid = await PayrollModel.create({
+                employee_id: lateEmp.id,
+                month: 10,
+                year: 2026,
+                basic: 30000,
+                unpaid_leave_days: 2,
+                unpaid_leave_deduction: 2000,
+                status: 'paid'
+            });
+
+            // November payroll exists and is pending
+            const novPending = await PayrollModel.create({
+                employee_id: lateEmp.id,
+                month: 11,
+                year: 2026,
+                basic: 30000,
+                unpaid_leave_adjustment: 0,
+                status: 'pending'
+            });
+
+            // 4th day approved late in October: Oct 8
+            const l4 = await LeaveModel.create({
+                employee_id: lateEmp.id,
+                leave_type: 'sick',
+                start_date: new Date('2026-10-08T00:00:00.000Z'),
+                end_date: new Date('2026-10-08T00:00:00.000Z'),
+                total_days: 1,
+                reason: 'Oct 4th day late',
+                status: 'pending'
+            });
+
+            const res = await request(app)
+                .put(`/api/leaves/${l4._id}/approve`)
+                .set('Authorization', `Bearer ${s33AdminToken}`);
+
+            expect(res.status).toBe(200);
+
+            // October paid payroll remains unmodified
+            const octAfter = await PayrollModel.findById(octPaid._id);
+            expect(octAfter.unpaid_leave_deduction).toBe(2000);
+            expect(octAfter.status).toBe('paid');
+
+            // November pending payroll carried 1000.00
+            const novAfter = await PayrollModel.findById(novPending._id);
+            expect(novAfter.unpaid_leave_adjustment).toBe(1000);
+
+            // Adjustment recorded in collection as 'applied'
+            const adjs = await UnpaidLeaveAdjustmentModel.find({ employee_id: lateEmp.id, source_month: 10 });
+            expect(adjs.length).toBe(1);
+            expect(adjs[0].amount).toBe(1000);
+            expect(adjs[0].status).toBe('applied');
+            expect(adjs[0].applied_payroll_id.toString()).toBe(novPending._id.toString());
+        });
+
+        it('33.6b. Repeated late approval incremental carryover (dependent on late-approval path)', async () => {
+            // Continuing with S33_LATE_EMP:
+            // 5th day in October approved late: Oct 9
+            const l5 = await LeaveModel.create({
+                employee_id: 'S33_LATE_EMP',
+                leave_type: 'sick',
+                start_date: new Date('2026-10-09T00:00:00.000Z'),
+                end_date: new Date('2026-10-09T00:00:00.000Z'),
+                total_days: 1,
+                reason: 'Oct 5th day late',
+                status: 'pending'
+            });
+
+            const res = await request(app)
+                .put(`/api/leaves/${l5._id}/approve`)
+                .set('Authorization', `Bearer ${s33AdminToken}`);
+
+            expect(res.status).toBe(200);
+
+            // November adjustment incremented from 1000 to 2000
+            const nov = await PayrollModel.findOne({ employee_id: 'S33_LATE_EMP', month: 11, year: 2026 });
+            expect(nov.unpaid_leave_adjustment).toBe(2000);
+
+            // Total adjustments in collection for October is now 2000
+            const adjs = await UnpaidLeaveAdjustmentModel.find({ employee_id: 'S33_LATE_EMP', source_month: 10 });
+            expect(adjs.length).toBe(2);
+            expect(adjs[0].amount + adjs[1].amount).toBe(2000);
+        });
+
+        it('33.7a. Queued adjustment applied on future payroll POST /create', async () => {
+            const queueEmp = await EmployeeModel.create({
+                id: 'S33_QUEUE_EMP',
+                name: 'Queue Emp',
+                email: 'queue@test.com',
+                password_hash: s33Emp.password_hash,
+                role: 'employee',
+                status: 'active',
+                department_id: s33DeptId
+            });
+
+            await LeaveBalanceModel.create({
+                employee_id: queueEmp.id,
+                year: 2026,
+                sick_leave: 12
+            });
+
+            // October paid with 0 deduction
+            await PayrollModel.create({
+                employee_id: queueEmp.id,
+                month: 10,
+                year: 2026,
+                basic: 30000,
+                unpaid_leave_days: 0,
+                unpaid_leave_deduction: 0,
+                status: 'paid'
+            });
+
+            // Late approval for 2 days in October when NO future payroll exists yet
+            const lateOct = await LeaveModel.create({
+                employee_id: queueEmp.id,
+                leave_type: 'sick',
+                start_date: new Date('2026-10-15T00:00:00.000Z'),
+                end_date: new Date('2026-10-16T00:00:00.000Z'),
+                total_days: 2,
+                reason: 'Oct 2 days late without future payroll',
+                status: 'pending'
+            });
+
+            const approveRes = await request(app)
+                .put(`/api/leaves/${lateOct._id}/approve`)
+                .set('Authorization', `Bearer ${s33AdminToken}`);
+            expect(approveRes.status).toBe(200);
+
+            // Adjustment is queued as 'pending'
+            const queued = await UnpaidLeaveAdjustmentModel.findOne({ employee_id: queueEmp.id, source_month: 10 });
+            expect(queued).toBeDefined();
+            expect(queued.status).toBe('pending');
+            expect(queued.amount).toBe(1000);
+
+            // Now create November payroll via POST /create
+            const createRes = await request(app)
+                .post('/api/payroll/create')
+                .set('Authorization', `Bearer ${s33AdminToken}`)
+                .send({
+                    employee_id: queueEmp.id,
+                    month: 11,
+                    year: 2026,
+                    basic: 30000
+                });
+
+            expect(createRes.status).toBe(201);
+            expect(createRes.body.payroll.unpaid_leave_adjustment).toBe(1000);
+
+            const updatedAdj = await UnpaidLeaveAdjustmentModel.findById(queued._id);
+            expect(updatedAdj.status).toBe('applied');
+            expect(updatedAdj.applied_payroll_id.toString()).toBe(createRes.body.payroll._id.toString());
+        });
+
+        it('33.7b. Queued adjustment applied on future payroll POST /import', async () => {
+            const importEmp = await EmployeeModel.create({
+                id: 'S33_IMP_ADJ',
+                name: 'Import Adj Emp',
+                email: 'impadj@test.com',
+                password_hash: s33Emp.password_hash,
+                role: 'employee',
+                status: 'active',
+                department_id: s33DeptId
+            });
+
+            // Insert a pending adjustment of 1000 from October 2026
+            const queuedAdj = await UnpaidLeaveAdjustmentModel.create({
+                employee_id: importEmp.id,
+                leave_id: new mongoose.Types.ObjectId(),
+                source_month: 10,
+                source_year: 2026,
+                amount: 1000,
+                status: 'pending'
+            });
+
+            // Create Excel file with November row for importEmp
+            const wb = XLSX.utils.book_new();
+            const ws = XLSX.utils.json_to_sheet([{
+                employee_id: importEmp.id,
+                month: 11,
+                year: 2026,
+                basic: 30000,
+                days_worked: 30
+            }]);
+            XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+            const fileBuf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+            const res = await request(app)
+                .post('/api/payroll/import')
+                .set('Authorization', `Bearer ${s33AdminToken}`)
+                .attach('file', fileBuf, 'import.xlsx');
+
+            expect(res.status).toBe(200);
+            expect(res.body.imported).toBe(1);
+
+            const novPayroll = await PayrollModel.findOne({ employee_id: importEmp.id, month: 11, year: 2026 });
+            expect(novPayroll.unpaid_leave_adjustment).toBe(1000);
+
+            const appliedAdj = await UnpaidLeaveAdjustmentModel.findById(queuedAdj._id);
+            expect(appliedAdj.status).toBe('applied');
+            expect(appliedAdj.applied_payroll_id.toString()).toBe(novPayroll._id.toString());
+        });
+
+        it('33.8. Approval resilience with warning (dependent on approveLeave inner try/catch)', async () => {
+            const resiEmp = await EmployeeModel.create({
+                id: 'S33_RESI_EMP',
+                name: 'Resi Emp',
+                email: 'resi@test.com',
+                password_hash: s33Emp.password_hash,
+                role: 'employee',
+                status: 'active',
+                department_id: s33DeptId
+            });
+
+            await LeaveBalanceModel.create({
+                employee_id: resiEmp.id,
+                year: 2026,
+                sick_leave: 12
+            });
+
+            // 1. Create a pending payroll for the leave's month first
+            await PayrollModel.create({
+                employee_id: resiEmp.id,
+                month: 10,
+                year: 2026,
+                basic: 30000,
+                status: 'pending'
+            });
+
+            // 2. Create pending leave
+            const resiLeave = await LeaveModel.create({
+                employee_id: resiEmp.id,
+                leave_type: 'sick',
+                start_date: new Date('2026-10-20T00:00:00.000Z'),
+                end_date: new Date('2026-10-21T00:00:00.000Z'),
+                total_days: 2,
+                reason: 'Resilience leave',
+                status: 'pending'
+            });
+
+            // 3. Spy on Payroll.findOne and force it to reject inside inner try/catch
+            const payrollSpy = jest.spyOn(PayrollModel, 'findOne').mockRejectedValueOnce(
+                new Error('Simulated sync DB error in approveLeave')
+            );
+
+            // 4. Call approve
+            const res = await request(app)
+                .put(`/api/leaves/${resiLeave._id}/approve`)
+                .set('Authorization', `Bearer ${s33AdminToken}`);
+
+            // 5. Assertions
+            expect(payrollSpy).toHaveBeenCalled();
+            payrollSpy.mockRestore();
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+            expect(res.body.warning).toBeDefined();
+            expect(res.body.warning).toContain('payroll recalculation failed');
+
+            const updLeave = await LeaveModel.findById(resiLeave._id);
+            expect(updLeave.status).toBe('approved');
+        });
+
+        it('33.9. Payroll reconciliation read-only endpoint', async () => {
+            const reconEmp = await EmployeeModel.create({
+                id: 'S33_RECON_EMP',
+                name: 'Recon Emp',
+                email: 'recon@test.com',
+                password_hash: s33Emp.password_hash,
+                role: 'employee',
+                status: 'active',
+                department_id: s33DeptId
+            });
+
+            // Approved leave for 2 days in October: Oct 26, 27 (Mon-Tue)
+            await LeaveModel.create({
+                employee_id: reconEmp.id,
+                leave_type: 'sick',
+                start_date: new Date('2026-10-26T00:00:00.000Z'),
+                end_date: new Date('2026-10-27T00:00:00.000Z'),
+                total_days: 2,
+                reason: 'Recon Oct 2 days',
+                status: 'approved',
+                free_days: 1
+            });
+
+            // Pending payroll has stored unpaid_leave_days: 0 and deduction: 0 (mismatched)
+            await PayrollModel.create({
+                employee_id: reconEmp.id,
+                month: 10,
+                year: 2026,
+                basic: 30000,
+                unpaid_leave_days: 0,
+                unpaid_leave_deduction: 0,
+                status: 'pending'
+            });
+
+            const res = await request(app)
+                .get('/api/payroll/reconcile?month=10&year=2026')
+                .set('Authorization', `Bearer ${s33AdminToken}`);
+
+            expect(res.status).toBe(200);
+            expect(res.body.success).toBe(true);
+            expect(res.body.mismatches_count).toBeGreaterThanOrEqual(1);
+
+            const m = res.body.mismatches.find(item => item.employee_id === reconEmp.id);
+            expect(m).toBeDefined();
+            expect(m.stored.unpaid_leave_days).toBe(0);
+            expect(m.expected.unpaid_leave_days).toBe(1);
+            expect(m.expected.unpaid_leave_deduction).toBe(1000);
+            expect(m.difference.days).toBe(1);
+            expect(m.difference.deduction).toBe(1000);
+        });
+
+        it('33.10. POST /api/payroll/import batch computation', async () => {
+            const batchEmp = await EmployeeModel.create({
+                id: 'S33_BATCH_EMP',
+                name: 'Batch Emp',
+                email: 'batch@test.com',
+                password_hash: s33Emp.password_hash,
+                role: 'employee',
+                status: 'active',
+                department_id: s33DeptId
+            });
+
+            // Approved leave of 2 days in October
+            await LeaveModel.create({
+                employee_id: batchEmp.id,
+                leave_type: 'sick',
+                start_date: new Date('2026-10-15T00:00:00.000Z'),
+                end_date: new Date('2026-10-16T00:00:00.000Z'),
+                total_days: 2,
+                reason: 'Oct 2 days for batch',
+                status: 'approved',
+                free_days: 1
+            });
+
+            const wb = XLSX.utils.book_new();
+            const ws = XLSX.utils.json_to_sheet([{
+                employee_id: batchEmp.id,
+                month: 10,
+                year: 2026,
+                basic: 45000,
+                days_worked: 31
+            }]);
+            XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+            const fileBuf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+            const res = await request(app)
+                .post('/api/payroll/import')
+                .set('Authorization', `Bearer ${s33AdminToken}`)
+                .attach('file', fileBuf, 'batch_import.xlsx');
+
+            expect(res.status).toBe(200);
+            expect(res.body.imported).toBe(1);
+
+            const importedP = await PayrollModel.findOne({ employee_id: batchEmp.id, month: 10, year: 2026 });
+            expect(importedP.unpaid_leave_days).toBe(1);
+            expect(importedP.unpaid_leave_deduction).toBe(1500);
+        });
+    });
+
 });
-
-
-
-
-
-
-
