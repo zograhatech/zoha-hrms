@@ -68,7 +68,7 @@ export default function Leave() {
                         </div>
                         <div style={{ fontSize: '1.8rem', fontWeight: 900, color: '#f59e0b' }}>{bal.sick_leave}</div>
                         <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: 4 }}>Sick Leave Available</div>
-                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 2 }}>of {data?.policies?.sick_leave || 0} total</div>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 2 }}>of {data?.policies?.sick_leave || 0} total per year</div>
                     </div>
                 </div>
             )}
