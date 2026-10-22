@@ -33,6 +33,7 @@ export default function Settings() {
         company_phone: '',
         company_gstin: '',
         monthly_leave_allowance: 1,
+        days_worked_convention: 'payable',
         leave_policies: {
             casual_leave: 12,
             sick_leave: 12,
@@ -147,6 +148,9 @@ export default function Settings() {
                 if (s.monthly_leave_allowance === undefined || s.monthly_leave_allowance === null) {
                     s.monthly_leave_allowance = 1;
                 }
+                if (!s.days_worked_convention || !['payable', 'attended'].includes(s.days_worked_convention)) {
+                    s.days_worked_convention = 'payable';
+                }
                 setSettings(s);
             }
             if (resShi && resShi.data.shifts) setShifts(resShi.data.shifts);
@@ -213,11 +217,12 @@ export default function Settings() {
             const dataToSave = customSettings || settings;
             let payload;
             if (!isSuperAdmin(user)) {
-                const { monthly_leave_allowance, ...rest } = dataToSave;
+                const { monthly_leave_allowance, days_worked_convention, ...rest } = dataToSave;
                 payload = rest;
             } else {
                 payload = {
                     ...dataToSave,
+                    days_worked_convention: dataToSave.days_worked_convention || 'payable',
                     monthly_leave_allowance: (dataToSave.monthly_leave_allowance === '' || dataToSave.monthly_leave_allowance === undefined || dataToSave.monthly_leave_allowance === null)
                         ? 1
                         : Number(dataToSave.monthly_leave_allowance)
@@ -790,6 +795,25 @@ export default function Settings() {
                                 />
                                 <small style={{ color: 'var(--text-muted)', display: 'block', marginTop: 4, fontSize: '0.75rem' }}>
                                     Leave beyond this many days per calendar month is deducted from salary.
+                                </small>
+                            </div>
+                            <div className="form-group">
+                                <label className="form-label">Days worked convention</label>
+                                <select
+                                    name="days_worked_convention"
+                                    className="form-input"
+                                    value={settings.days_worked_convention || 'payable'}
+                                    disabled={!isSuperAdmin(user)}
+                                    onChange={(e) => {
+                                        const val = e.target.value;
+                                        setSettings(prev => ({ ...prev, days_worked_convention: val }));
+                                    }}
+                                >
+                                    <option value="payable">Days worked includes leave days (default)</option>
+                                    <option value="attended">Days worked counts attended days only</option>
+                                </select>
+                                <small style={{ color: 'var(--text-muted)', display: 'block', marginTop: 4, fontSize: '0.75rem' }}>
+                                    Controls whether unpaid leave deductions are subtracted from pro-rated actual payable salary.
                                 </small>
                             </div>
                         </div>
