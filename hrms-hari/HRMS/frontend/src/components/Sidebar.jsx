@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useBranding } from '../context/BrandingContext';
+import CompanyLogo from './CompanyLogo';
 import { isManagerRole, getRoleDisplayLabel, normalizeRole } from '../utils/roleHelper';
 import {
     FiGrid, FiUser, FiCalendar, FiBriefcase, FiCreditCard,
@@ -77,17 +78,13 @@ export default function Sidebar({ open, onClose }) {
     const { showToast } = useToast();
     const { user, logout } = useAuth();
     const { branding } = useBranding();
-    const [logoError, setLogoError] = useState(false);
     const [imgError, setImgError] = useState(false);
 
-    // Reset error states when image/logo props change during render
+    // Reset error states when image props change during render
     const [prevImg, setPrevImg] = useState(user?.profile_image);
-    const [prevLogo, setPrevLogo] = useState(branding.company_logo);
-    if (user?.profile_image !== prevImg || branding.company_logo !== prevLogo) {
+    if (user?.profile_image !== prevImg) {
         setPrevImg(user?.profile_image);
-        setPrevLogo(branding.company_logo);
         if (imgError) setImgError(false);
-        if (logoError) setLogoError(false);
     }
 
     const navigate = useNavigate();
@@ -181,13 +178,7 @@ export default function Sidebar({ open, onClose }) {
         <aside className={`sidebar${open ? ' open' : ''}`}>
             {/* Logo + close button for mobile */}
             <div className="sidebar-logo" style={{ position: 'relative' }}>
-                {(branding.company_logo && !logoError) ? (
-                    <div className="logo-icon" style={{ background: 'none' }}>
-                        <img src={branding.company_logo} alt="Logo" onError={() => setLogoError(true)} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-                    </div>
-                ) : (
-                    <div className="logo-icon"><FiBriefcase /></div>
-                )}
+                <CompanyLogo size={42} style={{ borderRadius: 'var(--radius-md, 8px)', objectFit: 'contain', flexShrink: 0 }} />
                 <div>
                     <div className="logo-text">{branding.company_name}</div>
                     <div className="logo-sub">{branding.company_subtext}</div>

@@ -2,9 +2,10 @@ import { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { useBranding } from '../context/BrandingContext';
+import CompanyLogo from '../components/CompanyLogo';
 import API from '../api/axios';
 import {
-    FiBriefcase, FiShield, FiUserCheck, FiUser,
+    FiShield, FiUserCheck, FiUser,
     FiCpu, FiPieChart, FiCalendar, FiCreditCard,
     FiMessageSquare, FiZap, FiLogIn, FiX,
     FiClock, FiLogOut, FiBell, FiVideo, FiEye, FiEyeOff
@@ -213,9 +214,7 @@ export default function Login() {
             <div className="login-container">
                 <div className="login-left">
                     <div className="login-logo">
-                        <div className="logo-icon" style={{ width: 64, height: 64, fontSize: '1.8rem', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff' }}>
-                            <FiBriefcase />
-                        </div>
+                        <CompanyLogo size={64} style={{ borderRadius: 12, objectFit: 'contain' }} />
                         <div>
                             <div style={{ fontSize: '1.5rem', fontWeight: 900, color: '#fff' }}>{branding.company_name}</div>
                             <div style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.6)' }}>{branding.company_subtext}</div>
@@ -244,11 +243,7 @@ export default function Login() {
                     <div className="login-form-card">
                         <div className="login-form-header">
                             <div className="login-form-branding">
-                                {branding.company_logo ? (
-                                    <img src={branding.company_logo} alt="Company Logo" className="form-logo" />
-                                ) : (
-                                    <div className="form-logo-icon"><FiBriefcase /></div>
-                                )}
+                                <CompanyLogo size={40} className="form-logo" style={{ borderRadius: 10, objectFit: 'contain' }} />
                                 <span className="form-company-name">{branding.company_name}</span>
                             </div>
                             {show2fa ? (
