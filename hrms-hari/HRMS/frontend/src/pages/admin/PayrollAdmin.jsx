@@ -49,7 +49,7 @@ export default function PayrollAdmin() {
             API.get(`/payroll/all?month=${month}&year=${year}`),
             API.get(`/payroll/analytics?year=${year}`),
         ]).then(([p, a]) => {
-            setData(p.data.payroll || []);
+            setData(p.data.payrolls || p.data.payroll || []);
             const analytics = a.data.analytics || [];
             const currentMonth = analytics.find(m => m.month === month);
             setAnalytics(currentMonth);
