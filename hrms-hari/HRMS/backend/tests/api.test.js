@@ -10129,9 +10129,78 @@ describe('HRMS Backend Automated Test Suite', () => {
             expect(resValid.body.success).toBe(true);
         });
 
-        it('36.7 Access: manager and team_lead get 403 on PUT settings (payroll formula)', async () => {
+        it('36.4 Per-employee custom deduction "Loan Recovery", 2%, formula GROSS * PCT / 100, on Annual CTC 600000', async () => {
+            const emp1 = await EmployeeModel.create({
+                id: 'S36_EMP1',
+                name: 'Employee 1',
+                email: 'emp1_s36@test.com',
+                password_hash: await bcrypt.hash('pass', 10),
+                role: 'employee',
+                status: 'active'
+            });
+
+            const res = await request(app)
+                .post('/api/payroll/create')
+                .set('Authorization', `Bearer ${s36AdminToken}`)
+                .send({
+                    employee_id: emp1.id,
+                    annual_ctc: 600000,
+                    month: 1,
+                    year: 2026,
+                    days_worked: 30,
+                    custom_columns: [{
+                        name: 'Loan Recovery',
+                        percentage: 2,
+                        formula: 'GROSS * PCT / 100',
+                        type: 'deduction'
+                    }]
+                });
+
+            expect(res.status).toBe(201);
+            const p = res.body.payroll;
+            const lrComp = (p.custom_components || []).find(c => c.key === 'LOAN_RECOVERY');
+            expect(lrComp).toBeDefined();
+            expect(lrComp.amount).toBe(800.00);
+            expect(p.total_deductions).toBe(2600.00);
+            expect(p.net_salary).toBe(37400.00);
+
+            // Confirm global config is unchanged afterwards
+            const currentSetting = await SettingModel.findOne().lean();
+            const globalCustoms = currentSetting?.payroll_formula_config?.custom_columns || [];
+            expect(globalCustoms.some(c => c.key === 'LOAN_RECOVERY')).toBe(false);
+        });
+
+        it('36.5 Per-employee column applies only to that employee', async () => {
+            const emp2 = await EmployeeModel.create({
+                id: 'S36_EMP2',
+                name: 'Employee 2',
+                email: 'emp2_s36@test.com',
+                password_hash: await bcrypt.hash('pass', 10),
+                role: 'employee',
+                status: 'active'
+            });
+
+            const res = await request(app)
+                .post('/api/payroll/create')
+                .set('Authorization', `Bearer ${s36AdminToken}`)
+                .send({
+                    employee_id: emp2.id,
+                    annual_ctc: 600000,
+                    month: 1,
+                    year: 2026,
+                    days_worked: 30
+                });
+
+            expect(res.status).toBe(201);
+            const p = res.body.payroll;
+            const lrComp = (p.custom_components || []).find(c => c.key === 'LOAN_RECOVERY');
+            expect(lrComp).toBeUndefined();
+            expect(p.net_salary).toBe(38200.00);
+        });
+
+        it('36.7 Access: manager and team_lead get 403 on PUT settings, POST /payroll/preview, POST /payroll/create', async () => {
             for (const token of [s36MgrToken, s36TlToken, s36EmpToken]) {
-                const res = await request(app)
+                const resPut = await request(app)
                     .put('/api/settings')
                     .set('Authorization', `Bearer ${token}`)
                     .send({
@@ -10140,8 +10209,98 @@ describe('HRMS Backend Automated Test Suite', () => {
                             custom_columns: []
                         }
                     });
-                expect(res.status).toBe(403);
+                expect(resPut.status).toBe(403);
+
+                const resPrev = await request(app)
+                    .post('/api/payroll/preview')
+                    .set('Authorization', `Bearer ${token}`)
+                    .send({ employee_id: 'S36_EMP', annual_ctc: 600000 });
+                expect(resPrev.status).toBe(403);
+
+                const resCreate = await request(app)
+                    .post('/api/payroll/create')
+                    .set('Authorization', `Bearer ${token}`)
+                    .send({ employee_id: 'S36_EMP', annual_ctc: 600000, month: 3, year: 2026 });
+                expect(resCreate.status).toBe(403);
             }
+        });
+
+        it('36.8 Preview is read-only: returns expected net 38200.00 and payroll count unchanged', async () => {
+            const PayrollModel = require('../models/Payroll');
+            const countBefore = await PayrollModel.countDocuments();
+
+            const res = await request(app)
+                .post('/api/payroll/preview')
+                .set('Authorization', `Bearer ${s36AdminToken}`)
+                .send({
+                    employee_id: 'S36_EMP',
+                    annual_ctc: 600000,
+                    month: 4,
+                    year: 2026,
+                    days_worked: 30
+                });
+
+            expect(res.status).toBe(200);
+            expect(res.body.preview.net_salary).toBe(38200.00);
+
+            const countAfter = await PayrollModel.countDocuments();
+            expect(countAfter).toBe(countBefore);
+        });
+
+        it('36.9 Create stores snapshot: changing global formula leaves existing record unchanged', async () => {
+            const PayrollModel = require('../models/Payroll');
+            // Change global formula PF to 10%
+            const updatedComponents = DEFAULT_PAYROLL_COMPONENTS.map(c => c.key === 'PF' ? { ...c, percentage: 10 } : c);
+            const resPut = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${s36AdminToken}`)
+                .send({
+                    payroll_formula_config: {
+                        components: updatedComponents,
+                        custom_columns: []
+                    }
+                });
+            expect(resPut.status).toBe(200);
+
+            // Existing record for S36_EMP2 still has PF 1800.00 and stored formula_snapshot
+            const existingRecord = await PayrollModel.findOne({ employee_id: 'S36_EMP2', month: 1, year: 2026 }).lean();
+            expect(existingRecord).toBeDefined();
+            expect(existingRecord.provident_fund).toBe(1800.00);
+            expect(existingRecord.formula_snapshot).toBeDefined();
+            const snapPf = existingRecord.formula_snapshot.components.find(c => c.key === 'PF');
+            expect(snapPf.percentage).toBe(12);
+
+            // Revert global formula back to 12%
+            await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${s36AdminToken}`)
+                .send({
+                    payroll_formula_config: {
+                        components: DEFAULT_PAYROLL_COMPONENTS,
+                        custom_columns: []
+                    }
+                });
+        });
+
+        it('36.10 Legacy amount create still works', async () => {
+            const res = await request(app)
+                .post('/api/payroll/create')
+                .set('Authorization', `Bearer ${s36AdminToken}`)
+                .send({
+                    employee_id: 'S36_EMP',
+                    month: 5,
+                    year: 2026,
+                    days_worked: 30,
+                    basic: 30000,
+                    da: 5000,
+                    oa: 2000
+                });
+
+            expect(res.status).toBe(201);
+            expect(res.body.payroll.calculation_mode).toBe('amount');
+            expect(res.body.payroll.basic).toBe(30000);
+            expect(res.body.payroll.da).toBe(5000);
+            expect(res.body.payroll.gross_salary).toBe(37000);
         });
 
         it('36.11 Parser safety: formula "1; process.exit()" and "constructor.constructor(\'x\')" are rejected with 400', async () => {

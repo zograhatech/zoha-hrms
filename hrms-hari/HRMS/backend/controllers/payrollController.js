@@ -12,12 +12,28 @@ const { splitLeaveByMonth, computeMonthlyDeduction, round2 } = require('../utils
 const XLSX = require('xlsx');
 const mongoose = require('mongoose');
 const PDFDocument = require('pdfkit');
+const {
+    DEFAULT_PAYROLL_COMPONENTS,
+    RESERVED_IDENTIFIERS,
+    CORE_COMPONENT_KEYS,
+    deriveKey,
+    validateFormula,
+    detectCycles,
+    evaluateComponents
+} = require('../utils/payrollFormula');
 
 // Helper: compute gross/net from a plain object
 const computeSalary = (p, conventionOverride) => {
     const convention = conventionOverride || p?.days_worked_convention || 'payable';
-    const gross = (p.basic || 0) + (p.da || 0) + (p.oa || 0) + (p.leave_wages || 0);
-    const standardDed = (p.provident_fund || 0) + (p.esi_deduction || 0) + (p.pt || 0) + (p.lwf || 0) + (p.tds || 0) + (p.leave_deduction || 0);
+    const customAdditions = (p?.custom_components || [])
+        .filter(c => c.type === 'addition')
+        .reduce((sum, c) => sum + (c.amount || 0), 0);
+    const gross = (p.basic || 0) + (p.da || 0) + (p.oa || 0) + (p.leave_wages || 0) + (p.hra || 0) + (p.medical_allowance || 0) + customAdditions;
+
+    const customDeductions = (p?.custom_components || [])
+        .filter(c => c.type === 'deduction')
+        .reduce((sum, c) => sum + (c.amount || 0), 0);
+    const standardDed = (p.provident_fund || 0) + (p.esi_deduction || 0) + (p.pt || 0) + (p.lwf || 0) + (p.tds || 0) + (p.leave_deduction || 0) + (p.gratitude_deduction || 0) + customDeductions;
     const totalDed = standardDed + (p.unpaid_leave_deduction || 0) + (p.unpaid_leave_adjustment || 0) + (p.other_deductions || 0);
     const monthlyNet = gross - standardDed;
     const daysInMonth = (p.month && p.year) ? new Date(p.year, p.month, 0).getDate() : 30;
@@ -286,6 +302,87 @@ const getAnalytics = async (req, res) => {
     }
 };
 
+// ─── POST /api/payroll/preview (Admin Read-Only) ─────────────
+const previewPayroll = async (req, res) => {
+    if (!checkAdminRole(req, res)) return;
+    try {
+        const { employee_id, annual_ctc, days_worked, month, year, custom_columns } = req.body;
+        if (!employee_id) {
+            return res.status(400).json({ success: false, message: 'employee_id is required.' });
+        }
+        const emp = await Employee.findOne({ id: employee_id }).lean();
+        if (!emp) {
+            return res.status(404).json({ success: false, message: 'Employee not found.' });
+        }
+
+        const aCtc = Number(annual_ctc);
+        if (isNaN(aCtc) || aCtc <= 0) {
+            return res.status(400).json({ success: false, message: 'Valid positive annual_ctc is required.' });
+        }
+
+        const settings = await Setting.findOne().lean();
+        const formulaConfig = settings?.payroll_formula_config || {
+            components: DEFAULT_PAYROLL_COMPONENTS,
+            custom_columns: []
+        };
+
+        const globalComponents = (formulaConfig.components && formulaConfig.components.length > 0)
+            ? formulaConfig.components
+            : DEFAULT_PAYROLL_COMPONENTS;
+
+        const globalCustomCols = formulaConfig.custom_columns || [];
+        const globalCustomKeys = new Set(globalCustomCols.map(c => (c.key || deriveKey(c.name)).toUpperCase()));
+
+        const empCustomCols = Array.isArray(custom_columns) ? custom_columns : [];
+        const validatedEmpCustomCols = [];
+
+        for (const cc of empCustomCols) {
+            if (!cc.name || typeof cc.name !== 'string' || !cc.name.trim()) {
+                return res.status(400).json({ success: false, message: 'Custom column must have a non-empty name.' });
+            }
+            const key = (cc.key || deriveKey(cc.name)).toUpperCase();
+            if (RESERVED_IDENTIFIERS.includes(key)) {
+                return res.status(400).json({ success: false, message: `Custom column key '${key}' collides with reserved identifier.` });
+            }
+            if (CORE_COMPONENT_KEYS.includes(key)) {
+                return res.status(400).json({ success: false, message: `Custom column key '${key}' collides with core component key.` });
+            }
+            if (globalCustomKeys.has(key)) {
+                return res.status(400).json({ success: false, message: `Custom column key '${key}' collides with global custom column.` });
+            }
+
+            const pct = Number(cc.percentage);
+            if (cc.percentage !== undefined && (isNaN(pct) || !isFinite(pct) || pct < 0 || pct > 100)) {
+                return res.status(400).json({ success: false, message: `Percentage for custom column '${cc.name}' must be between 0 and 100.` });
+            }
+            if (cc.type && !['addition', 'deduction'].includes(cc.type)) {
+                return res.status(400).json({ success: false, message: `Custom column '${cc.name}' type must be addition or deduction.` });
+            }
+
+            validatedEmpCustomCols.push({
+                ...cc,
+                key,
+                percentage: Number(cc.percentage) || 0,
+                type: cc.type || 'addition'
+            });
+        }
+
+        const mergedCustomColumns = [...globalCustomCols, ...validatedEmpCustomCols];
+
+        const evaluated = evaluateComponents({
+            annualCtc: aCtc,
+            daysWorked: days_worked || 30,
+            components: globalComponents,
+            customColumns: mergedCustomColumns
+        });
+
+        res.json({ success: true, preview: evaluated });
+    } catch (err) {
+        console.error('[previewPayroll]', err);
+        res.status(400).json({ success: false, message: err.message || 'Preview failed.' });
+    }
+};
+
 // ─── POST /api/payroll/create ────────────────────────────────
 const createPayroll = async (req, res) => {
     if (!checkAdminRole(req, res)) return;
@@ -302,6 +399,147 @@ const createPayroll = async (req, res) => {
         if (existing) return res.status(400).json({ success: false, message: 'Payroll for this month already exists.' });
 
         const convention = await getDaysWorkedConvention();
+
+        // Check if formula-based salary creation (annual_ctc present)
+        if (req.body.annual_ctc !== undefined && req.body.annual_ctc !== null && req.body.annual_ctc !== '') {
+            const aCtc = Number(req.body.annual_ctc);
+            if (isNaN(aCtc) || aCtc <= 0) {
+                return res.status(400).json({ success: false, message: 'Valid positive annual_ctc is required.' });
+            }
+
+            const settings = await Setting.findOne().lean();
+            const formulaConfig = settings?.payroll_formula_config || {
+                components: DEFAULT_PAYROLL_COMPONENTS,
+                custom_columns: []
+            };
+
+            const globalComponents = (formulaConfig.components && formulaConfig.components.length > 0)
+                ? formulaConfig.components
+                : DEFAULT_PAYROLL_COMPONENTS;
+
+            const globalCustomCols = formulaConfig.custom_columns || [];
+            const globalCustomKeys = new Set(globalCustomCols.map(c => (c.key || deriveKey(c.name)).toUpperCase()));
+
+            const empCustomCols = Array.isArray(req.body.custom_columns) ? req.body.custom_columns : [];
+            const validatedEmpCustomCols = [];
+
+            for (const cc of empCustomCols) {
+                if (!cc.name || typeof cc.name !== 'string' || !cc.name.trim()) {
+                    return res.status(400).json({ success: false, message: 'Custom column must have a non-empty name.' });
+                }
+                const key = (cc.key || deriveKey(cc.name)).toUpperCase();
+                if (RESERVED_IDENTIFIERS.includes(key)) {
+                    return res.status(400).json({ success: false, message: `Custom column key '${key}' collides with reserved identifier.` });
+                }
+                if (CORE_COMPONENT_KEYS.includes(key)) {
+                    return res.status(400).json({ success: false, message: `Custom column key '${key}' collides with core component key.` });
+                }
+                if (globalCustomKeys.has(key)) {
+                    return res.status(400).json({ success: false, message: `Custom column key '${key}' collides with global custom column.` });
+                }
+
+                const pct = Number(cc.percentage);
+                if (cc.percentage !== undefined && (isNaN(pct) || !isFinite(pct) || pct < 0 || pct > 100)) {
+                    return res.status(400).json({ success: false, message: `Percentage for custom column '${cc.name}' must be between 0 and 100.` });
+                }
+                if (cc.type && !['addition', 'deduction'].includes(cc.type)) {
+                    return res.status(400).json({ success: false, message: `Custom column '${cc.name}' type must be addition or deduction.` });
+                }
+
+                validatedEmpCustomCols.push({
+                    ...cc,
+                    key,
+                    percentage: Number(cc.percentage) || 0,
+                    type: cc.type || 'addition'
+                });
+            }
+
+            const mergedCustomColumns = [...globalCustomCols, ...validatedEmpCustomCols];
+
+            const evaluated = evaluateComponents({
+                annualCtc: aCtc,
+                daysWorked: days_worked || 0,
+                components: globalComponents,
+                customColumns: mergedCustomColumns
+            });
+
+            const computedBasic = evaluated.components.BASIC || 0;
+            const computedHra = evaluated.components.HRA || 0;
+            const computedMedical = evaluated.components.MEDICAL || 0;
+            const computedPf = evaluated.components.PF || 0;
+            const computedEsi = evaluated.components.ESI || 0;
+            const computedPt = evaluated.components.PT || 0;
+            const computedLwf = evaluated.components.LWF || 0;
+            const computedGratitude = evaluated.components.GRATITUDE || 0;
+
+            const { unpaid_leave_days, unpaid_leave_deduction } = await syncPendingPayrollForMonth({
+                employee_id,
+                month: +month,
+                year: +year,
+                baseSalary: computedBasic,
+                dryRun: true
+            });
+
+            const payroll = await Payroll.create({
+                employee_id, month, year,
+                days_worked: days_worked || 0,
+                basic: computedBasic,
+                da: 0,
+                oa: 0,
+                leave_wages: 0,
+                hra: computedHra,
+                medical_allowance: computedMedical,
+                esi_wages: evaluated.gross_salary || 0,
+                epf_wages: computedBasic,
+                provident_fund: computedPf,
+                esi_deduction: computedEsi,
+                pt: computedPt,
+                lwf: computedLwf,
+                tds: parseFloat(tds) || 0,
+                leave_deduction: parseFloat(leave_deduction) || 0,
+                gratitude_deduction: computedGratitude,
+                other_deductions: parseFloat(other_deductions) || 0,
+                employer_pf: parseFloat(employer_pf) || 0,
+                employer_esi: parseFloat(employer_esi) || 0,
+                bank_ac_no: bank_ac_no || '',
+                unpaid_leave_days,
+                unpaid_leave_deduction,
+                unpaid_leave_adjustment: 0,
+                days_worked_convention: convention,
+                annual_ctc: evaluated.annual_ctc,
+                monthly_ctc: evaluated.monthly_ctc,
+                formula_snapshot: {
+                    components: globalComponents,
+                    global_custom_columns: globalCustomCols,
+                    custom_columns: validatedEmpCustomCols
+                },
+                custom_components: evaluated.custom_components || [],
+                calculation_mode: 'formula',
+                status: 'pending'
+            });
+
+            await consumePendingAdjustmentsForPayroll(payroll);
+
+            try {
+                const emp = await Employee.findOne({ id: employee_id }).select('_id').lean();
+                if (emp) {
+                    await Notification.create({
+                        recipient: emp._id,
+                        type: 'general',
+                        title: 'Payroll Created',
+                        message: `Payroll record for month ${month}/${year} has been created.`,
+                        data: { status: 'pending' }
+                    });
+                }
+            } catch (notifErr) {
+                console.error('[createPayroll] notification error:', notifErr.message);
+            }
+
+            const pObj = payroll.toJSON();
+            const { actual_payable } = computeSalary(pObj);
+            pObj.actual_payable = actual_payable;
+            return res.status(201).json({ success: true, message: 'Payroll record created.', payroll: pObj });
+        }
 
         // Step 1: Compute unpaid leave days & deduction before creating payroll
         const { unpaid_leave_days, unpaid_leave_deduction } = await syncPendingPayrollForMonth({
@@ -962,6 +1200,7 @@ module.exports = {
     getAllPayroll, 
     getAnalytics, 
     createPayroll, 
+    previewPayroll, 
     markAsPaid, 
     bulkMarkAsPaid, 
     exportPayroll, 
