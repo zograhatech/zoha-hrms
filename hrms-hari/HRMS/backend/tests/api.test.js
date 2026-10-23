@@ -10111,12 +10111,28 @@ describe('HRMS Backend Automated Test Suite', () => {
                 expect(resNoContacts.status).toBe(200);
                 expect(resNoContacts.headers['content-type']).toContain('application/pdf');
                 expect(resNoContacts.body.slice(0, 4).toString()).toBe('%PDF');
+
+                // 3. Request with NO Setting document in database (fallback to Zograha Technologies)
+                await SettingModel.deleteMany({});
+                const resNoSetting = await request(app)
+                    .get(`/api/payroll/payslip/${octPayroll._id}/pdf`)
+                    .set('Authorization', `Bearer ${s35AdminToken}`)
+                    .buffer(true)
+                    .parse((r, cb) => {
+                        const data = [];
+                        r.on('data', chunk => data.push(chunk));
+                        r.on('end', () => cb(null, Buffer.concat(data)));
+                    });
+
+                expect(resNoSetting.status).toBe(200);
+                expect(resNoSetting.headers['content-type']).toContain('application/pdf');
+                expect(resNoSetting.body.slice(0, 4).toString()).toBe('%PDF');
             } finally {
                 // Clean up seeded records and restore Setting
                 await EmployeeModel.deleteMany({ id: 'S35_EMP_OCT' });
                 await PayrollModel.deleteMany({ employee_id: 'S35_EMP_OCT' });
                 if (originalSetting) {
-                    await SettingModel.findOneAndUpdate({}, originalSetting, { overwrite: true });
+                    await SettingModel.findOneAndUpdate({}, originalSetting, { upsert: true, overwrite: true });
                 }
             }
         });

@@ -1108,49 +1108,54 @@ const exportPayslipPdf = async (req, res) => {
             logoBuffer = null;
         }
 
-        // Header
+        // Two-column header inside page margins (margin: 40, printable width: 515)
+        // LEFT column: Logo (about 60pt wide, aspect ratio preserved) + Company Name (17pt bold, vertically centered)
+        let leftBottom = 40;
         if (logoBuffer) {
             doc.image(logoBuffer, 40, 40, { width: 60 });
-            doc.fontSize(16).font('Helvetica-Bold').text(companyName, 115, 40, { width: 440 });
-            doc.font('Helvetica').fontSize(8.5);
-            if (companyAddress) {
-                doc.text(companyAddress, 115, doc.y + 2, { width: 440 });
-            }
-            if (companyEmail) {
-                doc.text(`Email: ${companyEmail}`, 115, doc.y + 1, { width: 440 });
-            }
-            if (companyPhone) {
-                doc.text(`Phone: ${companyPhone}`, 115, doc.y + 1, { width: 440 });
-            }
-            doc.moveDown(0.25);
-            doc.fontSize(11).font('Helvetica-Bold').text('SALARY PAYSLIP', 115, doc.y);
-            doc.y = Math.max(105, doc.y + 6);
+            doc.fontSize(17).font('Helvetica-Bold');
+            const nameY = 40 + (60 - doc.currentLineHeight()) / 2;
+            doc.text(companyName, 112, nameY, { width: 215 });
+            leftBottom = 100;
         } else {
-            doc.fontSize(18).font('Helvetica-Bold').text(companyName, { align: 'center' });
-            doc.font('Helvetica').fontSize(8.5);
-            if (companyAddress) {
-                doc.moveDown(0.2);
-                doc.text(companyAddress, { align: 'center', width: 515 });
-            }
-            if (companyEmail) {
-                doc.moveDown(0.15);
-                doc.text(`Email: ${companyEmail}`, { align: 'center' });
-            }
-            if (companyPhone) {
-                doc.moveDown(0.15);
-                doc.text(`Phone: ${companyPhone}`, { align: 'center' });
-            }
-            doc.moveDown(0.3);
-            doc.fontSize(12).font('Helvetica-Bold').text('SALARY PAYSLIP', { align: 'center' });
-            doc.moveDown(0.5);
+            doc.fontSize(17).font('Helvetica-Bold').text(companyName, 40, 40, { width: 280 });
+            leftBottom = doc.y;
         }
 
-        // Divider
-        doc.strokeColor('#cccccc').lineWidth(1).moveTo(40, doc.y).lineTo(555, doc.y).stroke();
-        doc.moveDown(0.8);
+        // RIGHT column: Address, Email, Phone (right-aligned, 8.5pt regular text)
+        const rightColX = 330;
+        const rightColWidth = 555 - rightColX; // 225pt
+        let rightY = 40;
+        doc.font('Helvetica').fontSize(8.5);
+        if (companyAddress) {
+            doc.text(companyAddress, rightColX, rightY, { width: rightColWidth, align: 'right' });
+            rightY = doc.y + 2;
+        }
+        if (companyEmail) {
+            doc.text(`Email: ${companyEmail}`, rightColX, rightY, { width: rightColWidth, align: 'right' });
+            rightY = doc.y + 2;
+        }
+        if (companyPhone) {
+            doc.text(`Phone: ${companyPhone}`, rightColX, rightY, { width: rightColWidth, align: 'right' });
+            rightY = doc.y + 2;
+        }
+
+        // Full-width horizontal rule below header
+        const headerBottom = Math.max(leftBottom, rightY);
+        const rule1Y = headerBottom + 8;
+        doc.strokeColor('#cccccc').lineWidth(1).moveTo(40, rule1Y).lineTo(555, rule1Y).stroke();
+
+        // "SALARY PAYSLIP" title: centred horizontally across the page, bold, 12pt, ~10pt padding above and below
+        const titlePadding = 10;
+        const titleY = rule1Y + titlePadding;
+        doc.fontSize(12).font('Helvetica-Bold').text('SALARY PAYSLIP', 40, titleY, { width: 515, align: 'center' });
+        const rule2Y = doc.y + titlePadding;
+
+        // Second thin rule under title
+        doc.strokeColor('#e5e7eb').lineWidth(0.5).moveTo(40, rule2Y).lineTo(555, rule2Y).stroke();
 
         // Employee & Period Details
-        const startY = doc.y;
+        const startY = rule2Y + 12;
         doc.fontSize(10).font('Helvetica-Bold');
         doc.text('Employee ID: ', 40, startY, { continued: true }).font('Helvetica').text(payroll.employee_id);
         doc.font('Helvetica-Bold').text('Employee Name: ', 40, startY + 16, { continued: true }).font('Helvetica').text(empName || '-');
