@@ -9,6 +9,8 @@ const UnpaidLeaveAdjustment = require('../models/UnpaidLeaveAdjustment');
 const { sendEmail } = require('../utils/emailService');
 const { toISTDateString, getISTDayStart, getISTDayEnd } = require('../utils/istDate');
 const { splitLeaveByMonth, computeMonthlyDeduction, round2 } = require('../utils/leaveDeduction');
+const fs = require('fs');
+const path = require('path');
 const XLSX = require('xlsx');
 const mongoose = require('mongoose');
 const PDFDocument = require('pdfkit');
@@ -1081,11 +1083,27 @@ const exportPayslipPdf = async (req, res) => {
 
         const fmt = (val) => Number(val || 0).toFixed(2);
 
+        // Read logo (once per request, inside try/catch)
+        let logoBuffer = null;
+        try {
+            const logoPath = path.join(__dirname, '..', 'assets', 'zograha-logo.jpeg');
+            logoBuffer = fs.readFileSync(logoPath);
+        } catch {
+            logoBuffer = null;
+        }
+
         // Header
-        doc.fontSize(18).font('Helvetica-Bold').text(companyName, { align: 'center' });
-        doc.moveDown(0.25);
-        doc.fontSize(12).font('Helvetica').text('SALARY PAYSLIP', { align: 'center' });
-        doc.moveDown(0.5);
+        if (logoBuffer) {
+            doc.image(logoBuffer, 40, 40, { width: 60 });
+            doc.fontSize(18).font('Helvetica-Bold').text(companyName, 115, 50);
+            doc.fontSize(12).font('Helvetica').text('SALARY PAYSLIP', 115, 74);
+            doc.y = 105;
+        } else {
+            doc.fontSize(18).font('Helvetica-Bold').text(companyName, { align: 'center' });
+            doc.moveDown(0.25);
+            doc.fontSize(12).font('Helvetica').text('SALARY PAYSLIP', { align: 'center' });
+            doc.moveDown(0.5);
+        }
 
         // Divider
         doc.strokeColor('#cccccc').lineWidth(1).moveTo(40, doc.y).lineTo(555, doc.y).stroke();

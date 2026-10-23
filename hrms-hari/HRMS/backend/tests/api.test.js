@@ -16,6 +16,7 @@ const mongoose = require('mongoose');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const fs = require('fs');
 
 let mongoServer;
 let app;
@@ -9967,6 +9968,50 @@ describe('HRMS Backend Automated Test Suite', () => {
 
             const countTotal = await PayrollModel.countDocuments({ employee_id: s35Emp1.id, month: 11, year: 2026 });
             expect(countTotal).toBe(1);
+        });
+
+        it('35.6: PDF export works with logo present and falls back gracefully when logo read fails', async () => {
+            // 1. With logo present
+            const resWithLogo = await request(app)
+                .get(`/api/payroll/payslip/${s35Payroll1._id}/pdf`)
+                .set('Authorization', `Bearer ${s35AdminToken}`)
+                .buffer(true)
+                .parse((r, cb) => {
+                    const data = [];
+                    r.on('data', chunk => data.push(chunk));
+                    r.on('end', () => cb(null, Buffer.concat(data)));
+                });
+
+            expect(resWithLogo.status).toBe(200);
+            expect(resWithLogo.headers['content-type']).toContain('application/pdf');
+            expect(resWithLogo.body.slice(0, 4).toString()).toBe('%PDF');
+
+            // 2. Fallback when fs.readFileSync throws (simulating missing logo)
+            const origReadFileSync = fs.readFileSync;
+            const readSpy = jest.spyOn(fs, 'readFileSync').mockImplementation((filePath, ...args) => {
+                if (typeof filePath === 'string' && filePath.includes('zograha-logo.jpeg')) {
+                    throw new Error('ENOENT: no such file or directory');
+                }
+                return origReadFileSync.call(fs, filePath, ...args);
+            });
+
+            try {
+                const resWithoutLogo = await request(app)
+                    .get(`/api/payroll/payslip/${s35Payroll1._id}/pdf`)
+                    .set('Authorization', `Bearer ${s35AdminToken}`)
+                    .buffer(true)
+                    .parse((r, cb) => {
+                        const data = [];
+                        r.on('data', chunk => data.push(chunk));
+                        r.on('end', () => cb(null, Buffer.concat(data)));
+                    });
+
+                expect(resWithoutLogo.status).toBe(200);
+                expect(resWithoutLogo.headers['content-type']).toContain('application/pdf');
+                expect(resWithoutLogo.body.slice(0, 4).toString()).toBe('%PDF');
+            } finally {
+                readSpy.mockRestore();
+            }
         });
     });
 
