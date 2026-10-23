@@ -655,7 +655,6 @@ export default function PayrollAdmin() {
                                         </th>
                                         <th rowSpan={2} style={thS}>Sl.No</th>
                                         <th rowSpan={2} style={{ ...thS, textAlign: 'left', minWidth: 220 }}>Employee Name</th>
-                                        <th rowSpan={2} style={thS}>Gender</th>
                                         <th rowSpan={2} style={thS}>Designation</th>
                                         <th rowSpan={2} style={thS}>Days Worked</th>
                                         <th colSpan={7} style={{ ...thS, background: 'rgba(16,185,129,0.1)', color: '#10b981' }}>Wages Earned</th>
@@ -707,7 +706,6 @@ export default function PayrollAdmin() {
                                                     {p.employee_name}
                                                     <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{p.employee_id}</div>
                                                 </td>
-                                                <td style={tdS}>{p.gender || '—'}</td>
                                                 <td style={tdS}>{p.designation || '—'}</td>
                                                 <td style={tdBold}>{p.days_worked}</td>
                                                 <td style={tdGreen}>{fmt(p.basic)}</td>
