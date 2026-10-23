@@ -9970,4 +9970,200 @@ describe('HRMS Backend Automated Test Suite', () => {
         });
     });
 
+    describe('36. Formula-Based Salary Calculation & Custom Columns', () => {
+        const { evaluateComponents, DEFAULT_PAYROLL_COMPONENTS } = require('../utils/payrollFormula');
+        const SettingModel = require('../models/Setting');
+        const EmployeeModel = require('../models/Employee');
+        const Department = require('../models/Department');
+
+        let s36AdminToken;
+        let s36MgrToken;
+        let s36TlToken;
+        let s36EmpToken;
+
+        beforeAll(async () => {
+            const passwordHash = await bcrypt.hash('S36Pass123!', 10);
+            const dept = await Department.create({ name: 'S36 Dept' });
+
+            await EmployeeModel.create({
+                id: 'S36_ADMIN',
+                name: 'S36 Admin',
+                email: 's36_admin@test.com',
+                password_hash: passwordHash,
+                role: 'admin',
+                status: 'active',
+                department_id: dept._id
+            });
+            s36AdminToken = jwt.sign({ id: 'S36_ADMIN', role: 'admin', email: 's36_admin@test.com' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+            await EmployeeModel.create({
+                id: 'S36_MGR',
+                name: 'S36 Manager',
+                email: 's36_mgr@test.com',
+                password_hash: passwordHash,
+                role: 'manager',
+                status: 'active',
+                department_id: dept._id
+            });
+            s36MgrToken = jwt.sign({ id: 'S36_MGR', role: 'manager', email: 's36_mgr@test.com' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+            await EmployeeModel.create({
+                id: 'S36_TL',
+                name: 'S36 TL',
+                email: 's36_tl@test.com',
+                password_hash: passwordHash,
+                role: 'team_lead',
+                status: 'active',
+                department_id: dept._id
+            });
+            s36TlToken = jwt.sign({ id: 'S36_TL', role: 'team_lead', email: 's36_tl@test.com' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+            await EmployeeModel.create({
+                id: 'S36_EMP',
+                name: 'S36 Emp',
+                email: 's36_emp@test.com',
+                password_hash: passwordHash,
+                role: 'employee',
+                status: 'active',
+                department_id: dept._id
+            });
+            s36EmpToken = jwt.sign({ id: 'S36_EMP', role: 'employee', email: 's36_emp@test.com' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+        });
+
+        it('36.1 Engine: Annual CTC 600000, default formulas', () => {
+            const res = evaluateComponents({ annualCtc: 600000, components: DEFAULT_PAYROLL_COMPONENTS });
+            expect(res.monthly_ctc).toBe(50000.00);
+            expect(res.components.BASIC).toBe(25000.00);
+            expect(res.components.HRA).toBe(10000.00);
+            expect(res.components.MEDICAL).toBe(5000.00);
+            expect(res.gross_salary).toBe(40000.00);
+            expect(res.components.PF).toBe(1800.00);
+            expect(res.components.ESI).toBe(0.00);
+            expect(res.components.PT).toBe(0.00);
+            expect(res.components.LWF).toBe(0.00);
+            expect(res.components.GRATITUDE).toBe(0.00);
+            expect(res.total_deductions).toBe(1800.00);
+            expect(res.net_salary).toBe(38200.00);
+        });
+
+        it('36.2 Engine: Annual CTC 240000, default formulas', () => {
+            const res = evaluateComponents({ annualCtc: 240000, components: DEFAULT_PAYROLL_COMPONENTS });
+            expect(res.monthly_ctc).toBe(20000.00);
+            expect(res.components.BASIC).toBe(10000.00);
+            expect(res.components.HRA).toBe(4000.00);
+            expect(res.components.MEDICAL).toBe(2000.00);
+            expect(res.gross_salary).toBe(16000.00);
+            expect(res.components.PF).toBe(1200.00);
+            expect(res.components.ESI).toBe(120.00);
+            expect(res.net_salary).toBe(14680.00);
+        });
+
+        it('36.3 Global custom addition "Special Allowance", 10%, formula MONTHLY_CTC * PCT / 100, Annual CTC 600000', () => {
+            const res = evaluateComponents({
+                annualCtc: 600000,
+                components: DEFAULT_PAYROLL_COMPONENTS,
+                customColumns: [{
+                    name: 'Special Allowance',
+                    percentage: 10,
+                    formula: 'MONTHLY_CTC * PCT / 100',
+                    type: 'addition'
+                }]
+            });
+            expect(res.components.SPECIAL_ALLOWANCE).toBe(5000.00);
+            expect(res.gross_salary).toBe(45000.00);
+            expect(res.components.PF).toBe(1800.00);
+            expect(res.net_salary).toBe(43200.00);
+        });
+
+        it('36.6 Formula validation: PUT settings with unknown id, syntax error, cycle, valid formula', async () => {
+            // Unknown identifier
+            const resUnknown = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${s36AdminToken}`)
+                .send({
+                    payroll_formula_config: {
+                        components: DEFAULT_PAYROLL_COMPONENTS.map(c => c.key === 'BASIC' ? { ...c, formula: 'MONTHLY_CTC * UNKNOWN_VAR / 100' } : c)
+                    }
+                });
+            expect(resUnknown.status).toBe(400);
+            expect(resUnknown.body.message).toMatch(/Unknown variable/i);
+
+            // Syntax error
+            const resSyntax = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${s36AdminToken}`)
+                .send({
+                    payroll_formula_config: {
+                        components: DEFAULT_PAYROLL_COMPONENTS.map(c => c.key === 'BASIC' ? { ...c, formula: 'MONTHLY_CTC *' } : c)
+                    }
+                });
+            expect(resSyntax.status).toBe(400);
+
+            // Circular reference
+            const resCycle = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${s36AdminToken}`)
+                .send({
+                    payroll_formula_config: {
+                        components: DEFAULT_PAYROLL_COMPONENTS.map(c => {
+                            if (c.key === 'HRA') return { ...c, formula: 'MEDICAL + 100' };
+                            if (c.key === 'MEDICAL') return { ...c, formula: 'HRA + 100' };
+                            return c;
+                        })
+                    }
+                });
+            expect(resCycle.status).toBe(400);
+            expect(resCycle.body.message).toMatch(/Circular dependency/i);
+
+            // Valid formula
+            const resValid = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${s36AdminToken}`)
+                .send({
+                    payroll_formula_config: {
+                        components: DEFAULT_PAYROLL_COMPONENTS,
+                        custom_columns: []
+                    }
+                });
+            expect(resValid.status).toBe(200);
+            expect(resValid.body.success).toBe(true);
+        });
+
+        it('36.7 Access: manager and team_lead get 403 on PUT settings (payroll formula)', async () => {
+            for (const token of [s36MgrToken, s36TlToken, s36EmpToken]) {
+                const res = await request(app)
+                    .put('/api/settings')
+                    .set('Authorization', `Bearer ${token}`)
+                    .send({
+                        payroll_formula_config: {
+                            components: DEFAULT_PAYROLL_COMPONENTS,
+                            custom_columns: []
+                        }
+                    });
+                expect(res.status).toBe(403);
+            }
+        });
+
+        it('36.11 Parser safety: formula "1; process.exit()" and "constructor.constructor(\'x\')" are rejected with 400', async () => {
+            const resEvil1 = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${s36AdminToken}`)
+                .send({
+                    payroll_formula_config: {
+                        components: DEFAULT_PAYROLL_COMPONENTS.map(c => c.key === 'BASIC' ? { ...c, formula: '1; process.exit()' } : c)
+                    }
+                });
+            expect(resEvil1.status).toBe(400);
+
+            const resEvil2 = await request(app)
+                .put('/api/settings')
+                .set('Authorization', `Bearer ${s36AdminToken}`)
+                .send({
+                    payroll_formula_config: {
+                        components: DEFAULT_PAYROLL_COMPONENTS.map(c => c.key === 'BASIC' ? { ...c, formula: "constructor.constructor('x')" } : c)
+                    }
+                });
+            expect(resEvil2.status).toBe(400);
+        });
+    });
 });

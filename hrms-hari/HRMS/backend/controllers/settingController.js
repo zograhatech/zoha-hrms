@@ -6,6 +6,14 @@ const Employee = require('../models/Employee');
 const Notification = require('../models/Notification');
 const { sendEmail, getTransporter } = require('../utils/emailService');
 const nodemailer = require('nodemailer');
+const {
+    DEFAULT_PAYROLL_COMPONENTS,
+    RESERVED_IDENTIFIERS,
+    CORE_COMPONENT_KEYS,
+    deriveKey,
+    validateFormula,
+    detectCycles
+} = require('../utils/payrollFormula');
 
 const getSettings = async (req, res) => {
     try {
@@ -31,6 +39,18 @@ const getSettings = async (req, res) => {
             // Also hide sensitive payroll / roles info if not admin
             delete obj.roles_permissions;
             delete obj.payroll_formulas;
+        }
+
+        const isSuperAdminRole = (req.user?.role || '').toLowerCase() === 'admin';
+        if (isSuperAdminRole) {
+            if (!obj.payroll_formula_config || !Array.isArray(obj.payroll_formula_config.components) || obj.payroll_formula_config.components.length === 0) {
+                obj.payroll_formula_config = {
+                    components: DEFAULT_PAYROLL_COMPONENTS,
+                    custom_columns: []
+                };
+            }
+        } else {
+            delete obj.payroll_formula_config;
         }
 
         res.json({ success: true, settings: obj });
@@ -134,6 +154,147 @@ const updateSettings = async (req, res) => {
                 });
             }
             settings.monthly_leave_allowance = allowanceVal;
+        }
+
+        // payroll_formula_config: SuperAdmin only, validated with validateFormula and detectCycles
+        if (updateData.payroll_formula_config !== undefined) {
+            const userRole = (req.user?.role || '').toLowerCase();
+            if (userRole !== 'admin') {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Only SuperAdmin can edit payroll formula settings.'
+                });
+            }
+
+            const pfc = updateData.payroll_formula_config;
+            if (!pfc || typeof pfc !== 'object' || !Array.isArray(pfc.components)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'payroll_formula_config must include a components array.'
+                });
+            }
+
+            const components = pfc.components;
+            const customColumns = Array.isArray(pfc.custom_columns) ? pfc.custom_columns : [];
+
+            for (const coreKey of CORE_COMPONENT_KEYS) {
+                const exists = components.some(c => (c.key || deriveKey(c.name)).toUpperCase() === coreKey);
+                if (!exists) {
+                    return res.status(400).json({
+                        success: false,
+                        message: `Core component '${coreKey}' cannot be deleted.`
+                    });
+                }
+            }
+
+            for (const c of components) {
+                if (c.percentage !== undefined && c.percentage !== null) {
+                    const pct = Number(c.percentage);
+                    if (isNaN(pct) || !isFinite(pct) || pct < 0 || pct > 100) {
+                        return res.status(400).json({
+                            success: false,
+                            message: `Percentage for '${c.key || c.name}' must be a finite number between 0 and 100.`
+                        });
+                    }
+                }
+            }
+
+            const customKeys = new Set();
+            for (const cc of customColumns) {
+                if (!cc.name || typeof cc.name !== 'string' || !cc.name.trim()) {
+                    return res.status(400).json({
+                        success: false,
+                        message: 'Custom column must have a valid name.'
+                    });
+                }
+                const key = (cc.key || deriveKey(cc.name)).toUpperCase();
+                if (RESERVED_IDENTIFIERS.includes(key)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: `Custom column key '${key}' collides with reserved identifier.`
+                    });
+                }
+                if (CORE_COMPONENT_KEYS.includes(key)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: `Custom column key '${key}' collides with core component key.`
+                    });
+                }
+                if (customKeys.has(key)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: `Duplicate custom column key '${key}'.`
+                    });
+                }
+                customKeys.add(key);
+
+                if (cc.percentage !== undefined && cc.percentage !== null) {
+                    const pct = Number(cc.percentage);
+                    if (isNaN(pct) || !isFinite(pct) || pct < 0 || pct > 100) {
+                        return res.status(400).json({
+                            success: false,
+                            message: `Percentage for custom column '${cc.name}' must be a finite number between 0 and 100.`
+                        });
+                    }
+                }
+                if (cc.type && !['addition', 'deduction'].includes(cc.type)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: `Custom column '${cc.name}' type must be 'addition' or 'deduction'.`
+                    });
+                }
+            }
+
+            const allAllowedVars = [
+                ...RESERVED_IDENTIFIERS,
+                ...components.map(c => (c.key || deriveKey(c.name)).toUpperCase()),
+                ...customColumns.map(cc => (cc.key || deriveKey(cc.name)).toUpperCase())
+            ];
+
+            for (const c of components) {
+                if (c.formula) {
+                    const valRes = validateFormula(c.formula, allAllowedVars);
+                    if (!valRes.valid) {
+                        return res.status(400).json({
+                            success: false,
+                            message: `Formula error for '${c.key || c.name}': ${valRes.error}`
+                        });
+                    }
+                }
+            }
+            for (const cc of customColumns) {
+                if (cc.formula) {
+                    const valRes = validateFormula(cc.formula, allAllowedVars);
+                    if (!valRes.valid) {
+                        return res.status(400).json({
+                            success: false,
+                            message: `Formula error for custom column '${cc.name}': ${valRes.error}`
+                        });
+                    }
+                }
+            }
+
+            const cycleRes = detectCycles([...components, ...customColumns]);
+            if (cycleRes.hasCycle) {
+                return res.status(400).json({
+                    success: false,
+                    message: cycleRes.error
+                });
+            }
+
+            settings.payroll_formula_config = {
+                components: components.map(c => ({
+                    ...c,
+                    key: (c.key || deriveKey(c.name)).toUpperCase(),
+                    percentage: Number(c.percentage) || 0
+                })),
+                custom_columns: customColumns.map(cc => ({
+                    ...cc,
+                    key: (cc.key || deriveKey(cc.name)).toUpperCase(),
+                    percentage: Number(cc.percentage) || 0
+                }))
+            };
+            settings.markModified('payroll_formula_config');
         }
 
         // Explicitly update fields to ensure Mongoose tracks changes
