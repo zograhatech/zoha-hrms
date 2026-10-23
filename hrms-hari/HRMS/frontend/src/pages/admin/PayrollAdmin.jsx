@@ -30,18 +30,52 @@ export default function PayrollAdmin() {
     const [analytics, setAnalytics] = useState(null);
     const [showForm, setShowForm] = useState(false);
     const [employees, setEmployees] = useState([]);
-    const emptyForm = { employee_id: '', days_worked: 0, basic: 0, da: 0, oa: 0, leave_wages: 0, esi_wages: 0, epf_wages: 0, provident_fund: 0, esi_deduction: 0, pt: 0, lwf: 0, tds: 0, leave_deduction: 0, other_deductions: 0, employer_pf: 0, employer_esi: 0, bank_ac_no: '', unpaid_leave_days: 0, unpaid_leave_deduction: 0, unpaid_leave_adjustment: 0 };
+    const emptyForm = {
+        employee_id: '',
+        annual_ctc: '',
+        days_worked: 0,
+        bank_ac_no: '',
+        custom_columns: [],
+        basic: 0, da: 0, oa: 0, leave_wages: 0, esi_wages: 0, epf_wages: 0,
+        provident_fund: 0, esi_deduction: 0, pt: 0, lwf: 0, tds: 0,
+        leave_deduction: 0, other_deductions: 0, employer_pf: 0, employer_esi: 0,
+        unpaid_leave_days: 0, unpaid_leave_deduction: 0, unpaid_leave_adjustment: 0
+    };
+    const [preview, setPreview] = useState(null);
+    const [previewLoading, setPreviewLoading] = useState(false);
+    const [previewError, setPreviewError] = useState('');
     const [form, setForm] = useState({ ...emptyForm });
     const [submitting, setSubmitting] = useState(false);
     const [, setImporting] = useState(false);
     const [importResult, setImportResult] = useState(null);
-    const [settings, setSettings] = useState(null);
     const payrollFileRef = useRef(null);
     const [confirmAction, setConfirmAction] = useState(null); // { message, onConfirm, type }
 
     useEffect(() => {
-        API.get('/settings').then(r => setSettings(r.data.settings)).catch(() => { });
-    }, []);
+        if (!showForm || !form.annual_ctc || isNaN(form.annual_ctc) || Number(form.annual_ctc) <= 0) {
+            setPreview(null);
+            setPreviewError('');
+            return;
+        }
+        setPreviewLoading(true);
+        setPreviewError('');
+        const timer = setTimeout(() => {
+            API.post('/payroll/preview', {
+                annual_ctc: Number(form.annual_ctc),
+                custom_columns: form.custom_columns || []
+            })
+                .then(res => {
+                    setPreview(res.data);
+                    setPreviewLoading(false);
+                })
+                .catch(err => {
+                    setPreview(null);
+                    setPreviewError(err.response?.data?.message || 'Failed to calculate preview');
+                    setPreviewLoading(false);
+                });
+        }, 300);
+        return () => clearTimeout(timer);
+    }, [showForm, form.annual_ctc, form.custom_columns]);
 
     const load = useCallback(() => {
         setLoading(true);
@@ -137,23 +171,6 @@ export default function PayrollAdmin() {
 
 
 
-    // Formula Implementation
-    const basic = parseFloat(form.basic || 0);
-    const da = parseFloat(form.da || 0);
-    const oa = parseFloat(form.oa || 0);
-    const leave_wages = parseFloat(form.leave_wages || 0);
-
-    const gross = basic + da + oa + leave_wages;
-
-    const standard_deductions = parseFloat(form.provident_fund || 0) + parseFloat(form.esi_deduction || 0) + parseFloat(form.pt || 0) + parseFloat(form.lwf || 0) + parseFloat(form.tds || 0) + parseFloat(form.leave_deduction || 0);
-    const other_deductions = parseFloat(form.other_deductions || 0);
-    const deductions = standard_deductions + other_deductions;
-    
-    // Updated Logic: Actual Payable = ((Gross - Standard Deductions) / Total Days * Days Worked) - Other (Advance & Fine)
-    const monthly_net_before_other = gross - standard_deductions;
-    const pro_rated_salary = daysInMonth > 0 ? (monthly_net_before_other / daysInMonth) * parseFloat(form.days_worked || 0) : 0;
-    const actual_pay = pro_rated_salary - other_deductions;
-    const net_salary = gross - deductions;
 
     // Payroll register table cell styles
     const thS = { padding: '10px 15px', border: '1px solid var(--border-color)', fontSize: '0.72rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-secondary)', verticalAlign: 'middle', textAlign: 'center', whiteSpace: 'nowrap', background: 'var(--bg-primary)' };
@@ -363,62 +380,11 @@ export default function PayrollAdmin() {
                                         onChange={e => {
                                             const empId = e.target.value;
                                             const emp = employees.find(emp => emp.id === empId);
-                                            if (emp && emp.salary_details) {
-                                                const s = emp.salary_details;
-                                                const g = (parseFloat(s.basic) || 0) + (parseFloat(s.da) || 0) + (parseFloat(s.oa) || 0);
-                                                const ew = (parseFloat(s.basic) || 0) + (parseFloat(s.da) || 0);
-
-                                                // Use settings from database or fallback to defaults
-                                                const f = settings?.payroll_formulas;
-                                                const pfDeduction = f
-                                                    ? (g > f.pf_wage_ceiling ? f.pf_fixed_amount : Math.round(g * f.pf_rate))
-                                                    : (g > 15000 ? 1800 : Math.round(g * 0.12));
-
-                                                const esiDeduction = f
-                                                    ? (ew > f.esi_wage_limit ? 0 : Math.round(ew * f.esi_employee_rate))
-                                                    : (ew > 21000 ? 0 : Math.round(ew * 0.0075));
-
-                                                const esiEmployer = f
-                                                    ? (ew > f.esi_wage_limit ? 0 : Math.round(ew * f.esi_employer_rate))
-                                                    : (ew > 21000 ? 0 : Math.round(ew * 0.0325));
-
-                                                const employerPF = Math.round(g * (f?.pf_rate ? (f.pf_rate + 0.01) : 0.13)); // 12% + 1% admin
-
-                                                // Professional Tax (PT) Calculation
-                                                let ptAmount = 0;
-                                                if (f) {
-                                                    if (g <= (f.pt_slab1_limit || 10000)) ptAmount = f.pt_slab1_amount || 0;
-                                                    else if (g <= (f.pt_slab2_limit || 15000)) ptAmount = f.pt_slab2_amount || 150;
-                                                    else ptAmount = f.pt_above_amount || 200;
-                                                } else {
-                                                    if (g <= 10000) ptAmount = 0;
-                                                    else if (g <= 15000) ptAmount = 150;
-                                                    else ptAmount = 200;
-                                                }
-
-                                                setForm({
-                                                    ...emptyForm,
-                                                    employee_id: empId,
-                                                    basic: s.basic || 0,
-                                                    da: s.da || 0,
-                                                    oa: s.oa || 0,
-                                                    leave_wages: s.leave_wages || 0,
-                                                    esi_wages: ew,
-                                                    epf_wages: g,
-                                                    provident_fund: pfDeduction,
-                                                    esi_deduction: esiDeduction,
-                                                    pt: ptAmount,
-                                                    lwf: (month === 6 || month === 12) ? 20 : 0,
-                                                    tds: s.tds || 0,
-                                                    leave_deduction: s.leave_deduction || 0,
-                                                    other_deductions: s.other_deductions || 0,
-                                                    employer_pf: employerPF,
-                                                    employer_esi: esiEmployer,
-                                                    bank_ac_no: s.bank_ac_no || ''
-                                                });
-                                            } else {
-                                                setForm({ ...emptyForm, employee_id: empId });
-                                            }
+                                            setForm(prev => ({
+                                                ...prev,
+                                                employee_id: empId,
+                                                bank_ac_no: emp?.salary_details?.bank_ac_no || prev.bank_ac_no || ''
+                                            }));
                                         }}
                                         required
                                     >
@@ -428,99 +394,216 @@ export default function PayrollAdmin() {
                                 </div>
 
                                 <div className="form-group">
-                                    <label className="form-label">Days Worked</label>
-                                    <input type="number" className="form-input" value={form.days_worked} onChange={e => setForm({ ...form, days_worked: e.target.value })} />
+                                    <label className="form-label" style={{ fontWeight: 700, color: 'var(--accent-primary)' }}>
+                                        Annual CTC (₹) <span style={{ color: 'var(--accent-red)' }}>*</span>
+                                    </label>
+                                    <input
+                                        type="number"
+                                        placeholder="e.g. 600000"
+                                        className="form-input"
+                                        style={{ fontSize: '1rem', fontWeight: 700 }}
+                                        value={form.annual_ctc ?? ''}
+                                        onChange={e => setForm({ ...form, annual_ctc: e.target.value })}
+                                        required
+                                    />
+                                    <small style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>
+                                        Monthly components are automatically computed from the SuperAdmin Payroll Formula.
+                                    </small>
                                 </div>
-                                <div className="form-group">
-                                    <label className="form-label">Bank A/C No.</label>
-                                    <input type="text" className="form-input" placeholder="Employee bank account number" value={form.bank_ac_no} onChange={e => setForm({ ...form, bank_ac_no: e.target.value })} />
-                                </div>
+
                                 <div className="grid-2">
-                                    <div>
-                                        <h4 style={{ marginBottom: 12, color: 'var(--accent-green)', display: 'flex', alignItems: 'center', gap: 8 }}>
-                                            <FiTrendingUp /> Wages Earned
-                                        </h4>
-                                        <div className="form-group"><label className="form-label">Basic</label><input type="number" className="form-input" value={form.basic} onChange={e => setForm({ ...form, basic: e.target.value })} required /></div>
-                                        <div className="form-group"><label className="form-label">D.A (Dearness Allowance)</label><input type="number" className="form-input" value={form.da} onChange={e => setForm({ ...form, da: e.target.value })} /></div>
-                                        <div className="form-group"><label className="form-label">OA (Other Allowance)</label><input type="number" className="form-input" value={form.oa} onChange={e => setForm({ ...form, oa: e.target.value })} /></div>
-                                        <div className="form-group"><label className="form-label">Leave Wages</label><input type="number" className="form-input" value={form.leave_wages} onChange={e => setForm({ ...form, leave_wages: e.target.value })} /></div>
-                                        <div className="form-group"><label className="form-label">ESI Wages (Applicable for ESI)</label><input type="number" className="form-input" value={form.esi_wages} onChange={e => {
-                                            const val = parseFloat(e.target.value) || 0;
-                                            const f = settings?.payroll_formulas;
-                                            const deduction = f 
-                                                ? (val > f.esi_wage_limit ? 0 : Math.round(val * f.esi_employee_rate))
-                                                : (val > 21000 ? 0 : Math.round(val * 0.0075));
-                                            const empESI = f 
-                                                ? (val > f.esi_wage_limit ? 0 : Math.round(val * f.esi_employer_rate))
-                                                : (val > 21000 ? 0 : Math.round(val * 0.0325));
-                                            setForm({ ...form, esi_wages: e.target.value, esi_deduction: deduction, employer_esi: empESI });
-                                        }} /></div>
-                                        <div className="form-group"><label className="form-label">EPF Wages (Applicable for PF/PT)</label><input type="number" className="form-input" value={form.epf_wages} onChange={e => {
-                                            const val = parseFloat(e.target.value) || 0;
-                                            const f = settings?.payroll_formulas;
-                                            const deduction = f 
-                                                ? (val > f.pf_wage_ceiling ? f.pf_fixed_amount : Math.round(val * f.pf_rate))
-                                                : (val > 15000 ? 1800 : Math.round(val * 0.12));
-                                            const empPF = Math.round(val * (f?.pf_rate ? (f.pf_rate + 0.01) : 0.13));
-                                            
-                                            // Update PT too when gross wages change
-                                            let ptAmount = 0;
-                                            if (f) {
-                                                if (val <= (f.pt_slab1_limit || 10000)) ptAmount = f.pt_slab1_amount || 0;
-                                                else if (val <= (f.pt_slab2_limit || 15000)) ptAmount = f.pt_slab2_amount || 150;
-                                                else ptAmount = f.pt_above_amount || 200;
-                                            } else {
-                                                if (val <= 10000) ptAmount = 0;
-                                                else if (val <= 15000) ptAmount = 150;
-                                                else ptAmount = 200;
-                                            }
-
-                                            setForm({ ...form, epf_wages: e.target.value, provident_fund: deduction, employer_pf: empPF, pt: ptAmount });
-                                        }} /></div>
+                                    <div className="form-group">
+                                        <label className="form-label">Days Worked</label>
+                                        <input type="number" className="form-input" value={form.days_worked} onChange={e => setForm({ ...form, days_worked: e.target.value })} />
                                     </div>
-                                    <div>
-                                        <h4 style={{ marginBottom: 12, color: 'var(--accent-red)', display: 'flex', alignItems: 'center', gap: 8 }}>
-                                            <FiTrendingDown /> Deductions
-                                        </h4>
-                                        <div className="form-group"><label className="form-label">Provident Fund (PF)</label><input type="number" className="form-input" value={form.provident_fund} onChange={e => setForm({ ...form, provident_fund: e.target.value })} /></div>
-                                        <div className="form-group"><label className="form-label">E.S.I</label><input type="number" className="form-input" value={form.esi_deduction} onChange={e => setForm({ ...form, esi_deduction: e.target.value })} /></div>
-                                        <div className="form-group"><label className="form-label">Professional Tax (PT)</label><input type="number" className="form-input" value={form.pt} onChange={e => setForm({ ...form, pt: e.target.value })} /></div>
-                                        <div className="form-group"><label className="form-label">LWF (Labour Welfare Fund)</label><input type="number" className="form-input" value={form.lwf} onChange={e => setForm({ ...form, lwf: e.target.value })} /></div>
-                                        <div className="form-group"><label className="form-label">TDS</label><input type="number" className="form-input" value={form.tds} onChange={e => setForm({ ...form, tds: e.target.value })} /></div>
-                                        <div className="form-group"><label className="form-label">Leave Deduction</label><input type="number" className="form-input" value={form.leave_deduction} onChange={e => setForm({ ...form, leave_deduction: e.target.value })} /></div>
-                                        <div className="form-group"><label className="form-label">Unpaid Leave Days</label><input type="number" className="form-input" value={form.unpaid_leave_days || 0} disabled readOnly /></div>
-                                        <div className="form-group"><label className="form-label">Unpaid Leave Deduction</label><input type="number" className="form-input" value={form.unpaid_leave_deduction || 0} disabled readOnly /></div>
-                                        <div className="form-group"><label className="form-label">Late Leave Adjustment</label><input type="number" className="form-input" value={form.unpaid_leave_adjustment || 0} disabled readOnly /></div>
-                                        <div className="form-group"><label className="form-label">Other (Advance & Fine)</label><input type="number" className="form-input" value={form.other_deductions} onChange={e => setForm({ ...form, other_deductions: e.target.value })} /></div>
+                                    <div className="form-group">
+                                        <label className="form-label">Bank A/C No.</label>
+                                        <input type="text" className="form-input" placeholder="Employee bank account number" value={form.bank_ac_no} onChange={e => setForm({ ...form, bank_ac_no: e.target.value })} />
                                     </div>
                                 </div>
 
-                                <div className="grid-2" style={{ marginTop: 16 }}>
-                                    <div style={{ background: 'rgba(99,102,241,0.05)', padding: 12, borderRadius: 8, border: '1px solid var(--border-color)' }}>
-                                        <h5 style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: 8, textTransform: 'uppercase' }}>Employer Contributions</h5>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', marginBottom: 4 }}>
-                                            <span>Employer PF ({((settings?.payroll_formulas?.pf_rate || 0.12) * 100 + 1).toFixed(1)}%):</span> 
-                                            <span style={{ fontWeight: 600 }}>{fmt(form.employer_pf)}</span>
+                                {/* Per-Employee Custom Columns */}
+                                <div style={{ marginBottom: 16, padding: 14, borderRadius: 8, background: 'rgba(99,102,241,0.04)', border: '1px solid var(--border-color)' }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                                        <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--accent-primary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                                            Custom Columns (This Employee Only)
                                         </div>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem' }}>
-                                            <span>Employer ESI ({((settings?.payroll_formulas?.esi_employer_rate || 0.0325) * 100).toFixed(2)}%):</span> 
-                                            <span style={{ fontWeight: 600 }}>{fmt(form.employer_esi)}</span>
-                                        </div>
+                                        <button
+                                            type="button"
+                                            className="btn btn-outline btn-sm"
+                                            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.75rem', padding: '4px 8px' }}
+                                            onClick={() => {
+                                                const cols = [...(form.custom_columns || []), {
+                                                    name: '',
+                                                    type: 'deduction',
+                                                    percentage: 0,
+                                                    formula: 'GROSS * PCT / 100'
+                                                }];
+                                                setForm({ ...form, custom_columns: cols });
+                                            }}
+                                        >
+                                            <FiPlus /> Add Column
+                                        </button>
                                     </div>
 
-                                    <div style={{ background: 'var(--bg-card)', padding: 12, borderRadius: 8, border: '1px solid var(--border-color)' }}>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, fontSize: '0.85rem' }}><span>Gross Salary:</span> <span style={{ fontWeight: 600, color: 'var(--accent-green)' }}>{fmt(gross)}</span></div>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: '0.85rem' }}><span>Total Deductions:</span> <span style={{ fontWeight: 600, color: 'var(--accent-red)' }}>{fmt(deductions)}</span></div>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '1rem', fontWeight: 800, borderTop: '1px solid var(--border-color)', paddingTop: 4 }}>
-                                            <span>Net Salary:</span> <span style={{ color: 'var(--accent-primary)' }}>{fmt(net_salary)}</span>
+                                    {(form.custom_columns || []).length === 0 ? (
+                                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                                            No employee-specific custom columns. Global Payroll Formula columns apply automatically.
                                         </div>
-                                    </div>
+                                    ) : (
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                            {(form.custom_columns || []).map((col, idx) => (
+                                                <div key={idx} style={{ display: 'grid', gridTemplateColumns: '1.2fr 110px 90px 1.8fr 36px', gap: 8, alignItems: 'center' }}>
+                                                    <input
+                                                        type="text"
+                                                        placeholder="Name (e.g. Loan Recovery)"
+                                                        className="form-input"
+                                                        style={{ padding: '6px 8px', fontSize: '0.8rem' }}
+                                                        value={col.name || ''}
+                                                        onChange={e => {
+                                                            const cols = [...form.custom_columns];
+                                                            cols[idx] = { ...cols[idx], name: e.target.value };
+                                                            setForm({ ...form, custom_columns: cols });
+                                                        }}
+                                                    />
+                                                    <select
+                                                        className="form-select"
+                                                        style={{ padding: '6px 8px', fontSize: '0.8rem' }}
+                                                        value={col.type || 'deduction'}
+                                                        onChange={e => {
+                                                            const cols = [...form.custom_columns];
+                                                            cols[idx] = { ...cols[idx], type: e.target.value };
+                                                            setForm({ ...form, custom_columns: cols });
+                                                        }}
+                                                    >
+                                                        <option value="deduction">Deduction</option>
+                                                        <option value="addition">Addition</option>
+                                                    </select>
+                                                    <input
+                                                        type="number"
+                                                        placeholder="%"
+                                                        className="form-input"
+                                                        style={{ padding: '6px 8px', fontSize: '0.8rem' }}
+                                                        value={col.percentage ?? ''}
+                                                        onChange={e => {
+                                                            const cols = [...form.custom_columns];
+                                                            cols[idx] = { ...cols[idx], percentage: parseFloat(e.target.value) || 0 };
+                                                            setForm({ ...form, custom_columns: cols });
+                                                        }}
+                                                    />
+                                                    <input
+                                                        type="text"
+                                                        placeholder="Formula (e.g. GROSS * PCT / 100)"
+                                                        className="form-input"
+                                                        style={{ padding: '6px 8px', fontSize: '0.78rem', fontFamily: 'monospace' }}
+                                                        value={col.formula || ''}
+                                                        onChange={e => {
+                                                            const cols = [...form.custom_columns];
+                                                            cols[idx] = { ...cols[idx], formula: e.target.value };
+                                                            setForm({ ...form, custom_columns: cols });
+                                                        }}
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        className="btn btn-outline btn-sm"
+                                                        style={{ color: 'var(--accent-red)', borderColor: 'var(--accent-red)', padding: '6px', display: 'flex', justifyContent: 'center' }}
+                                                        onClick={() => {
+                                                            const cols = form.custom_columns.filter((_, i) => i !== idx);
+                                                            setForm({ ...form, custom_columns: cols });
+                                                        }}
+                                                    >
+                                                        <FiX />
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
                                 </div>
 
-                                <div style={{ background: 'linear-gradient(135deg, var(--accent-primary), #4f46e5)', padding: 16, borderRadius: 8, marginTop: 12, color: 'white', textAlign: 'center', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)' }}>
-                                    <div style={{ fontSize: '0.8rem', opacity: 0.9 }}>ACTUAL PAYABLE FOR {form.days_worked} DAYS</div>
-                                    <div style={{ fontSize: '1.8rem', fontWeight: 900 }}>{fmt(actual_pay)}</div>
-                                </div>
+                                {previewError && (
+                                    <div className="alert alert-danger" style={{ marginBottom: 16 }}>
+                                        {previewError}
+                                    </div>
+                                )}
+
+                                {previewLoading && (
+                                    <div style={{ textAlign: 'center', padding: '16px', color: 'var(--text-muted)' }}>
+                                        Calculating preview...
+                                    </div>
+                                )}
+
+                                {preview && !previewLoading && (
+                                    <div style={{ marginTop: 16 }}>
+                                        <div className="grid-2" style={{ gap: 16 }}>
+                                            {/* Additions */}
+                                            <div style={{ background: 'rgba(16,185,129,0.05)', padding: 14, borderRadius: 8, border: '1px solid var(--border-color)' }}>
+                                                <h4 style={{ marginBottom: 10, color: 'var(--accent-green)', display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.85rem' }}>
+                                                    <FiTrendingUp /> Wages Earned (Monthly)
+                                                </h4>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', marginBottom: 4 }}>
+                                                    <span>Basic:</span> <span style={{ fontWeight: 600 }}>{fmt(preview.components?.BASIC)}</span>
+                                                </div>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', marginBottom: 4 }}>
+                                                    <span>HRA:</span> <span style={{ fontWeight: 600 }}>{fmt(preview.components?.HRA)}</span>
+                                                </div>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', marginBottom: 4 }}>
+                                                    <span>Medical Allowance:</span> <span style={{ fontWeight: 600 }}>{fmt(preview.components?.MEDICAL)}</span>
+                                                </div>
+                                                {(preview.custom_components || []).filter(c => c.type === 'addition').map(c => (
+                                                    <div key={c.key} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', marginBottom: 4 }}>
+                                                        <span>{c.name}:</span> <span style={{ fontWeight: 600 }}>{fmt(c.amount)}</span>
+                                                    </div>
+                                                ))}
+                                                <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: 6, marginTop: 6, display: 'flex', justifyContent: 'space-between', fontSize: '0.88rem', fontWeight: 800 }}>
+                                                    <span>Gross Salary:</span> <span style={{ color: 'var(--accent-green)' }}>{fmt(preview.gross_salary)}</span>
+                                                </div>
+                                            </div>
+
+                                            {/* Deductions */}
+                                            <div style={{ background: 'rgba(239,68,68,0.05)', padding: 14, borderRadius: 8, border: '1px solid var(--border-color)' }}>
+                                                <h4 style={{ marginBottom: 10, color: 'var(--accent-red)', display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.85rem' }}>
+                                                    <FiTrendingDown /> Deductions (Monthly)
+                                                </h4>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', marginBottom: 4 }}>
+                                                    <span>PF:</span> <span style={{ fontWeight: 600 }}>{fmt(preview.components?.PF)}</span>
+                                                </div>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', marginBottom: 4 }}>
+                                                    <span>ESI:</span> <span style={{ fontWeight: 600 }}>{fmt(preview.components?.ESI)}</span>
+                                                </div>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', marginBottom: 4 }}>
+                                                    <span>PT:</span> <span style={{ fontWeight: 600 }}>{fmt(preview.components?.PT)}</span>
+                                                </div>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', marginBottom: 4 }}>
+                                                    <span>LWF:</span> <span style={{ fontWeight: 600 }}>{fmt(preview.components?.LWF)}</span>
+                                                </div>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', marginBottom: 4 }}>
+                                                    <span>Gratitude:</span> <span style={{ fontWeight: 600 }}>{fmt(preview.components?.GRATITUDE)}</span>
+                                                </div>
+                                                {(preview.custom_components || []).filter(c => c.type === 'deduction').map(c => (
+                                                    <div key={c.key} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', marginBottom: 4 }}>
+                                                        <span>{c.name}:</span> <span style={{ fontWeight: 600 }}>{fmt(c.amount)}</span>
+                                                    </div>
+                                                ))}
+                                                <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: 6, marginTop: 6, display: 'flex', justifyContent: 'space-between', fontSize: '0.88rem', fontWeight: 800 }}>
+                                                    <span>Total Deductions:</span> <span style={{ color: 'var(--accent-red)' }}>{fmt(preview.total_deductions)}</span>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div style={{ background: 'var(--bg-card)', padding: 12, borderRadius: 8, border: '1px solid var(--border-color)', marginTop: 12 }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '1rem', fontWeight: 800 }}>
+                                                <span>Monthly Net Salary:</span> <span style={{ color: 'var(--accent-primary)' }}>{fmt(preview.net_salary)}</span>
+                                            </div>
+                                        </div>
+
+                                        <div style={{ background: 'linear-gradient(135deg, var(--accent-primary), #4f46e5)', padding: 16, borderRadius: 8, marginTop: 12, color: 'white', textAlign: 'center', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)' }}>
+                                            <div style={{ fontSize: '0.8rem', opacity: 0.9 }}>ESTIMATED PAYABLE FOR {form.days_worked || 0} DAYS</div>
+                                            <div style={{ fontSize: '1.8rem', fontWeight: 900 }}>
+                                                {fmt(daysInMonth > 0 ? (preview.net_salary / daysInMonth) * (parseFloat(form.days_worked) || 0) : 0)}
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                             <div className="modal-footer">
                                 <button type="button" className="btn btn-outline" onClick={() => setShowForm(false)}>Cancel</button>

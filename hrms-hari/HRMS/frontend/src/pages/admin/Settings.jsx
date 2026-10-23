@@ -16,6 +16,18 @@ import UserManagement from './UserManagement';
 import { useToast } from '../../context/ToastContext';
 import './Settings.css';
 
+const defaultPayrollComponents = [
+    { key: 'BASIC', name: 'Basic', type: 'addition', percentage: 50, formula: 'MONTHLY_CTC * PCT / 100', editable: true, isCore: true },
+    { key: 'HRA', name: 'HRA', type: 'addition', percentage: 20, formula: 'MONTHLY_CTC * PCT / 100', editable: true, isCore: true },
+    { key: 'MEDICAL', name: 'Medical Allowance', type: 'addition', percentage: 10, formula: 'MONTHLY_CTC * PCT / 100', editable: true, isCore: true },
+    { key: 'GROSS', name: 'Gross', type: 'addition', percentage: 0, formula: 'BASIC + HRA + MEDICAL', editable: false, isCore: true },
+    { key: 'PF', name: 'Provident Fund (PF)', type: 'deduction', percentage: 12, formula: 'MIN(BASIC, 15000) * PCT / 100', editable: true, isCore: true },
+    { key: 'ESI', name: 'ESI', type: 'deduction', percentage: 0.75, formula: 'IF(GROSS <= 21000, GROSS * PCT / 100, 0)', editable: true, isCore: true },
+    { key: 'PT', name: 'Professional Tax (PT)', type: 'deduction', percentage: 0, formula: 'GROSS * PCT / 100', editable: true, isCore: true },
+    { key: 'LWF', name: 'LWF', type: 'deduction', percentage: 0, formula: 'GROSS * PCT / 100', editable: true, isCore: true },
+    { key: 'GRATITUDE', name: 'Gratitude', type: 'deduction', percentage: 0, formula: 'GROSS * PCT / 100', editable: true, isCore: true }
+];
+
 export default function Settings() {
     const auth = useAuth();
     const { showToast } = useToast();
@@ -195,6 +207,65 @@ export default function Settings() {
 
 
 
+    const getFormulaComponents = () => {
+        return settings.payroll_formula_config?.components || defaultPayrollComponents;
+    };
+
+    const getCustomColumns = () => {
+        return settings.payroll_formula_config?.custom_columns || [];
+    };
+
+    const updateFormulaComponent = (index, field, value) => {
+        const comps = [...getFormulaComponents()];
+        comps[index] = { ...comps[index], [field]: value };
+        setSettings(prev => ({
+            ...prev,
+            payroll_formula_config: {
+                components: comps,
+                custom_columns: prev.payroll_formula_config?.custom_columns || []
+            }
+        }));
+    };
+
+    const updateCustomColumn = (index, field, value) => {
+        const cols = [...getCustomColumns()];
+        cols[index] = { ...cols[index], [field]: value };
+        setSettings(prev => ({
+            ...prev,
+            payroll_formula_config: {
+                components: prev.payroll_formula_config?.components || defaultPayrollComponents,
+                custom_columns: cols
+            }
+        }));
+    };
+
+    const addCustomColumn = () => {
+        const cols = [...getCustomColumns(), {
+            name: '',
+            type: 'addition',
+            percentage: 0,
+            formula: 'MONTHLY_CTC * PCT / 100'
+        }];
+        setSettings(prev => ({
+            ...prev,
+            payroll_formula_config: {
+                components: prev.payroll_formula_config?.components || defaultPayrollComponents,
+                custom_columns: cols
+            }
+        }));
+    };
+
+    const removeCustomColumn = (index) => {
+        const cols = getCustomColumns().filter((_, i) => i !== index);
+        setSettings(prev => ({
+            ...prev,
+            payroll_formula_config: {
+                components: prev.payroll_formula_config?.components || defaultPayrollComponents,
+                custom_columns: cols
+            }
+        }));
+    };
+
     const handleSendTestEmail = async () => {
         setSaving(true);
         setMsg({ text: '', type: '' });
@@ -217,7 +288,7 @@ export default function Settings() {
             const dataToSave = customSettings || settings;
             let payload;
             if (!isSuperAdmin(user)) {
-                const { monthly_leave_allowance, days_worked_convention, ...rest } = dataToSave;
+                const { monthly_leave_allowance, days_worked_convention, payroll_formula_config, ...rest } = dataToSave;
                 payload = rest;
             } else {
                 payload = {
@@ -225,7 +296,11 @@ export default function Settings() {
                     days_worked_convention: dataToSave.days_worked_convention || 'payable',
                     monthly_leave_allowance: (dataToSave.monthly_leave_allowance === '' || dataToSave.monthly_leave_allowance === undefined || dataToSave.monthly_leave_allowance === null)
                         ? 1
-                        : Number(dataToSave.monthly_leave_allowance)
+                        : Number(dataToSave.monthly_leave_allowance),
+                    payroll_formula_config: dataToSave.payroll_formula_config || {
+                        components: defaultPayrollComponents,
+                        custom_columns: []
+                    }
                 };
             }
             const formData = new FormData();
@@ -978,146 +1053,161 @@ export default function Settings() {
 
             {activeTab === 'payroll' && (
                 <form onSubmit={handleSave} className="card">
-                    <h3 style={{ marginBottom: 8, display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <FiPercent /> Payroll Formulas
-                    </h3>
-                    <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: 24 }}>
-                        Configure the thresholds and rates used for automatic payroll calculations. Changes will be reflected in all future payroll runs.
-                    </p>
-
-                    {/* PF Section */}
-                    <div style={{ marginBottom: 28, padding: 18, borderRadius: 10, border: '1px solid var(--border-color)', background: 'rgba(99,102,241,0.05)' }}>
-                        <div style={{ fontWeight: 700, color: 'var(--accent-primary)', marginBottom: 4, fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Provident Fund (PF)</div>
-                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: 16 }}>
-                            Formula: If (Basic + DA + OA) &gt; Wage Ceiling → Fixed Amount, else (Basic + DA + OA) × Rate
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
+                        <div>
+                            <h3 style={{ marginBottom: 4, display: 'flex', alignItems: 'center', gap: 10 }}>
+                                <FiPercent /> Payroll Formula Configuration
+                            </h3>
+                            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: 0 }}>
+                                All salary components are percentage-based driven by the SuperAdmin Payroll Formula. Changes apply to all future payroll runs.
+                            </p>
                         </div>
-                        <div className="grid-2" style={{ gap: 16 }}>
-                            <div className="form-group">
-                                <label className="form-label">PF Wage Ceiling (₹)</label>
-                                <input type="number" name="pf_wage_ceiling" className="form-input"
-                                    value={settings.payroll_formulas?.pf_wage_ceiling ?? 15000}
-                                    onChange={e => handleChange(e, 'payroll_formulas')} />
-                                <small style={{ color: 'var(--text-muted)', fontSize: '0.68rem' }}>If gross exceeds this, fixed PF is applied</small>
-                            </div>
-                            <div className="form-group">
-                                <label className="form-label">PF Fixed Amount when above ceiling (₹)</label>
-                                <input type="number" name="pf_fixed_amount" className="form-input"
-                                    value={settings.payroll_formulas?.pf_fixed_amount ?? 1800}
-                                    onChange={e => handleChange(e, 'payroll_formulas')} />
-                                <small style={{ color: 'var(--text-muted)', fontSize: '0.68rem' }}>Deducted when gross &gt; ceiling</small>
-                            </div>
-                            <div className="form-group">
-                                <label className="form-label">PF Employee Rate (e.g. 0.12 = 12%)</label>
-                                <input type="number" name="pf_rate" step="0.001" className="form-input"
-                                    value={settings.payroll_formulas?.pf_rate ?? 0.12}
-                                    onChange={e => handleChange(e, 'payroll_formulas')} />
-                                <small style={{ color: 'var(--text-muted)', fontSize: '0.68rem' }}>Applied when gross ≤ ceiling</small>
-                            </div>
-                        </div>
-                        <div style={{ marginTop: 10, padding: '8px 12px', borderRadius: 6, background: 'rgba(99,102,241,0.07)', fontSize: '0.75rem', color: 'var(--accent-light)', fontFamily: 'monospace' }}>
-                            PF = IF(gross &gt; ₹{(settings.payroll_formulas?.pf_wage_ceiling ?? 15000).toLocaleString('en-IN')}) → ₹{(settings.payroll_formulas?.pf_fixed_amount ?? 1800).toLocaleString('en-IN')}, ELSE gross × {((settings.payroll_formulas?.pf_rate ?? 0.12) * 100).toFixed(1)}%
-                        </div>
-                    </div>
-
-                    {/* ESI Section */}
-                    <div style={{ marginBottom: 28, padding: 18, borderRadius: 10, border: '1px solid var(--border-color)', background: 'rgba(16,185,129,0.05)' }}>
-                        <div style={{ fontWeight: 700, color: '#10b981', marginBottom: 4, fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>ESI (Employee State Insurance)</div>
-                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: 16 }}>
-                            Formula: If (Basic + DA) &gt; Wage Limit → ESI = 0, else (Basic + DA) × Rate
-                        </div>
-                        <div className="grid-2" style={{ gap: 16 }}>
-                            <div className="form-group">
-                                <label className="form-label">ESI Wage Limit (₹)</label>
-                                <input type="number" name="esi_wage_limit" className="form-input"
-                                    value={settings.payroll_formulas?.esi_wage_limit ?? 21000}
-                                    onChange={e => handleChange(e, 'payroll_formulas')} />
-                                <small style={{ color: 'var(--text-muted)', fontSize: '0.68rem' }}>If Basic+DA exceeds this, ESI = ₹0</small>
-                            </div>
-                            <div className="form-group">
-                                <label className="form-label">Employee ESI Rate (e.g. 0.0075 = 0.75%)</label>
-                                <input type="number" name="esi_employee_rate" step="0.0001" className="form-input"
-                                    value={settings.payroll_formulas?.esi_employee_rate ?? 0.0075}
-                                    onChange={e => handleChange(e, 'payroll_formulas')} />
-                            </div>
-                            <div className="form-group">
-                                <label className="form-label">Employer ESI Rate (e.g. 0.0325 = 3.25%)</label>
-                                <input type="number" name="esi_employer_rate" step="0.0001" className="form-input"
-                                    value={settings.payroll_formulas?.esi_employer_rate ?? 0.0325}
-                                    onChange={e => handleChange(e, 'payroll_formulas')} />
-                            </div>
-                        </div>
-                        <div style={{ marginTop: 10, padding: '8px 12px', borderRadius: 6, background: 'rgba(16,185,129,0.07)', fontSize: '0.75rem', color: '#10b981', fontFamily: 'monospace' }}>
-                            ESI = IF(Basic+DA &gt; ₹{(settings.payroll_formulas?.esi_wage_limit ?? 21000).toLocaleString('en-IN')}) → ₹0, ELSE (Basic+DA) × {((settings.payroll_formulas?.esi_employee_rate ?? 0.0075) * 100).toFixed(2)}%
-                        </div>
-                    </div>
-
-                    {/* PT Section */}
-                    <div style={{ marginBottom: 28, padding: 18, borderRadius: 10, border: '1px solid var(--border-color)', background: 'rgba(245,158,11,0.05)' }}>
-                        <div style={{ fontWeight: 700, color: '#f59e0b', marginBottom: 4, fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Professional Tax (PT) – Slabs</div>
-                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: 16 }}>
-                            Gross Salary slab-based monthly PT deduction
-                        </div>
-                        <div style={{ overflowX: 'auto' }}>
-                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
-                                <thead>
-                                    <tr style={{ background: 'rgba(245,158,11,0.1)' }}>
-                                        <th style={{ padding: '8px 12px', textAlign: 'left', borderBottom: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}>Slab</th>
-                                        <th style={{ padding: '8px 12px', textAlign: 'left', borderBottom: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}>Gross Up To (₹)</th>
-                                        <th style={{ padding: '8px 12px', textAlign: 'left', borderBottom: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}>PT Amount (₹)</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <tr>
-                                        <td style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-color)', color: 'var(--text-muted)' }}>Slab 1</td>
-                                        <td style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-color)' }}>
-                                            <input type="number" name="pt_slab1_limit" className="form-input" style={{ width: 140 }}
-                                                value={settings.payroll_formulas?.pt_slab1_limit ?? 10000}
-                                                onChange={e => handleChange(e, 'payroll_formulas')} />
-                                        </td>
-                                        <td style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-color)' }}>
-                                            <input type="number" name="pt_slab1_amount" className="form-input" style={{ width: 120 }}
-                                                value={settings.payroll_formulas?.pt_slab1_amount ?? 0}
-                                                onChange={e => handleChange(e, 'payroll_formulas')} />
-                                        </td>
-                                    </tr>
-                                    <tr>
-                                        <td style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-color)', color: 'var(--text-muted)' }}>Slab 2</td>
-                                        <td style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-color)' }}>
-                                            <input type="number" name="pt_slab2_limit" className="form-input" style={{ width: 140 }}
-                                                value={settings.payroll_formulas?.pt_slab2_limit ?? 15000}
-                                                onChange={e => handleChange(e, 'payroll_formulas')} />
-                                        </td>
-                                        <td style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-color)' }}>
-                                            <input type="number" name="pt_slab2_amount" className="form-input" style={{ width: 120 }}
-                                                value={settings.payroll_formulas?.pt_slab2_amount ?? 150}
-                                                onChange={e => handleChange(e, 'payroll_formulas')} />
-                                        </td>
-                                    </tr>
-                                    <tr>
-                                        <td style={{ padding: '8px 12px', color: 'var(--text-muted)' }}>Above Slab 2</td>
-                                        <td style={{ padding: '8px 12px', color: 'var(--text-muted)', fontStyle: 'italic' }}>Any amount</td>
-                                        <td style={{ padding: '8px 12px' }}>
-                                            <input type="number" name="pt_above_amount" className="form-input" style={{ width: 120 }}
-                                                value={settings.payroll_formulas?.pt_above_amount ?? 200}
-                                                onChange={e => handleChange(e, 'payroll_formulas')} />
-                                        </td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
-                        <div style={{ marginTop: 12, padding: '8px 12px', borderRadius: 6, background: 'rgba(245,158,11,0.07)', fontSize: '0.75rem', color: '#f59e0b', fontFamily: 'monospace' }}>
-                            PT = Gross ≤ ₹{(settings.payroll_formulas?.pt_slab1_limit ?? 10000).toLocaleString('en-IN')} → ₹{settings.payroll_formulas?.pt_slab1_amount ?? 0} | ≤ ₹{(settings.payroll_formulas?.pt_slab2_limit ?? 15000).toLocaleString('en-IN')} → ₹{settings.payroll_formulas?.pt_slab2_amount ?? 150} | Above → ₹{settings.payroll_formulas?.pt_above_amount ?? 200}
-                        </div>
-                    </div>
-
-                    <div style={{ textAlign: 'right' }}>
                         <button type="submit" className="btn btn-primary" disabled={saving} style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                            <FiSave /> Save Payroll Formulas
+                            <FiSave /> {saving ? 'Saving...' : 'Save Formulas'}
                         </button>
+                    </div>
+
+                    {msg.text && (
+                        <div className={`alert alert-${msg.type}`} style={{ marginBottom: 16 }}>
+                            {msg.text}
+                        </div>
+                    )}
+
+                    <div style={{ overflowX: 'auto', marginBottom: 24 }}>
+                        <table className="data-table" style={{ width: '100%' }}>
+                            <thead>
+                                <tr>
+                                    <th style={{ width: 160 }}>Component</th>
+                                    <th style={{ width: 120 }}>Type</th>
+                                    <th style={{ width: 140 }}>Percentage (%)</th>
+                                    <th>Formula Expression</th>
+                                    <th style={{ width: 90, textAlign: 'center' }}>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {getFormulaComponents().map((comp, idx) => (
+                                    <tr key={comp.key || idx}>
+                                        <td>
+                                            <span style={{ fontWeight: 600 }}>{comp.name}</span>
+                                            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{comp.key}</div>
+                                        </td>
+                                        <td>
+                                            <span className={`badge ${comp.type === 'addition' ? 'badge-success' : 'badge-warning'}`}>
+                                                {comp.type}
+                                            </span>
+                                        </td>
+                                        <td>
+                                            {comp.key === 'GROSS' ? (
+                                                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Computed (Sum)</span>
+                                            ) : (
+                                                <input
+                                                    type="number"
+                                                    step="0.01"
+                                                    min="0"
+                                                    max="100"
+                                                    className="form-input"
+                                                    value={comp.percentage ?? ''}
+                                                    onChange={e => updateFormulaComponent(idx, 'percentage', parseFloat(e.target.value) || 0)}
+                                                    style={{ width: '100%', padding: '6px 10px' }}
+                                                />
+                                            )}
+                                        </td>
+                                        <td>
+                                            <input
+                                                type="text"
+                                                className="form-input"
+                                                value={comp.formula || ''}
+                                                disabled={comp.key === 'GROSS'}
+                                                onChange={e => updateFormulaComponent(idx, 'formula', e.target.value)}
+                                                style={{ width: '100%', padding: '6px 10px', fontFamily: 'monospace', fontSize: '0.82rem' }}
+                                            />
+                                        </td>
+                                        <td style={{ textAlign: 'center' }}>
+                                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Core</span>
+                                        </td>
+                                    </tr>
+                                ))}
+
+                                {getCustomColumns().map((col, idx) => (
+                                    <tr key={`custom-${idx}`}>
+                                        <td>
+                                            <input
+                                                type="text"
+                                                placeholder="Column Name"
+                                                className="form-input"
+                                                value={col.name || ''}
+                                                onChange={e => updateCustomColumn(idx, 'name', e.target.value)}
+                                                style={{ width: '100%', padding: '6px 10px', fontWeight: 600 }}
+                                            />
+                                        </td>
+                                        <td>
+                                            <select
+                                                className="form-select"
+                                                value={col.type || 'addition'}
+                                                onChange={e => updateCustomColumn(idx, 'type', e.target.value)}
+                                                style={{ width: '100%', padding: '6px 8px' }}
+                                            >
+                                                <option value="addition">addition</option>
+                                                <option value="deduction">deduction</option>
+                                            </select>
+                                        </td>
+                                        <td>
+                                            <input
+                                                type="number"
+                                                step="0.01"
+                                                min="0"
+                                                max="100"
+                                                className="form-input"
+                                                value={col.percentage ?? ''}
+                                                onChange={e => updateCustomColumn(idx, 'percentage', parseFloat(e.target.value) || 0)}
+                                                style={{ width: '100%', padding: '6px 10px' }}
+                                            />
+                                        </td>
+                                        <td>
+                                            <input
+                                                type="text"
+                                                className="form-input"
+                                                value={col.formula || ''}
+                                                onChange={e => updateCustomColumn(idx, 'formula', e.target.value)}
+                                                style={{ width: '100%', padding: '6px 10px', fontFamily: 'monospace', fontSize: '0.82rem' }}
+                                            />
+                                        </td>
+                                        <td style={{ textAlign: 'center' }}>
+                                            <button
+                                                type="button"
+                                                className="btn btn-outline btn-sm"
+                                                style={{ color: 'var(--accent-red)', borderColor: 'var(--accent-red)', padding: '4px 8px' }}
+                                                onClick={() => removeCustomColumn(idx)}
+                                                title="Delete custom column"
+                                            >
+                                                <FiTrash2 />
+                                            </button>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+                        <button
+                            type="button"
+                            className="btn btn-outline"
+                            onClick={addCustomColumn}
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                        >
+                            <FiPlus /> Add Global Custom Column
+                        </button>
+                    </div>
+
+                    <div style={{ padding: 16, borderRadius: 8, background: 'var(--bg-card)', border: '1px solid var(--border-color)', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                        <div style={{ fontWeight: 700, marginBottom: 6, color: 'var(--text-primary)' }}>Formula Expression Guide</div>
+                        <div style={{ marginBottom: 4 }}>• <b>Variables:</b> <code style={{ color: 'var(--accent-primary)' }}>MONTHLY_CTC</code> (Annual CTC / 12), <code style={{ color: 'var(--accent-primary)' }}>ANNUAL_CTC</code>, <code style={{ color: 'var(--accent-primary)' }}>PCT</code> (row percentage), <code style={{ color: 'var(--accent-primary)' }}>GROSS</code>, or any component key (e.g. <code style={{ color: 'var(--accent-primary)' }}>BASIC</code>, <code style={{ color: 'var(--accent-primary)' }}>HRA</code>).</div>
+                        <div style={{ marginBottom: 4 }}>• <b>Functions:</b> <code style={{ color: 'var(--accent-primary)' }}>MIN(a, b)</code>, <code style={{ color: 'var(--accent-primary)' }}>MAX(a, b)</code>, <code style={{ color: 'var(--accent-primary)' }}>IF(condition, true_val, false_val)</code>.</div>
+                        <div>• <b>Operators:</b> <code style={{ color: 'var(--accent-primary)' }}>+</code>, <code style={{ color: 'var(--accent-primary)' }}>-</code>, <code style={{ color: 'var(--accent-primary)' }}>*</code>, <code style={{ color: 'var(--accent-primary)' }}>/</code>, <code style={{ color: 'var(--accent-primary)' }}>&lt;</code>, <code style={{ color: 'var(--accent-primary)' }}>&lt;=</code>, <code style={{ color: 'var(--accent-primary)' }}>&gt;</code>, <code style={{ color: 'var(--accent-primary)' }}>&gt;=</code>, <code style={{ color: 'var(--accent-primary)' }}>==</code>, <code style={{ color: 'var(--accent-primary)' }}>!=</code>, <code style={{ color: 'var(--accent-primary)' }}>( )</code>.</div>
                     </div>
                 </form>
             )}
-
 
             {activeTab === 'integrations' && (
                 <div style={{ backgroundColor: 'var(--bg-lite)' }}>
