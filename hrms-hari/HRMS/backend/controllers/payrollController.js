@@ -1052,6 +1052,18 @@ const exportPayslipsExcel = async (req, res) => {
 };
 
 // ─── GET /api/payroll/payslip/:id/pdf ─────────────────────────
+const MONTH_NAMES = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+];
+
+const formatPayPeriod = (month, year) => {
+    const mNum = Number(month);
+    return (mNum >= 1 && mNum <= 12)
+        ? `${MONTH_NAMES[mNum - 1]} ${year}`
+        : `${month} / ${year}`;
+};
+
 const exportPayslipPdf = async (req, res) => {
     if (!checkAdminRole(req, res)) return;
     try {
@@ -1066,9 +1078,13 @@ const exportPayslipPdf = async (req, res) => {
 
         const employee = await Employee.findOne({ id: payroll.employee_id }).lean();
         const empName = employee?.name || '';
+        const empDesignation = employee?.designation || '-';
 
-        const setting = await Setting.findOne().select('company_name').lean();
+        const setting = await Setting.findOne().select('company_name company_address company_email company_phone').lean();
         const companyName = setting?.company_name || 'Zograha Technologies';
+        const companyAddress = setting?.company_address ? String(setting.company_address).trim() : '';
+        const companyEmail = setting?.company_email ? String(setting.company_email).trim() : '';
+        const companyPhone = setting?.company_phone ? String(setting.company_phone).trim() : '';
 
         const { gross_salary, total_deductions, net_salary, actual_payable } = computeSalary(payroll);
 
@@ -1095,13 +1111,37 @@ const exportPayslipPdf = async (req, res) => {
         // Header
         if (logoBuffer) {
             doc.image(logoBuffer, 40, 40, { width: 60 });
-            doc.fontSize(18).font('Helvetica-Bold').text(companyName, 115, 50);
-            doc.fontSize(12).font('Helvetica').text('SALARY PAYSLIP', 115, 74);
-            doc.y = 105;
+            doc.fontSize(16).font('Helvetica-Bold').text(companyName, 115, 40, { width: 440 });
+            doc.font('Helvetica').fontSize(8.5);
+            if (companyAddress) {
+                doc.text(companyAddress, 115, doc.y + 2, { width: 440 });
+            }
+            if (companyEmail) {
+                doc.text(`Email: ${companyEmail}`, 115, doc.y + 1, { width: 440 });
+            }
+            if (companyPhone) {
+                doc.text(`Phone: ${companyPhone}`, 115, doc.y + 1, { width: 440 });
+            }
+            doc.moveDown(0.25);
+            doc.fontSize(11).font('Helvetica-Bold').text('SALARY PAYSLIP', 115, doc.y);
+            doc.y = Math.max(105, doc.y + 6);
         } else {
             doc.fontSize(18).font('Helvetica-Bold').text(companyName, { align: 'center' });
-            doc.moveDown(0.25);
-            doc.fontSize(12).font('Helvetica').text('SALARY PAYSLIP', { align: 'center' });
+            doc.font('Helvetica').fontSize(8.5);
+            if (companyAddress) {
+                doc.moveDown(0.2);
+                doc.text(companyAddress, { align: 'center', width: 515 });
+            }
+            if (companyEmail) {
+                doc.moveDown(0.15);
+                doc.text(`Email: ${companyEmail}`, { align: 'center' });
+            }
+            if (companyPhone) {
+                doc.moveDown(0.15);
+                doc.text(`Phone: ${companyPhone}`, { align: 'center' });
+            }
+            doc.moveDown(0.3);
+            doc.fontSize(12).font('Helvetica-Bold').text('SALARY PAYSLIP', { align: 'center' });
             doc.moveDown(0.5);
         }
 
@@ -1114,13 +1154,14 @@ const exportPayslipPdf = async (req, res) => {
         doc.fontSize(10).font('Helvetica-Bold');
         doc.text('Employee ID: ', 40, startY, { continued: true }).font('Helvetica').text(payroll.employee_id);
         doc.font('Helvetica-Bold').text('Employee Name: ', 40, startY + 16, { continued: true }).font('Helvetica').text(empName || '-');
-        doc.font('Helvetica-Bold').text('Days Worked: ', 40, startY + 32, { continued: true }).font('Helvetica').text(String(payroll.days_worked || 0));
+        doc.font('Helvetica-Bold').text('Designation: ', 40, startY + 32, { continued: true }).font('Helvetica').text(empDesignation);
+        doc.font('Helvetica-Bold').text('Days Worked: ', 40, startY + 48, { continued: true }).font('Helvetica').text(String(payroll.days_worked || 0));
 
-        doc.font('Helvetica-Bold').text('Pay Period: ', 320, startY, { continued: true }).font('Helvetica').text(`${payroll.month} / ${payroll.year}`);
+        doc.font('Helvetica-Bold').text('Pay Period: ', 320, startY, { continued: true }).font('Helvetica').text(formatPayPeriod(payroll.month, payroll.year));
         doc.font('Helvetica-Bold').text('Days Convention: ', 320, startY + 16, { continued: true }).font('Helvetica').text(payroll.days_worked_convention || 'payable');
         doc.font('Helvetica-Bold').text('Status: ', 320, startY + 32, { continued: true }).font('Helvetica').text(payroll.status ? payroll.status.toUpperCase() : 'PENDING');
 
-        doc.y = startY + 54;
+        doc.y = startY + 68;
         doc.moveDown(0.5);
         doc.strokeColor('#cccccc').lineWidth(1).moveTo(40, doc.y).lineTo(555, doc.y).stroke();
         doc.moveDown(0.8);
@@ -1229,5 +1270,6 @@ module.exports = {
     consumePendingAdjustmentsForPayroll,
     computeSalary,
     exportPayslipsExcel,
-    exportPayslipPdf
+    exportPayslipPdf,
+    formatPayPeriod
 };

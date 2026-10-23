@@ -10013,6 +10013,113 @@ describe('HRMS Backend Automated Test Suite', () => {
                 readSpy.mockRestore();
             }
         });
+
+        it('35.7: PDF export includes company contact details, designation, and formatted month-year period', async () => {
+            const { formatPayPeriod } = require('../controllers/payrollController');
+            // Unit-level checks for formatPayPeriod helper
+            expect(formatPayPeriod(10, 2026)).toBe('Oct 2026');
+            expect(formatPayPeriod(1, 2025)).toBe('Jan 2025');
+            expect(formatPayPeriod(12, 2026)).toBe('Dec 2026');
+            expect(formatPayPeriod(13, 2026)).toBe('13 / 2026');
+            expect(formatPayPeriod(0, 2026)).toBe('0 / 2026');
+
+            // Backup existing setting
+            const originalSetting = await SettingModel.findOne().lean();
+
+            try {
+                // Seed Setting with company contact details
+                await SettingModel.findOneAndUpdate(
+                    {},
+                    {
+                        company_name: 'Zograha Technologies',
+                        company_email: 'info@zograha.test',
+                        company_phone: '6380599233',
+                        company_address: '123 Tech Park, Chennai'
+                    },
+                    { upsert: true, new: true }
+                );
+
+                // Seed Employee with designation "Accounts Executive"
+                const empWithDesig = await EmployeeModel.create({
+                    id: 'S35_EMP_OCT',
+                    name: 'Test Accounts User',
+                    email: 'accounts_oct@test.com',
+                    password_hash: 'hash123',
+                    role: 'employee',
+                    designation: 'Accounts Executive',
+                    status: 'active',
+                    department_id: s35DeptId
+                });
+
+                // Seed Payroll record for October 2026 (month 10, year 2026)
+                const octPayroll = await PayrollModel.create({
+                    employee_id: empWithDesig.id,
+                    month: 10,
+                    year: 2026,
+                    basic: 35000,
+                    da: 5000,
+                    oa: 2000,
+                    leave_wages: 0,
+                    leave_deduction: 0,
+                    unpaid_leave_days: 0,
+                    unpaid_leave_deduction: 0,
+                    unpaid_leave_adjustment: 0,
+                    other_deductions: 0,
+                    days_worked: 31,
+                    days_worked_convention: 'payable',
+                    status: 'paid'
+                });
+
+                // 1. Request with contact details present
+                const resWithContacts = await request(app)
+                    .get(`/api/payroll/payslip/${octPayroll._id}/pdf`)
+                    .set('Authorization', `Bearer ${s35AdminToken}`)
+                    .buffer(true)
+                    .parse((r, cb) => {
+                        const data = [];
+                        r.on('data', chunk => data.push(chunk));
+                        r.on('end', () => cb(null, Buffer.concat(data)));
+                    });
+
+                expect(resWithContacts.status).toBe(200);
+                expect(resWithContacts.headers['content-type']).toContain('application/pdf');
+                expect(resWithContacts.headers['content-disposition']).toContain('attachment; filename="payslip-S35_EMP_OCT-2026-10.pdf"');
+                expect(Buffer.isBuffer(resWithContacts.body)).toBe(true);
+                expect(resWithContacts.body.slice(0, 4).toString()).toBe('%PDF');
+
+                // 2. Request with no contact details
+                await SettingModel.findOneAndUpdate(
+                    {},
+                    {
+                        company_name: 'Zograha Technologies',
+                        company_email: '',
+                        company_phone: '',
+                        company_address: ''
+                    }
+                );
+
+                const resNoContacts = await request(app)
+                    .get(`/api/payroll/payslip/${octPayroll._id}/pdf`)
+                    .set('Authorization', `Bearer ${s35AdminToken}`)
+                    .buffer(true)
+                    .parse((r, cb) => {
+                        const data = [];
+                        r.on('data', chunk => data.push(chunk));
+                        r.on('end', () => cb(null, Buffer.concat(data)));
+                    });
+
+                expect(resNoContacts.status).toBe(200);
+                expect(resNoContacts.headers['content-type']).toContain('application/pdf');
+                expect(resNoContacts.body.slice(0, 4).toString()).toBe('%PDF');
+            } finally {
+                // Clean up seeded records and restore Setting
+                await EmployeeModel.deleteMany({ id: 'S35_EMP_OCT' });
+                await PayrollModel.deleteMany({ employee_id: 'S35_EMP_OCT' });
+                if (originalSetting) {
+                    await SettingModel.findOneAndUpdate({}, originalSetting, { overwrite: true });
+                }
+            }
+        });
     });
 
     describe('36. Formula-Based Salary Calculation & Custom Columns', () => {
