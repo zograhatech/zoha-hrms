@@ -67,9 +67,10 @@ try {
     console.warn('⚠️ Cron jobs failed to initialize (non-fatal):', e.message);
 }
 
-// ── Middleware: CORS ──────────────────────────────────
+// ── Middleware: CORS (MUST BE FIRST) ──────────────────
 const { corsOptions } = require('./config/cors');
 app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
 // ── Diagnostic Health Check (MUST BE FIRST) ──────────────────
 app.get(['/', '/health', '/api/health'], (req, res) => {
@@ -124,8 +125,8 @@ const initializeApp = async () => {
 };
 
 app.use(async (req, res, next) => {
-    // Skip for health check and root endpoints
-    if (req.path === '/api/health' || req.path === '/health' || req.path === '/') return next();
+    // Skip for OPTIONS preflight, health check, and root endpoints
+    if (req.method === 'OPTIONS' || req.path === '/api/health' || req.path === '/health' || req.path === '/') return next();
 
     try {
         await initializeApp();

@@ -1,7 +1,12 @@
 import axios from 'axios';
 
+// Base URL configuration: reads from VITE_API_BASE_URL env var, defaulting to production backend fallback
+const rawApiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'https://zoha-hrms.vercel.app';
+const sanitizedBaseUrl = String(rawApiBaseUrl).trim().replace(/\/+$/, '');
+const apiBaseUrl = sanitizedBaseUrl.endsWith('/api') ? sanitizedBaseUrl : `${sanitizedBaseUrl}/api`;
+
 const API = axios.create({
-    baseURL: import.meta.env.VITE_API_BASE_URL ? `${import.meta.env.VITE_API_BASE_URL}/api` : '/api',
+    baseURL: apiBaseUrl,
     headers: { 'Content-Type': 'application/json' },
 });
 
