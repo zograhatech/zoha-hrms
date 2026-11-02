@@ -13,6 +13,7 @@ const employeeSchema = new mongoose.Schema({
     manager_id: { type: String, ref: 'Employee', default: null },
     team_lead_id: { type: String, ref: 'Employee', default: null },
     phone: { type: String, trim: true },
+    branch: { type: String, trim: true, default: '' },
     designation: { type: String, trim: true },
     qualification: { type: String, trim: true },
     experience_type: { type: String, enum: ['fresher', 'experienced', ''] },

@@ -431,14 +431,36 @@ const updateEmployee = async (req, res) => {
         }
 
         let updateFields = {};
+        let isIdChanged = false;
+        let oldEmpId = targetEmp.id;
+        let newEmpId = targetEmp.id;
+
         if (canManage) {
             // Full update allowed for admins/managers
             const {
-                name, phone, designation, department_id, date_of_joining,
+                id: reqId, branch, name, phone, designation, department_id, date_of_joining,
                 date_of_birth, gender, address, status, role, shift_id,
-                manager_id, pan, uan, pf_account_no, salary_details, password,
+                manager_id, team_lead_id, pan, uan, pf_account_no, qualification,
+                experience_type, experience_years, salary_details, password,
                 permissions
             } = req.body;
+
+            // Employee ID update: Super Admin only + duplicate validation
+            if (reqId !== undefined && String(reqId).trim().toUpperCase() !== targetEmp.id) {
+                if (normalizedUserRole !== 'admin') {
+                    return res.status(403).json({ success: false, message: 'Forbidden. Only Super Admins can change Employee ID.' });
+                }
+                newEmpId = String(reqId).trim().toUpperCase();
+                if (!newEmpId) {
+                    return res.status(400).json({ success: false, message: 'Employee ID cannot be empty.' });
+                }
+                const duplicateEmp = await Employee.findOne({ id: newEmpId, _id: { $ne: targetEmp._id } });
+                if (duplicateEmp) {
+                    return res.status(409).json({ success: false, message: `Employee ID "${newEmpId}" is already in use by ${duplicateEmp.name}.` });
+                }
+                updateFields.id = newEmpId;
+                isIdChanged = true;
+            }
 
             // Security: Only high-level managers can set Individual Module Access overrides
             const isManagerRole = ['admin', 'manager', 'hrmanager', 'hrmanger', 'hr_manager', 'hr_manger'].includes(roleClean);
@@ -497,14 +519,20 @@ const updateEmployee = async (req, res) => {
             }
 
             updateFields = {
+                ...updateFields,
                 name, phone,
+                branch: branch !== undefined ? String(branch).trim() : undefined,
                 designation: designation !== undefined ? designation : undefined,
                 department_id: resolvedDeptId,
                 shift_id: shift_id !== undefined ? (shift_id || null) : undefined,
                 manager_id: manager_id !== undefined ? (manager_id || null) : undefined,
+                team_lead_id: team_lead_id !== undefined ? (team_lead_id || null) : undefined,
                 role: role !== undefined ? String(role).toLowerCase().trim() : undefined,
                 status, gender, address,
                 pan, uan, pf_account_no,
+                qualification: qualification !== undefined ? String(qualification).trim() : undefined,
+                experience_type: experience_type !== undefined ? experience_type : undefined,
+                experience_years: experience_years !== undefined ? String(experience_years).trim() : undefined,
                 date_of_joining: date_of_joining || undefined,
                 date_of_birth: date_of_birth || undefined,
                 salary_details: salary_details || undefined,
@@ -535,10 +563,10 @@ const updateEmployee = async (req, res) => {
             updateFields.profile_image = `data:${req.file.mimetype};base64,${b64}`;
         }
 
-        // Track diff for audit log
+        // Track diff for audit log and notifications
         const oldChanges = {};
         const newChanges = {};
-        const monitoredKeys = ['role', 'department_id', 'designation', 'status', 'shift_id', 'manager_id', 'name', 'phone'];
+        const monitoredKeys = ['id', 'branch', 'role', 'department_id', 'designation', 'status', 'shift_id', 'manager_id', 'team_lead_id', 'name', 'phone', 'address', 'gender', 'pan', 'uan', 'pf_account_no', 'qualification'];
         for (const k of monitoredKeys) {
             if (updateFields[k] !== undefined && String(targetEmp[k] || '') !== String(updateFields[k] || '')) {
                 oldChanges[k] = targetEmp[k];
@@ -577,87 +605,87 @@ const updateEmployee = async (req, res) => {
             }
         }
 
-        // Notifications to affected employee
-        // 1. Role updated
-        if (targetEmp.role !== emp.role) {
+        // Cascade Employee ID reference updates across dependent models if changed
+        if (isIdChanged) {
+            try {
+                const Attendance = require('../models/Attendance');
+                const Leave = require('../models/Leave');
+                const Payroll = require('../models/Payroll');
+                const Ticket = require('../models/Ticket');
+
+                await Promise.allSettled([
+                    Employee.updateMany({ manager_id: oldEmpId }, { manager_id: newEmpId }),
+                    Employee.updateMany({ team_lead_id: oldEmpId }, { team_lead_id: newEmpId }),
+                    Attendance.updateMany({ employee_id: oldEmpId }, { employee_id: newEmpId }),
+                    Leave.updateMany({ employee_id: oldEmpId }, { employee_id: newEmpId }),
+                    Payroll.updateMany({ employee_id: oldEmpId }, { employee_id: newEmpId }),
+                    Ticket.updateMany({ employee_id: oldEmpId }, { employee_id: newEmpId })
+                ]);
+            } catch (cascadeErr) {
+                console.error('[updateEmployee] Cascade reference update error:', cascadeErr.message);
+            }
+        }
+
+        // Comprehensive diff computation and notification (excluding sensitive salary/bank info)
+        const labelMap = {
+            id: 'Employee ID',
+            branch: 'Branch',
+            name: 'Name',
+            phone: 'Phone',
+            designation: 'Designation',
+            role: 'Role',
+            status: 'Status',
+            department_id: 'Department',
+            shift_id: 'Shift',
+            manager_id: 'Reporting Manager',
+            team_lead_id: 'Team Lead',
+            address: 'Address',
+            gender: 'Gender',
+            pan: 'PAN',
+            uan: 'UAN',
+            pf_account_no: 'PF Account No',
+            qualification: 'Qualification'
+        };
+
+        const diffItems = [];
+        for (const [key, newVal] of Object.entries(newChanges)) {
+            const oldVal = oldChanges[key] || 'None';
+            const label = labelMap[key] || key;
+            diffItems.push(`${label}: ${oldVal} -> ${newVal}`);
+        }
+
+        // Send consolidated notification to affected employee if changes were made by someone else
+        if (diffItems.length > 0 && targetEmp._id.toString() !== senderId?.toString()) {
             try {
                 await Notification.create({
                     recipient: emp._id,
                     sender: senderId,
                     type: 'admin_update',
-                    title: 'Role Updated',
-                    message: `Your role has been changed from ${targetEmp.role} to ${emp.role} by ${adminName}.`,
-                    data: { field: 'role', oldValue: targetEmp.role, newValue: emp.role, status: emp.role }
+                    title: 'Profile Updated by Administrator',
+                    message: `${adminName} updated your profile: ${diffItems.join('; ')}`,
+                    data: { changes: newChanges }
                 });
             } catch (notifErr) {
-                console.error('[updateEmployee] Role change notification error:', notifErr.message);
+                console.error('[updateEmployee] Notification error:', notifErr.message);
             }
         }
 
-        // 2. Department updated
-        const storedDeptId = targetEmp.department_id ? String(targetEmp.department_id) : '';
-        const incomingDeptId = emp.department_id ? String(emp.department_id) : '';
-
-        if (storedDeptId !== incomingDeptId) {
+        // Notify reporting manager if manager was changed
+        if (targetEmp.manager_id !== emp.manager_id && emp.manager_id) {
             try {
-                let oldDeptName = 'Unassigned';
-                let newDeptName = 'Unassigned';
-
-                if (storedDeptId) {
-                    const oldDept = mongoose.Types.ObjectId.isValid(storedDeptId)
-                        ? await Department.findById(storedDeptId).select('name').lean()
-                        : await Department.findOne({ name: storedDeptId }).select('name').lean();
-                    if (oldDept?.name) oldDeptName = oldDept.name;
+                const mgr = await Employee.findOne({ id: emp.manager_id });
+                if (mgr && mgr._id.toString() !== senderId?.toString()) {
+                    await Notification.create({
+                        recipient: mgr._id,
+                        sender: senderId,
+                        type: 'admin_update',
+                        title: 'Team Member Assigned',
+                        message: `${emp.name} (${emp.id}) has been assigned to you as a reportee by ${adminName}.`,
+                        data: { employee_id: emp.id }
+                    });
                 }
-                if (incomingDeptId) {
-                    const newDept = mongoose.Types.ObjectId.isValid(incomingDeptId)
-                        ? await Department.findById(incomingDeptId).select('name').lean()
-                        : await Department.findOne({ name: incomingDeptId }).select('name').lean();
-                    if (newDept?.name) newDeptName = newDept.name;
-                }
-
-                await Notification.create({
-                    recipient: emp._id,
-                    sender: senderId,
-                    type: 'admin_update',
-                    title: 'Department Updated',
-                    message: `Your department was changed from ${oldDeptName} to ${newDeptName} by ${adminName}.`,
-                    data: { field: 'department', oldValue: oldDeptName, newValue: newDeptName, status: 'updated' }
-                });
-            } catch (notifErr) {
-                console.error('[updateEmployee] Department change notification error:', notifErr.message);
-            }
-        }
-
-        // 3. Designation updated
-        if (targetEmp.designation !== emp.designation && emp.designation !== undefined) {
-            try {
-                await Notification.create({
-                    recipient: emp._id,
-                    sender: senderId,
-                    type: 'admin_update',
-                    title: 'Designation Updated',
-                    message: `Your designation was changed from "${targetEmp.designation || 'None'}" to "${emp.designation || 'None'}" by ${adminName}.`,
-                    data: { field: 'designation', oldValue: targetEmp.designation || '', newValue: emp.designation || '', status: 'updated' }
-                });
-            } catch (notifErr) {
-                console.error('[updateEmployee] Designation change notification error:', notifErr.message);
-            }
-        }
-
-        // 4. Status updated (e.g. active / inactive)
-        if (targetEmp.status !== emp.status && emp.status !== undefined) {
-            try {
-                await Notification.create({
-                    recipient: emp._id,
-                    sender: senderId,
-                    type: 'admin_update',
-                    title: 'Status Updated',
-                    message: `Your account status was changed from "${targetEmp.status}" to "${emp.status}" by ${adminName}.`,
-                    data: { field: 'status', oldValue: targetEmp.status, newValue: emp.status, status: emp.status }
-                });
-            } catch (notifErr) {
-                console.error('[updateEmployee] Status change notification error:', notifErr.message);
+            } catch (mgrNotifErr) {
+                console.error('[updateEmployee] Manager assignment notification error:', mgrNotifErr.message);
             }
         }
 

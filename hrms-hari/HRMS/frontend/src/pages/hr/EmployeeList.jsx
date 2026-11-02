@@ -40,7 +40,7 @@ export default function EmployeeList() {
     const [showForm, setShowForm] = useState(false);
     const [form, setForm] = useState({
         id: '', name: '', email: '', password: '', role: 'employee',
-        department_id: '', shift_id: '', manager_id: '', phone: '', designation: '',
+        department_id: '', shift_id: '', manager_id: '', branch: '', phone: '', designation: '',
         date_of_joining: '', date_of_birth: '', gender: 'male', address: '', status: 'active', pan: '', uan: '', pf_account_no: '',
         salary_details: {
             basic: 0, da: 0, oa: 0, leave_wages: 0, esi_wages: 0, epf_wages: 0,
@@ -215,6 +215,7 @@ export default function EmployeeList() {
             email: emp.email,
             password: '', // Don't show password hash
             role: emp.role || 'employee',
+            branch: emp.branch || '',
             department_id: (typeof emp.department_id === 'object' && emp.department_id?._id) ? emp.department_id._id : (emp.department_id || ''),
             shift_id: (typeof emp.shift_id === 'object' && emp.shift_id?._id) ? emp.shift_id._id : (emp.shift_id || ''),
             manager_id: emp.manager_id || '',
@@ -571,6 +572,10 @@ export default function EmployeeList() {
                                     <div className="form-group">
                                         <label className="form-label">Designation</label>
                                         <input className="form-input" placeholder="Job Title" value={form.designation} onChange={e => setForm({ ...form, designation: e.target.value })} />
+                                    </div>
+                                    <div className="form-group">
+                                        <label className="form-label">Branch / Location</label>
+                                        <input className="form-input" placeholder="e.g. Chennai, Madurai" value={form.branch} onChange={e => setForm({ ...form, branch: e.target.value })} />
                                     </div>
                                     <DateInput
                                         label="Joining Date"
