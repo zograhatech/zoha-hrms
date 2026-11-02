@@ -185,6 +185,9 @@ export default function EmployeeList() {
             if (editingEmployee) {
                 const { data } = await API.put(`/employees/${editingEmployee.id}`, payload);
                 showToast(data.message, 'success');
+                if (editingEmployee && (editingEmployee.id === user?.id || editingEmployee._id === user?._id)) {
+                    refreshUser();
+                }
             } else {
                 const { data } = await API.post('/employees', payload);
                 showToast(data.message, 'success');

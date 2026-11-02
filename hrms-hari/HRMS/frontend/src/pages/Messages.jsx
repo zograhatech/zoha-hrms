@@ -264,6 +264,35 @@ export default function Messages() {
         };
     }, [activeConv, isMyMessage, triggerMarkSeen]);
 
+    // Socket listener for real-time updates when Socket.io is available
+    useEffect(() => {
+        if (!socket || !activeConv) return;
+        const handleReceive = (msg) => {
+            const msgConvId = msg.conversationId?._id || msg.conversationId;
+            if (msgConvId === activeConv._id) {
+                setMessages(prev => {
+                    const existing = prev.find(m => (m.clientMessageId && m.clientMessageId === msg.clientMessageId) || m._id === msg._id);
+                    return existing ? prev : [...prev, msg];
+                });
+                if (document.visibilityState === 'visible') {
+                    triggerMarkSeen(activeConv._id);
+                    scrollToBottom('smooth');
+                }
+            }
+        };
+        const handleSeen = ({ conversationId }) => {
+            if (conversationId === activeConv._id) {
+                setMessages(prev => prev.map(m => isMyMessage(m) ? { ...m, status: 'seen' } : m));
+            }
+        };
+        socket.on('receive_message', handleReceive);
+        socket.on('messages_seen', handleSeen);
+        return () => {
+            socket.off('receive_message', handleReceive);
+            socket.off('messages_seen', handleSeen);
+        };
+    }, [socket, activeConv, isMyMessage, triggerMarkSeen]);
+
     // Click outside menu closer
     useEffect(() => {
         const handleClickOutside = () => setMenuConvId(null);
