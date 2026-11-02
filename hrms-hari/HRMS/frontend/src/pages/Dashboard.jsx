@@ -2,6 +2,7 @@ import { useState, lazy, Suspense, useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import Sidebar from '../components/Sidebar';
 import Navbar from '../components/Navbar';
+import FloatingChatButton from '../components/FloatingChatButton';
 import ChatWidget from '../components/ChatWidget';
 import FunChatbot from '../components/FunChatbot';
 import AnnouncementBanner from '../components/AnnouncementBanner';
@@ -162,6 +163,7 @@ export default function Dashboard() {
 
             </main>
             {(isManagerRole(role) || user?.permissions?.includes('fun')) && <FunChatbot />}
+            <FloatingChatButton />
             <ChatWidget />
         </div>
     );

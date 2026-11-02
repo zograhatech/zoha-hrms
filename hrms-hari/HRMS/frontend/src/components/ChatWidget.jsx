@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { useLocation } from "react-router-dom";
 import API from "../api/axios";
 import { v4 as uuidv4 } from "uuid";
 import { useBranding } from "../context/BrandingContext";
@@ -52,6 +53,8 @@ How can I assist you today?`,
 export default function ChatWidget() {
   const { branding } = useBranding();
   const { user } = useAuth();
+  const location = useLocation();
+  const isChatPage = location.pathname.includes('/dashboard/messages');
 
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState([]);
@@ -72,6 +75,14 @@ export default function ChatWidget() {
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [hasDragged, setHasDragged] = useState(false);
+
+  useEffect(() => {
+    if (isChatPage && !hasDragged) {
+      setPosition({ x: window.innerWidth - 80, y: Math.max(20, window.innerHeight - 160) });
+    } else if (!isChatPage && !hasDragged) {
+      setPosition({ x: window.innerWidth - 80, y: Math.max(20, window.innerHeight - 80) });
+    }
+  }, [isChatPage, hasDragged]);
 
   // Keep the chat bubble inside the screen when resized
   useEffect(() => {
