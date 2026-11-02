@@ -4,13 +4,14 @@ import { useAuth } from '../../context/AuthContext';
 import {
     FiUser, FiHash, FiMail, FiPhone,
     FiBriefcase, FiCalendar, FiGift, FiHome,
-    FiCheckCircle, FiShield, FiClipboard, FiEdit2, FiSave, FiX, FiLogOut, FiAlertCircle, FiRefreshCw, FiFileText
+    FiCheckCircle, FiShield, FiClipboard, FiEdit2, FiSave, FiX, FiLogOut, FiAlertCircle, FiRefreshCw, FiFileText, FiBell
 } from 'react-icons/fi';
 import { useToast } from '../../context/ToastContext';
 import ResignationModal from '../../components/ResignationModal';
 import { formatDate } from '../../utils/dateFormatter';
 import { isManagerRole, getRoleDisplayLabel } from '../../utils/roleHelper';
 import DocumentManager from '../../components/DocumentManager';
+import { getNotificationPreferences, saveNotificationPreferences } from '../../utils/chatNotificationHelper';
 
 export default function Profile() {
     const { user, refreshUser } = useAuth();
@@ -28,6 +29,14 @@ export default function Profile() {
     const [resignation, setResignation] = useState(null);
     const [showResignationModal, setShowResignationModal] = useState(false);
     const [showDocManager, setShowDocManager] = useState(false);
+    const [notifPrefs, setNotifPrefs] = useState(() => getNotificationPreferences());
+
+    const handleTogglePref = (key, val) => {
+        const next = { ...notifPrefs, [key]: val };
+        setNotifPrefs(next);
+        saveNotificationPreferences(next);
+        showToast('Notification preference saved', 'success');
+    };
 
     const fetchProfileData = () => {
         if (!user?.id) return;
@@ -303,6 +312,35 @@ export default function Profile() {
                                     </span>
                                 </div>
                             ))}
+                        </div>
+                    </div>
+
+                    <div className="card">
+                        <h3 style={{ marginBottom: 16, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <FiBell className="text-primary" /> Notification Preferences
+                        </h3>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <div>
+                                    <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>In-App Notifications</div>
+                                    <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Show toasts and unread badges for new chat messages</div>
+                                </div>
+                                <input type="checkbox" checked={notifPrefs.inApp} onChange={e => handleTogglePref('inApp', e.target.checked)} style={{ width: 18, height: 18, cursor: 'pointer', accentColor: 'var(--accent-primary)' }} />
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <div>
+                                    <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>Desktop Alerts</div>
+                                    <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Display system alerts when tab is in background</div>
+                                </div>
+                                <input type="checkbox" checked={notifPrefs.desktop} onChange={e => handleTogglePref('desktop', e.target.checked)} style={{ width: 18, height: 18, cursor: 'pointer', accentColor: 'var(--accent-primary)' }} />
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <div>
+                                    <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>Sound Effects</div>
+                                    <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Play an audio chime on incoming messages</div>
+                                </div>
+                                <input type="checkbox" checked={notifPrefs.sound} onChange={e => handleTogglePref('sound', e.target.checked)} style={{ width: 18, height: 18, cursor: 'pointer', accentColor: 'var(--accent-primary)' }} />
+                            </div>
                         </div>
                     </div>
                 </div>

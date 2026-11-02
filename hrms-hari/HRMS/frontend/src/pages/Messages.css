@@ -756,4 +756,187 @@
     .msgr-back-btn {
         display: none;
     }
-}
+}
+
+
+/* ════════════════════════════════════════════════════════════
+   WhatsApp-Style Chat UI & Status Enhancements
+   ════════════════════════════════════════════════════════════ */
+
+.msgr-date-separator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 18px 0 12px;
+    width: 100%;
+}
+
+.msgr-date-separator span {
+    background: var(--bg-primary);
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 4px 12px;
+    border-radius: 12px;
+    border: 1px solid var(--border-color);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.msgr-msg-wrapper {
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 8px;
+    width: 100%;
+    transition: margin 0.15s ease;
+}
+
+.msgr-msg-wrapper.msgr-grouped {
+    margin-bottom: 2px;
+}
+
+.msgr-msg-wrapper.msgr-sent {
+    align-items: flex-end;
+}
+
+.msgr-msg-wrapper.msgr-received {
+    align-items: flex-start;
+}
+
+.msgr-msg-bubble {
+    max-width: 72%;
+    padding: 10px 14px 6px 14px;
+    font-size: 0.92rem;
+    line-height: 1.5;
+    position: relative;
+    word-break: break-word;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.msgr-msg-wrapper.msgr-sent .msgr-msg-bubble {
+    background: var(--gradient-primary, linear-gradient(135deg, #6366f1 0%, #4f46e5 100%));
+    color: #ffffff;
+    border-radius: 18px 18px 4px 18px;
+    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.22);
+}
+
+.msgr-msg-wrapper.msgr-received .msgr-msg-bubble {
+    background: var(--bg-card, #ffffff);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 18px 18px 18px 4px;
+}
+
+.msgr-msg-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 4px;
+    font-size: 0.68rem;
+    margin-top: 4px;
+    float: right;
+    margin-left: 10px;
+    user-select: none;
+}
+
+.msgr-msg-wrapper.msgr-sent .msgr-msg-footer {
+    color: rgba(255, 255, 255, 0.75);
+}
+
+.msgr-msg-wrapper.msgr-received .msgr-msg-footer {
+    color: var(--text-muted);
+}
+
+.msgr-status-ticks {
+    display: inline-flex;
+    align-items: center;
+}
+
+.msgr-latest-status-label {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    margin-top: 2px;
+    margin-right: 6px;
+    align-self: flex-end;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.msgr-jump-bottom {
+    position: absolute;
+    bottom: 86px;
+    right: 28px;
+    background: var(--bg-card, #ffffff);
+    color: var(--accent-primary, #6366f1);
+    border: 1px solid var(--border-color);
+    border-radius: 20px;
+    padding: 6px 14px;
+    font-size: 0.8rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+    cursor: pointer;
+    z-index: 20;
+    transition: var(--transition);
+}
+
+.msgr-jump-bottom:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+
+.msgr-conv-item.unread .msgr-conv-name {
+    font-weight: 800;
+}
+
+.msgr-conv-item.unread .msgr-conv-last-msg {
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.msgr-unread-pill {
+    background: #ef4444;
+    color: #ffffff;
+    font-size: 0.7rem;
+    font-weight: 800;
+    padding: 2px 7px;
+    border-radius: 10px;
+    margin-left: 8px;
+    flex-shrink: 0;
+}
+
+.msgr-input-area {
+    padding-right: 90px !important;
+}
+
+.msgr-retry-btn {
+    background: none;
+    border: none;
+    color: #ef4444;
+    cursor: pointer;
+    font-size: 0.72rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    margin-left: 4px;
+    font-weight: 600;
+}
+
+.msgr-retry-btn:hover {
+    text-decoration: underline;
+}
+
+.msgr-perm-banner {
+    background: rgba(99, 102, 241, 0.08);
+    border-bottom: 1px solid rgba(99, 102, 241, 0.2);
+    padding: 8px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 0.82rem;
+    color: var(--text-primary);
+}

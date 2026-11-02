@@ -3,15 +3,15 @@ import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import {
     FiSun, FiMoon, FiSunrise, FiCloud,
-    FiShield, FiUserCheck, FiUser, FiBriefcase, FiMenu, FiBell, FiMail, FiCheckCircle, FiVideo
+    FiShield, FiUserCheck, FiUser, FiBriefcase, FiMenu, FiBell, FiMail, FiCheckCircle, FiVideo, FiMessageSquare
 } from 'react-icons/fi';
 import API from '../api/axios';
 import { useState, useEffect, useCallback } from 'react';
 import { useSocket } from '../context/SocketContext';
 import { formatDate } from '../utils/dateFormatter';
 import { isManagerRole, getRoleDisplayLabel, isSuperAdmin } from '../utils/roleHelper';
-
 import { checkPushSupport, subscribeToPushNotifications, getExistingSubscription } from '../utils/pushHelper';
+import { updateDocumentTitleUnread } from '../utils/chatNotificationHelper';
 
 export default function Navbar({ onToggleSidebar }) {
     const { user } = useAuth();
@@ -28,25 +28,14 @@ export default function Navbar({ onToggleSidebar }) {
     const [pushStatus, setPushStatus] = useState(null); // 'subscribed', 'denied', or null
     const pushSupport = checkPushSupport();
 
-    // Check existing browser push subscription on page load
+    // Check existing push subscription status on mount
     useEffect(() => {
-        const initPushStatus = async () => {
-            if (!pushSupport.supported) return;
-            try {
-                if (typeof Notification !== 'undefined' && Notification.permission === 'denied') {
-                    setPushStatus('denied');
-                    return;
-                }
-                const existing = await getExistingSubscription();
-                if (existing) {
-                    setPushStatus('subscribed');
-                }
-            } catch (err) {
-                console.error('Error checking existing push subscription:', err);
-            }
-        };
-        initPushStatus();
-    }, [pushSupport.supported]);
+        let mounted = true;
+        getExistingSubscription().then(sub => {
+            if (mounted) setPushStatus(sub ? 'subscribed' : null);
+        }).catch(() => {});
+        return () => { mounted = false; };
+    }, []);
 
     const socket = useSocket();
 
@@ -65,28 +54,39 @@ export default function Navbar({ onToggleSidebar }) {
         try {
             const res = await API.get('/notifications');
             if (res.data.success) {
-                setNotifications(res.data.notifications);
-                setUnreadCount(res.data.notifications.filter(n => !n.is_read).length);
+                setNotifications(res.data.notifications || []);
+                const unread = (res.data.notifications || []).filter(n => !n.is_read).length;
+                setUnreadCount(unread);
+                updateDocumentTitleUnread(unread);
             }
         } catch (error) {
             console.error('Error fetching notifications:', error);
-            if (error.response?.status === 401) {
-                // Token invalid/expired
-            }
         }
     }, []);
 
     useEffect(() => {
         fetchNotifications();
         
+        // Adaptive 15s polling for notifications (critical for Vercel where socket is disabled)
+        const pollInterval = setInterval(() => {
+            if (document.visibilityState === 'visible') {
+                fetchNotifications();
+            }
+        }, 15000);
+
         if (socket) {
             socket.on('notification', (notif) => {
                 setNotifications(prev => [notif, ...prev]);
-                setUnreadCount(prev => prev + 1);
+                setUnreadCount(prev => {
+                    const next = prev + 1;
+                    updateDocumentTitleUnread(next);
+                    return next;
+                });
             });
         }
 
         return () => {
+            clearInterval(pollInterval);
             if (socket) socket.off('notification');
         };
     }, [socket, fetchNotifications]);
@@ -105,8 +105,26 @@ export default function Navbar({ onToggleSidebar }) {
             await API.delete('/notifications/clear');
             setNotifications([]);
             setUnreadCount(0);
+            updateDocumentTitleUnread(0);
         } catch (error) {
             console.error('Error clearing:', error);
+        }
+    };
+
+    const handleNotificationClick = (n) => {
+        markAsRead(n._id);
+        setShowNotifs(false);
+
+        if (n.type === 'chat') {
+            navigate('/dashboard/messages');
+        } else if (n.type === 'admin_update') {
+            navigate('/dashboard/profile');
+        } else if (n.data?.link) {
+            if (n.data.link.startsWith('http')) {
+                window.open(n.data.link, '_blank');
+            } else {
+                navigate(n.data.link);
+            }
         }
     };
 
@@ -178,6 +196,7 @@ export default function Navbar({ onToggleSidebar }) {
                             position: 'relative'
                         }}
                         className="notif-btn"
+                        aria-label="Notifications"
                     >
                         <FiBell className={unreadCount > 0 ? 'pulse-indigo' : ''} />
                         {unreadCount > 0 && (
@@ -185,7 +204,7 @@ export default function Navbar({ onToggleSidebar }) {
                                 position: 'absolute',
                                 top: -4,
                                 right: -4,
-                                background: 'var(--accent-red)',
+                                background: 'var(--accent-red, #ef4444)',
                                 color: 'white',
                                 fontSize: '10px',
                                 fontWeight: 800,
@@ -194,7 +213,7 @@ export default function Navbar({ onToggleSidebar }) {
                                 border: '2px solid var(--bg-card)',
                                 boxShadow: '0 0 10px rgba(244,63,94,0.4)'
                             }}>
-                                {unreadCount}
+                                {unreadCount > 99 ? '99+' : unreadCount}
                             </span>
                         )}
                     </button>
@@ -233,13 +252,18 @@ export default function Navbar({ onToggleSidebar }) {
                                         <div 
                                             key={n._id} 
                                             className={`notif-item ${n.is_read ? 'read' : 'unread'}`}
-                                            onClick={() => {
-                                                markAsRead(n._id);
-                                                if (n.data?.link) window.open(n.data.link, '_blank');
-                                            }}
+                                            onClick={() => handleNotificationClick(n)}
                                         >
                                             <div className="notif-icon">
-                                                {n.type === 'meeting' ? <FiVideo className="text-indigo" /> : <FiMail />}
+                                                {n.type === 'meeting' ? (
+                                                    <FiVideo className="text-indigo" />
+                                                ) : n.type === 'chat' ? (
+                                                    <FiMessageSquare className="text-indigo" />
+                                                ) : n.type === 'admin_update' ? (
+                                                    <FiShield style={{ color: '#eab308' }} />
+                                                ) : (
+                                                    <FiMail />
+                                                )}
                                             </div>
                                             <div className="notif-body">
                                                 <div className="notif-title">{n.title} {!n.is_read && <span className="new-dot"></span>}</div>
