@@ -74,29 +74,18 @@ app.options('*', cors(corsOptions));
 
 // ── Diagnostic Health Check (MUST BE FIRST) ──────────────────
 app.get(['/', '/health', '/api/health'], (req, res) => {
-    const mongoose = require('mongoose');
-    const dbStatus = { 0: 'disconnected', 1: 'connected', 2: 'connecting', 3: 'disconnecting', 4: 'uninitialized' };
-    const hasMongoUri = !!(process.env.MONGODB_URI || process.env.MONGO_URI);
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    const commitSha = process.env.VERCEL_GIT_COMMIT_SHA || '';
+    const commit = commitSha ? commitSha.slice(0, 7) : 'local';
+    const branch = process.env.VERCEL_GIT_COMMIT_REF || 'local';
+    const env = process.env.VERCEL_ENV || process.env.NODE_ENV || 'development';
 
     res.json({
-        success: true,
-        message: `🚀 ${process.env.COMPANY_NAME || 'HRMS'} API is running!`,
-        timestamp: new Date().toISOString(),
-        database: {
-            status: dbStatus[mongoose.connection.readyState] || 'unknown',
-            name: mongoose.connection.name || 'none',
-            readyState: mongoose.connection.readyState,
-            configured: hasMongoUri
-        },
-        environment_audit: {
-            JWT_SECRET: !!process.env.JWT_SECRET,
-            MONGO_URI: hasMongoUri,
-            VAPID_PUBLIC_KEY: !!process.env.VAPID_PUBLIC_KEY,
-            VAPID_PRIVATE_KEY: !!process.env.VAPID_PRIVATE_KEY,
-            ZOOM_ENCRYPTION_KEY: !!process.env.ZOOM_ENCRYPTION_KEY
-        },
-        env: process.env.NODE_ENV || 'development',
-        runtime: process.env.VERCEL ? 'Vercel Serverless' : 'Standard Node'
+        status: 'ok',
+        commit,
+        branch,
+        env,
+        timestamp: new Date().toISOString()
     });
 });
 

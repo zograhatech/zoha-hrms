@@ -6,3 +6,6 @@ node_modules/
 *.log
 dist/
 dist-ssr/
+
+backend/env
+env

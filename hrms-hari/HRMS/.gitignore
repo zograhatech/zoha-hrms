@@ -8,3 +8,6 @@ dist-ssr/
 *.local
 eslint_report.json
 backups/
+
+backend/env
+env

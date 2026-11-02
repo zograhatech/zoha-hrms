@@ -10,6 +10,17 @@ const API = axios.create({
     headers: { 'Content-Type': 'application/json' },
 });
 
+// Startup diagnostic log for preview and dev environments
+if (typeof window !== 'undefined') {
+    const isProdMode = import.meta.env.MODE === 'production';
+    const hostname = window.location.hostname || '';
+    const isProdDomain = hostname === 'zoha-hrms-cwie.vercel.app';
+
+    if (!isProdMode || (hostname.includes('vercel.app') && !isProdDomain)) {
+        console.info(`[HRMS API] Resolved Base URL: ${apiBaseUrl}`);
+    }
+}
+
 // Attach token to every request
 API.interceptors.request.use((config) => {
     const token = localStorage.getItem('hrms_token');
