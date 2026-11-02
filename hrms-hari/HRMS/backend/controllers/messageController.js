@@ -3,6 +3,7 @@ const Message = require('../models/Message');
 const Conversation = require('../models/Conversation');
 const Employee = require('../models/Employee');
 const AuditLog = require('../models/AuditLog');
+const Notification = require('../models/Notification');
 const { uploadFromBuffer } = require('../utils/cloudinary');
 const { normalizeRole } = require('../utils/visibilityHelper');
 const PDFDocument = require('pdfkit');
@@ -31,6 +32,7 @@ const isUserInParticipants = (participants, userId, userObj) => {
 // Get messages for a conversation
 exports.getMessages = async (req, res) => {
     try {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
         const { conversationId } = req.params;
         const conversation = await Conversation.findById(conversationId);
         if (!conversation) {
@@ -64,9 +66,12 @@ exports.getMessages = async (req, res) => {
             query.createdAt = { $gt: new Date(req.query.since) };
         }
 
+        const limit = parseInt(req.query.limit || '100', 10);
+
         const messages = await Message.find(query)
             .populate('sender', 'name id profile_image')
-            .sort({ createdAt: 1 });
+            .sort({ createdAt: 1 })
+            .limit(limit);
 
         res.json({ success: true, messages });
     } catch (err) {
@@ -75,10 +80,14 @@ exports.getMessages = async (req, res) => {
     }
 };
 
-// Send message
+// Send message (Idempotent via clientMessageId)
 exports.sendMessage = async (req, res) => {
     try {
-        const { conversationId, text } = req.body;
+        const { conversationId, text, clientMessageId } = req.body;
+        if (!conversationId) {
+            return res.status(400).json({ success: false, message: 'Conversation ID is required' });
+        }
+
         const conversation = await Conversation.findById(conversationId);
         if (!conversation) {
             return res.status(404).json({ success: false, message: 'Conversation not found' });
@@ -89,6 +98,20 @@ exports.sendMessage = async (req, res) => {
 
         if (!isParticipant) {
             return res.status(403).json({ success: false, message: 'Access denied for this conversation.' });
+        }
+
+        // Idempotency check: if clientMessageId already exists for this conversation, return it
+        if (clientMessageId) {
+            const existing = await Message.findOne({ conversationId, clientMessageId })
+                .populate('sender', 'name id profile_image');
+            if (existing) {
+                return res.json({ success: true, message: existing, duplicate: true });
+            }
+        }
+
+        const cleanText = typeof text === 'string' ? text.trim() : '';
+        if (!cleanText && !req.file) {
+            return res.status(400).json({ success: false, message: 'Message content or attachment is required.' });
         }
 
         const senderId = userId;
@@ -119,25 +142,27 @@ exports.sendMessage = async (req, res) => {
             }
 
             try {
-                // Upload via buffer stream
                 const result = await uploadFromBuffer(req.file.buffer, 'chat_attachments', resourceType, fileName);
                 fileUrl = result.secure_url;
             } catch (uploadError) {
-                console.error('Cloudinary: Upload Failed!', uploadError);
-                // Fallback to local URL if Cloudinary is unconfigured in test
+                console.error('Cloudinary: Upload Failed, using fallback', uploadError);
                 fileUrl = `/uploads/test_${Date.now()}_${fileName}`;
             }
         }
 
         const message = await Message.create({
             conversationId,
+            clientMessageId: clientMessageId || null,
             sender: senderId,
-            text,
+            text: cleanText,
             fileUrl,
             fileName,
             fileSize,
             fileType: calculatedFileType,
-            mimeType
+            mimeType,
+            status: 'sent',
+            deliveredTo: [],
+            seenBy: []
         });
 
         // Update conversation with last message link
@@ -146,9 +171,180 @@ exports.sendMessage = async (req, res) => {
             updatedAt: new Date()
         });
 
-        res.json({ success: true, message });
+        const populatedMessage = await Message.findById(message._id)
+            .populate('sender', 'name id profile_image');
+
+        // Create or update in-app notifications for other participants
+        const senderEmp = await Employee.findById(senderId).select('name id');
+        const senderName = senderEmp?.name || req.user?.name || 'Someone';
+        const otherParticipants = (conversation.participants || []).filter(p => p.toString() !== senderId.toString());
+
+        for (const recipientId of otherParticipants) {
+            try {
+                // Check if an unread chat notification already exists for this conversation from this sender
+                const existingNotif = await Notification.findOne({
+                    recipient: recipientId,
+                    type: 'chat',
+                    is_read: false,
+                    'data.conversationId': conversationId.toString()
+                });
+
+                if (existingNotif) {
+                    const newCount = (existingNotif.data?.count || 1) + 1;
+                    existingNotif.message = `${senderName} sent ${newCount} messages`;
+                    existingNotif.data = {
+                        ...existingNotif.data,
+                        count: newCount,
+                        messageId: message._id.toString()
+                    };
+                    await existingNotif.save();
+                } else {
+                    const preview = cleanText ? (cleanText.length > 60 ? cleanText.substring(0, 57) + '...' : cleanText) : 'Sent a file';
+                    await Notification.create({
+                        recipient: recipientId,
+                        sender: senderId,
+                        type: 'chat',
+                        title: senderName,
+                        message: preview,
+                        data: {
+                            conversationId: conversationId.toString(),
+                            messageId: message._id.toString(),
+                            link: '/dashboard/messages',
+                            count: 1
+                        },
+                        is_read: false
+                    });
+                }
+            } catch (notifErr) {
+                console.error('[sendMessage notification error]', notifErr.message);
+            }
+        }
+
+        // Emit Socket.io if available
+        try {
+            const { getIO } = require('../socket');
+            const io = getIO();
+            if (io) {
+                io.to(conversationId.toString()).emit('receive_message', populatedMessage);
+            }
+        } catch (_) {}
+
+        res.json({ success: true, message: populatedMessage });
     } catch (err) {
         console.error('[sendMessage]', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+// Mark messages delivered
+// Triggered when a user opens the app or polls conversations
+exports.markDelivered = async (req, res) => {
+    try {
+        const userId = await resolveUserId(req.user);
+        if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+        // Find conversations user is part of
+        const userConversations = await Conversation.find({ participants: userId }).select('_id');
+        const convIds = userConversations.map(c => c._id);
+
+        const now = new Date();
+        const updateResult = await Message.updateMany(
+            {
+                conversationId: { $in: convIds },
+                sender: { $ne: userId },
+                status: 'sent'
+            },
+            {
+                $set: { status: 'delivered', deliveredAt: now },
+                $addToSet: { deliveredTo: userId }
+            }
+        );
+
+        res.json({ success: true, modifiedCount: updateResult.modifiedCount });
+    } catch (err) {
+        console.error('[markDelivered]', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+// Mark messages seen
+// Triggered when a user has a conversation open in a visible tab
+exports.markSeen = async (req, res) => {
+    try {
+        const { conversationId, messageIds } = req.body;
+        const userId = await resolveUserId(req.user);
+        if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+        if (!conversationId) {
+            return res.status(400).json({ success: false, message: 'conversationId is required' });
+        }
+
+        const query = {
+            conversationId,
+            sender: { $ne: userId },
+            status: { $ne: 'seen' }
+        };
+
+        if (Array.isArray(messageIds) && messageIds.length > 0) {
+            query._id = { $in: messageIds };
+        }
+
+        const now = new Date();
+        const updateResult = await Message.updateMany(query, {
+            $set: { status: 'seen', seenAt: now },
+            $addToSet: { seenBy: { employee: userId, seenAt: now } }
+        });
+
+        // Mark in-app chat notifications for this conversation as read
+        await Notification.updateMany(
+            {
+                recipient: userId,
+                type: 'chat',
+                'data.conversationId': conversationId.toString(),
+                is_read: false
+            },
+            { $set: { is_read: true } }
+        );
+
+        // Emit Socket.io seen event if available
+        try {
+            const { getIO } = require('../socket');
+            const io = getIO();
+            if (io) {
+                io.to(conversationId.toString()).emit('messages_seen', {
+                    conversationId,
+                    seenBy: userId,
+                    seenAt: now
+                });
+            }
+        } catch (_) {}
+
+        res.json({ success: true, modifiedCount: updateResult.modifiedCount });
+    } catch (err) {
+        console.error('[markSeen]', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+// Get total unread chat message count for the current user
+exports.getUnreadCount = async (req, res) => {
+    try {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        const userId = await resolveUserId(req.user);
+        if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+        const userConversations = await Conversation.find({ participants: userId }).select('_id');
+        const convIds = userConversations.map(c => c._id);
+
+        const unreadCount = await Message.countDocuments({
+            conversationId: { $in: convIds },
+            sender: { $ne: userId },
+            status: { $ne: 'seen' }
+        });
+
+        res.json({ success: true, count: unreadCount });
+    } catch (err) {
+        console.error('[getUnreadCount]', err);
         res.status(500).json({ success: false, message: err.message });
     }
 };

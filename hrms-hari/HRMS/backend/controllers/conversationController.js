@@ -82,6 +82,7 @@ exports.createGroup = async (req, res) => {
 // Get User's Conversations
 exports.getConversations = async (req, res) => {
     try {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
         const callerRole = normalizeRole(req.user?.role || '');
         const userId = await resolveEmployeeObjectId(req.user);
 
@@ -102,7 +103,32 @@ exports.getConversations = async (req, res) => {
             })
             .sort({ updatedAt: -1 });
 
-        res.json({ success: true, conversations });
+        // Calculate unread count per conversation for caller in a single aggregated query
+        const convIds = conversations.map(c => c._id);
+        const unreadCounts = await Message.aggregate([
+            {
+                $match: {
+                    conversationId: { $in: convIds },
+                    sender: { $ne: userId },
+                    status: { $ne: 'seen' }
+                }
+            },
+            {
+                $group: {
+                    _id: '$conversationId',
+                    count: { $sum: 1 }
+                }
+            }
+        ]);
+        const unreadMap = Object.fromEntries(unreadCounts.map(u => [u._id.toString(), u.count]));
+
+        const result = conversations.map(c => {
+            const obj = c.toObject ? c.toObject() : c;
+            obj.unreadCount = unreadMap[c._id.toString()] || 0;
+            return obj;
+        });
+
+        res.json({ success: true, conversations: result });
     } catch (err) {
         console.error('[getConversations]', err);
         res.status(500).json({ success: false, message: err.message });
@@ -140,6 +166,7 @@ exports.deleteConversation = async (req, res) => {
 // Contact directory: active employees with id, name, department_name, profile_image
 exports.getContactDirectory = async (req, res) => {
     try {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
         const employees = await Employee.find({ status: 'active' })
             .populate('department_id', 'name')
             .select('id name profile_image department_id')
@@ -150,8 +177,8 @@ exports.getContactDirectory = async (req, res) => {
             _id: e._id,
             id: e.id,
             name: e.name,
-            department_name: e.department_id?.name || '—',
-            profile_image: e.profile_image || null
+            profile_image: e.profile_image || null,
+            department_name: e.department_id?.name || 'General'
         }));
 
         res.json({ success: true, employees: result });

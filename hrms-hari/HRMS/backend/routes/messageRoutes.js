@@ -56,6 +56,14 @@ const handleChatUpload = (req, res, next) => {
 
 router.use(auth());
 
+// Global unread count across all user's chats (for floating chat badge)
+router.get('/unread-count', messageController.getUnreadCount);
+
+// Status update endpoints
+router.post('/delivered', messageController.markDelivered);
+router.post('/seen', messageController.markSeen);
+
+// Conversation specific endpoints
 router.get('/:conversationId', messageController.getMessages);
 router.get('/:conversationId/export', messageController.exportConversation);
 router.post('/', handleChatUpload, messageController.sendMessage);
