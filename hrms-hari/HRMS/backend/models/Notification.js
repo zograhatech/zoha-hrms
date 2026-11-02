@@ -4,17 +4,19 @@ const notificationSchema = new mongoose.Schema({
     recipient: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Employee',
-        required: true
+        required: true,
+        index: true
     },
     sender: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Employee',
-        default: null // Make optional for system notifications
+        default: null // Optional for system notifications
     },
     type: {
         type: String,
-        enum: ['meeting', 'leave', 'announcement', 'ticket', 'general', 'resignation', 'holiday'],
-        default: 'general'
+        enum: ['meeting', 'leave', 'announcement', 'ticket', 'general', 'resignation', 'holiday', 'chat', 'admin_update'],
+        default: 'general',
+        index: true
     },
     title: {
         type: String,
@@ -28,13 +30,23 @@ const notificationSchema = new mongoose.Schema({
         meetingId: { type: String },
         link: { type: String },
         status: { type: String },
-        leaveId: { type: String }
+        leaveId: { type: String },
+        conversationId: { type: String },
+        messageId: { type: String },
+        senderName: { type: String },
+        count: { type: Number },
+        field: { type: String },
+        oldValue: { type: String },
+        newValue: { type: String }
     },
     is_read: {
         type: Boolean,
-        default: false
+        default: false,
+        index: true
     }
 }, { timestamps: true });
+
+notificationSchema.index({ recipient: 1, is_read: 1, createdAt: -1 });
 
 // Post save hook for single notification create
 notificationSchema.post('save', async function (doc) {

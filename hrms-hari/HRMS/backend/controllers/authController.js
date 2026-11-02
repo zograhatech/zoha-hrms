@@ -212,6 +212,7 @@ const logout = async (req, res) => {
 // GET /api/auth/me
 const getMe = async (req, res) => {
     try {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
         const employee = await Employee.findOne({ id: req.user.id }).select('-password_hash -push_subscription');
         if (!employee) return res.status(404).json({ success: false, message: 'User not found.' });
 

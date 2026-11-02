@@ -8,6 +8,7 @@ const Leave = require('../models/Leave');
 const Holiday = require('../models/Holiday');
 const Setting = require('../models/Setting');
 const Notification = require('../models/Notification');
+const AuditLog = require('../models/AuditLog');
 const XLSX = require('xlsx');
 const { getVisibleEmployeeScope } = require('../utils/visibilityHelper');
 const { toISTDateString, getISTDayStart, getISTDayEnd } = require('../utils/istDate');
@@ -30,6 +31,7 @@ const withDeptName = async (emp) => {
 // GET /api/employees
 const getEmployees = async (req, res) => {
     try {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
         const { status, search, department, role, page = 1, limit = 50 } = req.query;
         const skip = (parseInt(page) - 1) * parseInt(limit);
         
@@ -107,6 +109,7 @@ const getEmployees = async (req, res) => {
 // GET /api/employee/:id
 const getEmployee = async (req, res) => {
     try {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
         const emp = await Employee.findOne({
             $or: [
                 { id: req.params.id },
@@ -427,64 +430,21 @@ const updateEmployee = async (req, res) => {
             }
         }
 
-        let updateFields = {};
-        if (canManage) {
-            // Full update allowed for admins/managers
-            const {
-                name, phone, designation, department_id, date_of_joining,
-                date_of_birth, gender, address, status, role, shift_id,
-                manager_id, pan, uan, pf_account_no, salary_details, password,
-                permissions
-            } = req.body;
-
-            // Security: Only high-level managers can set Individual Module Access overrides
-            const isManagerRole = ['admin', 'manager', 'hrmanager', 'hrmanger', 'hr_manager', 'hr_manger'].includes(roleClean);
-            
-            if (permissions !== undefined && !isManagerRole) {
-                return res.status(403).json({ success: false, message: 'Only HR Managers can grant individual module access.' });
-            }
-
-            // Validations
-            if (phone && String(phone).trim()) {
-                const phoneClean = String(phone).trim();
-                if (!/^\d{10,15}$/.test(phoneClean)) {
-                    return res.status(400).json({ success: false, message: 'Phone must be between 10 and 15 digits.' });
-                }
-            }
-            if (pan && String(pan).trim()) {
-                const panClean = String(pan).trim().toUpperCase();
-                if (!/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(panClean)) {
-                    return res.status(400).json({ success: false, message: 'PAN must be in format AAAAA9999A.' });
-                }
-            }
-            if (uan && String(uan).trim()) {
-                const uanClean = String(uan).trim();
-                if (!/^\d{12}$/.test(uanClean)) {
-                    return res.status(400).json({ success: false, message: 'UAN must be exactly 12 digits.' });
-                }
-            }
-            if (date_of_birth && date_of_joining) {
-                const dob = new Date(date_of_birth);
-                const doj = new Date(date_of_joining);
-                if (dob >= doj) {
-                    return res.status(400).json({ success: false, message: 'Date of birth must be before joining date.' });
-                }
-            }
-            if (salary_details && typeof salary_details === 'object') {
-                for (const [key, val] of Object.entries(salary_details)) {
-                    if (['bank_ac_no', 'bank_ifsc_code', 'bank_name'].includes(key)) continue;
-                    if (val !== undefined && val !== null && val !== '') {
-                        const numVal = Number(val);
-                        if (isNaN(numVal) || numVal < 0) {
-                            return res.status(400).json({ success: false, message: `Salary field ${key} cannot be negative.` });
-                        }
-                    }
+        let let resolvedDeptId = undefined;
+            if (department_id !== undefined) {
+                if (!department_id) {
+                    resolvedDeptId = null;
+                } else if (typeof department_id === 'object' && department_id._id) {
+                    resolvedDeptId = department_id._id;
+                } else {
+                    resolvedDeptId = department_id;
                 }
             }
 
             updateFields = {
-                name, phone, designation: designation || undefined,
-                department_id: department_id !== undefined ? (department_id || null) : undefined,
+                name, phone,
+                designation: designation !== undefined ? designation : undefined,
+                department_id: resolvedDeptId,
                 shift_id: shift_id !== undefined ? (shift_id || null) : undefined,
                 manager_id: manager_id !== undefined ? (manager_id || null) : undefined,
                 role: role !== undefined ? String(role).toLowerCase().trim() : undefined,
@@ -520,6 +480,17 @@ const updateEmployee = async (req, res) => {
             updateFields.profile_image = `data:${req.file.mimetype};base64,${b64}`;
         }
 
+        // Track diff for audit log
+        const oldChanges = {};
+        const newChanges = {};
+        const monitoredKeys = ['role', 'department_id', 'designation', 'status', 'shift_id', 'manager_id', 'name', 'phone'];
+        for (const k of monitoredKeys) {
+            if (updateFields[k] !== undefined && String(targetEmp[k] || '') !== String(updateFields[k] || '')) {
+                oldChanges[k] = targetEmp[k];
+                newChanges[k] = updateFields[k];
+            }
+        }
+
         const emp = await Employee.findOneAndUpdate(
             { _id: targetEmp._id },
             updateFields,
@@ -528,30 +499,51 @@ const updateEmployee = async (req, res) => {
 
         if (!emp) return res.status(404).json({ success: false, message: 'Employee not found.' });
 
-        // If role was changed, save an in-app notification to the employee
+        const adminName = req.user?.name || 'Super Admin';
+        const senderId = (req.user?._id && mongoose.Types.ObjectId.isValid(req.user._id))
+            ? req.user._id
+            : (mongoose.Types.ObjectId.isValid(req.user?.id) ? req.user.id : null);
+
+        // Audit Trail entry
+        if (Object.keys(newChanges).length > 0 && senderId) {
+            try {
+                await AuditLog.create({
+                    user_id: senderId,
+                    action: 'UPDATE',
+                    resource: 'employee',
+                    resource_id: emp._id,
+                    old_value: oldChanges,
+                    new_value: newChanges,
+                    ip_address: req.ip || req.connection?.remoteAddress,
+                    user_agent: req.get('user-agent')
+                });
+            } catch (auditErr) {
+                console.error('[updateEmployee audit log error]', auditErr.message);
+            }
+        }
+
+        // Notifications to affected employee
+        // 1. Role updated
         if (targetEmp.role !== emp.role) {
             try {
-                const senderId = (req.user?._id && mongoose.Types.ObjectId.isValid(req.user._id))
-                    ? req.user._id
-                    : (mongoose.Types.ObjectId.isValid(req.user?.id) ? req.user.id : null);
                 await Notification.create({
                     recipient: emp._id,
                     sender: senderId,
-                    type: 'general',
+                    type: 'admin_update',
                     title: 'Role Updated',
-                    message: `Your role has been changed from ${targetEmp.role} to ${emp.role}.`,
-                    data: { status: emp.role }
+                    message: `Your role has been changed from ${targetEmp.role} to ${emp.role} by ${adminName}.`,
+                    data: { field: 'role', oldValue: targetEmp.role, newValue: emp.role, status: emp.role }
                 });
             } catch (notifErr) {
                 console.error('[updateEmployee] Role change notification error:', notifErr.message);
             }
         }
 
-        // If department was changed, save an in-app notification to the employee
+        // 2. Department updated
         const storedDeptId = targetEmp.department_id ? String(targetEmp.department_id) : '';
-        const incomingDeptId = req.body.department_id !== undefined ? (req.body.department_id ? String(req.body.department_id) : '') : storedDeptId;
+        const incomingDeptId = emp.department_id ? String(emp.department_id) : '';
 
-        if (req.body.department_id !== undefined && incomingDeptId !== storedDeptId) {
+        if (storedDeptId !== incomingDeptId) {
             try {
                 let oldDeptName = 'Unassigned';
                 let newDeptName = 'Unassigned';
@@ -569,20 +561,48 @@ const updateEmployee = async (req, res) => {
                     if (newDept?.name) newDeptName = newDept.name;
                 }
 
-                const senderId = (req.user?._id && mongoose.Types.ObjectId.isValid(req.user._id))
-                    ? req.user._id
-                    : (mongoose.Types.ObjectId.isValid(req.user?.id) ? req.user.id : null);
-
                 await Notification.create({
                     recipient: emp._id,
                     sender: senderId,
-                    type: 'general',
+                    type: 'admin_update',
                     title: 'Department Updated',
-                    message: `Your department has been changed from ${oldDeptName} to ${newDeptName}.`,
-                    data: { status: 'updated' }
+                    message: `Your department was changed from ${oldDeptName} to ${newDeptName} by ${adminName}.`,
+                    data: { field: 'department', oldValue: oldDeptName, newValue: newDeptName, status: 'updated' }
                 });
             } catch (notifErr) {
                 console.error('[updateEmployee] Department change notification error:', notifErr.message);
+            }
+        }
+
+        // 3. Designation updated
+        if (targetEmp.designation !== emp.designation && emp.designation !== undefined) {
+            try {
+                await Notification.create({
+                    recipient: emp._id,
+                    sender: senderId,
+                    type: 'admin_update',
+                    title: 'Designation Updated',
+                    message: `Your designation was changed from "${targetEmp.designation || 'None'}" to "${emp.designation || 'None'}" by ${adminName}.`,
+                    data: { field: 'designation', oldValue: targetEmp.designation || '', newValue: emp.designation || '', status: 'updated' }
+                });
+            } catch (notifErr) {
+                console.error('[updateEmployee] Designation change notification error:', notifErr.message);
+            }
+        }
+
+        // 4. Status updated (e.g. active / inactive)
+        if (targetEmp.status !== emp.status && emp.status !== undefined) {
+            try {
+                await Notification.create({
+                    recipient: emp._id,
+                    sender: senderId,
+                    type: 'admin_update',
+                    title: 'Status Updated',
+                    message: `Your account status was changed from "${targetEmp.status}" to "${emp.status}" by ${adminName}.`,
+                    data: { field: 'status', oldValue: targetEmp.status, newValue: emp.status, status: emp.status }
+                });
+            } catch (notifErr) {
+                console.error('[updateEmployee] Status change notification error:', notifErr.message);
             }
         }
 
@@ -711,6 +731,7 @@ const setSuperAdminStatus = async (req, res) => {
 // GET /api/employees/stats
 const getStats = async (req, res) => {
     try {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
         // More robust count: include 'active' case-insensitively and also count if status is missing
         const total = await Employee.countDocuments({ status: { $ne: 'terminated' } });
 
@@ -804,6 +825,7 @@ const getUpcomingEvents = async (req, res) => {
 // GET /api/employees/dashboard-overview (Unified endpoint for fast data load)
 const getDashboardOverview = async (req, res) => {
     try {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
         const empId = req.user.id;
         const now = new Date();
         const todayISTStr = toISTDateString(now);

@@ -9,6 +9,7 @@ const webpush = require('web-push');
 // @desc    Get all notifications for logged in user
 router.get('/', auth(), async (req, res) => {
     try {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
         const notifications = await Notification.find({ recipient: req.user._id })
             .sort({ createdAt: -1 })
             .limit(20);

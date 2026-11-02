@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import { createContext, useContext, useState } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import API from '../api/axios';
 
 const AuthContext = createContext(null);
@@ -39,8 +39,11 @@ export const AuthProvider = ({ children }) => {
         return data.user;
     };
 
-    const refreshUser = async () => {
+    const refreshUser = useCallback(async () => {
         try {
+            const currentToken = localStorage.getItem('hrms_token');
+            if (!currentToken) return;
+
             const { data } = await API.get('/auth/me');
             if (data.success) {
                 if (data.token) {
@@ -54,8 +57,33 @@ export const AuthProvider = ({ children }) => {
         } catch (err) {
             console.error('Failed to refresh user:', err);
         }
-    };
+    }, []);
 
+    // Re-fetch profile on window focus, visibility change, and every 60s
+    useEffect(() => {
+        if (!token) return;
+
+        const handleFocus = () => {
+            if (document.visibilityState === 'visible') {
+                refreshUser();
+            }
+        };
+
+        window.addEventListener('focus', handleFocus);
+        document.addEventListener('visibilitychange', handleFocus);
+
+        const interval = setInterval(() => {
+            if (document.visibilityState === 'visible') {
+                refreshUser();
+            }
+        }, 60000);
+
+        return () => {
+            window.removeEventListener('focus', handleFocus);
+            document.removeEventListener('visibilitychange', handleFocus);
+            clearInterval(interval);
+        };
+    }, [token, refreshUser]);
 
     const logout = () => {
         localStorage.removeItem('hrms_token');
@@ -70,7 +98,6 @@ export const AuthProvider = ({ children }) => {
             {children}
         </AuthContext.Provider>
     );
-
 };
 
 export const useAuth = () => {

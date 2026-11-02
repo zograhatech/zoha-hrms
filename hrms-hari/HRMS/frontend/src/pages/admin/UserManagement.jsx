@@ -74,7 +74,7 @@ export default function UserManagement() {
     const [loading, setLoading] = useState(true);
     const [search, setSearch] = useState('');
     const { showToast } = useToast();
-    const { user } = useAuth();
+    const { user, refreshUser } = useAuth();
     const roles = ['admin', 'manager', 'team_lead', 'employee'];
     
     // Permission Modal State
@@ -174,6 +174,7 @@ export default function UserManagement() {
             await API.put(`/employees/${userId}`, { role: newRole });
             showToast('User role updated successfully!', 'success');
             setUsers(prev => prev.map(u => u.id === userId ? { ...u, role: newRole } : u));
+            if (userId === user?.id) refreshUser();
         } catch (err) {
             showToast('Error updating role', 'error');
         }
@@ -219,6 +220,7 @@ export default function UserManagement() {
             await API.put(`/employees/${selectedUser.id}`, { permissions: userPerms });
             showToast('Individual permissions updated!', 'success');
             setUsers(prev => prev.map(u => u.id === selectedUser.id ? { ...u, permissions: userPerms } : u));
+            if (selectedUser.id === user?.id) refreshUser();
             setSelectedUser(null);
         } catch (err) {
             showToast('Error saving permissions', 'error');

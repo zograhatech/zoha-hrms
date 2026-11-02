@@ -15,7 +15,7 @@ import { isManagerRole, getRoleDisplayLabel, normalizeRole, isSuperAdmin } from 
 import DocumentManager from '../../components/DocumentManager';
 
 export default function EmployeeList() {
-    const { user } = useAuth();
+    const { user, refreshUser } = useAuth();
     const { showToast } = useToast();
     const permissions = user?.permissions || [];
     const canManage = isManagerRole(user) || permissions.includes('manage_employees');
@@ -212,8 +212,8 @@ export default function EmployeeList() {
             email: emp.email,
             password: '', // Don't show password hash
             role: emp.role || 'employee',
-            department_id: emp.department_id || '',
-            shift_id: emp.shift_id || '',
+            department_id: (typeof emp.department_id === 'object' && emp.department_id?._id) ? emp.department_id._id : (emp.department_id || ''),
+            shift_id: (typeof emp.shift_id === 'object' && emp.shift_id?._id) ? emp.shift_id._id : (emp.shift_id || ''),
             manager_id: emp.manager_id || '',
             phone: emp.phone || '',
             designation: emp.designation || '',
