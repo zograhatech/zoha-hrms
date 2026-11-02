@@ -430,7 +430,62 @@ const updateEmployee = async (req, res) => {
             }
         }
 
-        let let resolvedDeptId = undefined;
+        let updateFields = {};
+        if (canManage) {
+            // Full update allowed for admins/managers
+            const {
+                name, phone, designation, department_id, date_of_joining,
+                date_of_birth, gender, address, status, role, shift_id,
+                manager_id, pan, uan, pf_account_no, salary_details, password,
+                permissions
+            } = req.body;
+
+            // Security: Only high-level managers can set Individual Module Access overrides
+            const isManagerRole = ['admin', 'manager', 'hrmanager', 'hrmanger', 'hr_manager', 'hr_manger'].includes(roleClean);
+            
+            if (permissions !== undefined && !isManagerRole) {
+                return res.status(403).json({ success: false, message: 'Only HR Managers can grant individual module access.' });
+            }
+
+            // Validations
+            if (phone && String(phone).trim()) {
+                const phoneClean = String(phone).trim();
+                if (!/^\d{10,15}$/.test(phoneClean)) {
+                    return res.status(400).json({ success: false, message: 'Phone must be between 10 and 15 digits.' });
+                }
+            }
+            if (pan && String(pan).trim()) {
+                const panClean = String(pan).trim().toUpperCase();
+                if (!/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(panClean)) {
+                    return res.status(400).json({ success: false, message: 'PAN must be in format AAAAA9999A.' });
+                }
+            }
+            if (uan && String(uan).trim()) {
+                const uanClean = String(uan).trim();
+                if (!/^\d{12}$/.test(uanClean)) {
+                    return res.status(400).json({ success: false, message: 'UAN must be exactly 12 digits.' });
+                }
+            }
+            if (date_of_birth && date_of_joining) {
+                const dob = new Date(date_of_birth);
+                const doj = new Date(date_of_joining);
+                if (dob >= doj) {
+                    return res.status(400).json({ success: false, message: 'Date of birth must be before joining date.' });
+                }
+            }
+            if (salary_details && typeof salary_details === 'object') {
+                for (const [key, val] of Object.entries(salary_details)) {
+                    if (['bank_ac_no', 'bank_ifsc_code', 'bank_name'].includes(key)) continue;
+                    if (val !== undefined && val !== null && val !== '') {
+                        const numVal = Number(val);
+                        if (isNaN(numVal) || numVal < 0) {
+                            return res.status(400).json({ success: false, message: `Salary field ${key} cannot be negative.` });
+                        }
+                    }
+                }
+            }
+
+            let resolvedDeptId = undefined;
             if (department_id !== undefined) {
                 if (!department_id) {
                     resolvedDeptId = null;

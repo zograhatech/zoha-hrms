@@ -83,7 +83,7 @@ exports.getMessages = async (req, res) => {
 // Send message (Idempotent via clientMessageId)
 exports.sendMessage = async (req, res) => {
     try {
-        const { conversationId, text, clientMessageId } = req.body;
+        const { conversationId, text, content, clientMessageId } = req.body;
         if (!conversationId) {
             return res.status(400).json({ success: false, message: 'Conversation ID is required' });
         }
@@ -109,7 +109,8 @@ exports.sendMessage = async (req, res) => {
             }
         }
 
-        const cleanText = typeof text === 'string' ? text.trim() : '';
+        const rawText = text !== undefined ? text : content;
+        const cleanText = typeof rawText === 'string' ? rawText.trim() : '';
         if (!cleanText && !req.file) {
             return res.status(400).json({ success: false, message: 'Message content or attachment is required.' });
         }
@@ -243,9 +244,23 @@ exports.markDelivered = async (req, res) => {
         const userId = await resolveUserId(req.user);
         if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
-        // Find conversations user is part of
-        const userConversations = await Conversation.find({ participants: userId }).select('_id');
-        const convIds = userConversations.map(c => c._id);
+        const { conversationId } = req.body || {};
+        let convIds = [];
+
+        if (conversationId) {
+            const conv = await Conversation.findById(conversationId);
+            if (!conv) {
+                return res.status(404).json({ success: false, message: 'Conversation not found' });
+            }
+            if (!isUserInParticipants(conv.participants, userId, req.user)) {
+                return res.status(403).json({ success: false, message: 'Forbidden. You are not a participant in this conversation.' });
+            }
+            convIds = [conv._id];
+        } else {
+            // Find all conversations user is part of
+            const userConversations = await Conversation.find({ participants: userId }).select('_id');
+            convIds = userConversations.map(c => c._id);
+        }
 
         const now = new Date();
         const updateResult = await Message.updateMany(
@@ -279,10 +294,19 @@ exports.markSeen = async (req, res) => {
             return res.status(400).json({ success: false, message: 'conversationId is required' });
         }
 
+        const conv = await Conversation.findById(conversationId);
+        if (!conv) {
+            return res.status(404).json({ success: false, message: 'Conversation not found' });
+        }
+
+        if (!isUserInParticipants(conv.participants, userId, req.user)) {
+            return res.status(403).json({ success: false, message: 'Forbidden. You are not a participant in this conversation.' });
+        }
+
         const query = {
-            conversationId,
+            conversationId: conv._id,
             sender: { $ne: userId },
-            status: { $ne: 'seen' }
+            status: { $in: ['sent', 'delivered'] }
         };
 
         if (Array.isArray(messageIds) && messageIds.length > 0) {
@@ -336,10 +360,25 @@ exports.getUnreadCount = async (req, res) => {
         const userConversations = await Conversation.find({ participants: userId }).select('_id');
         const convIds = userConversations.map(c => c._id);
 
+        // When recipient client performs global poll, transition any pending 'sent' messages to 'delivered'
+        const now = new Date();
+        await Message.updateMany(
+            {
+                conversationId: { $in: convIds },
+                sender: { $ne: userId },
+                status: 'sent'
+            },
+            {
+                $set: { status: 'delivered', deliveredAt: now },
+                $addToSet: { deliveredTo: userId }
+            }
+        );
+
+        // Count only explicitly unread messages (status 'sent' or 'delivered'), excluding legacy messages with no status field
         const unreadCount = await Message.countDocuments({
             conversationId: { $in: convIds },
             sender: { $ne: userId },
-            status: { $ne: 'seen' }
+            status: { $in: ['sent', 'delivered'] }
         });
 
         res.json({ success: true, count: unreadCount });

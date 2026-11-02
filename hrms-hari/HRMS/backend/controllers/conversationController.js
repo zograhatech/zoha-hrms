@@ -110,7 +110,7 @@ exports.getConversations = async (req, res) => {
                 $match: {
                     conversationId: { $in: convIds },
                     sender: { $ne: userId },
-                    status: { $ne: 'seen' }
+                    status: { $in: ['sent', 'delivered'] }
                 }
             },
             {
