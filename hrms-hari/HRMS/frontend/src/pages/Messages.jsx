@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import axios from 'axios';
 import API from '../api/axios';
 import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../context/SocketContext';
@@ -9,8 +10,10 @@ import {
     FiMoreVertical, FiUser, FiUsers,
     FiImage, FiVideo, FiX, FiCheckCircle, FiCheck, FiClock, FiAlertCircle,
     FiMessageSquare, FiArrowLeft, FiArrowDown,
-    FiFileText, FiMusic, FiArchive, FiFile, FiDownload, FiPaperclip, FiShield, FiAlertTriangle, FiBell
+    FiFileText, FiMusic, FiArchive, FiFile, FiDownload, FiPaperclip, FiShield, FiAlertTriangle, FiBell, FiUploadCloud, FiRefreshCw
 } from 'react-icons/fi';
+import LinkifiedText from '../utils/linkify';
+import ImageLightbox from '../components/ImageLightbox';
 import {
     playNotificationSound,
     showDesktopNotification,
@@ -48,6 +51,18 @@ const formatDateSeparator = (dateStr) => {
     return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
 };
 
+// File extension helper icon
+const getFileIcon = (fileName = '') => {
+    const ext = fileName.split('.').pop()?.toLowerCase();
+    if (ext === 'pdf') return <FiFileText style={{ color: '#ef4444' }} />;
+    if (['doc', 'docx'].includes(ext)) return <FiFileText style={{ color: '#3b82f6' }} />;
+    if (['xls', 'xlsx', 'csv'].includes(ext)) return <FiFileText style={{ color: '#10b981' }} />;
+    if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return <FiArchive style={{ color: '#f59e0b' }} />;
+    if (['mp3', 'wav', 'ogg', 'm4a'].includes(ext)) return <FiMusic style={{ color: '#8b5cf6' }} />;
+    if (['mp4', 'webm', 'mov'].includes(ext)) return <FiVideo style={{ color: '#ec4899' }} />;
+    return <FiFile style={{ color: 'var(--text-secondary)' }} />;
+};
+
 export default function Messages() {
     const { user } = useAuth();
     const socket = useSocket();
@@ -59,6 +74,9 @@ export default function Messages() {
     const [messages, setMessages] = useState([]);
     const [inputText, setInputText] = useState('');
     const [selectedFile, setSelectedFile] = useState(null);
+    const [pendingFiles, setPendingFiles] = useState([]);
+    const [isDragging, setIsDragging] = useState(false);
+    const [lightboxImage, setLightboxImage] = useState(null);
     const [showNewChat, setShowNewChat] = useState(false);
     const [employees, setEmployees] = useState([]);
     const [searchEmp, setSearchEmp] = useState('');
@@ -325,37 +343,220 @@ export default function Messages() {
         return () => clearTimeout(delaySearch);
     }, [searchConv, conversations, user]);
 
-    // ── Actions ─────────────────────────────────────────────────────
+    // ── File & Media Handlers ──────────────────────────────────────────
+    const addFilesToQueue = (files) => {
+        const newItems = Array.from(files).map(file => ({
+            id: uuidv4(),
+            file,
+            name: file.name,
+            size: file.size,
+            progress: 0,
+            status: 'pending',
+            abortController: new AbortController(),
+            error: null
+        }));
+        setPendingFiles(prev => [...prev, ...newItems]);
+    };
+
+    const removePendingFile = (id) => {
+        setPendingFiles(prev => {
+            const item = prev.find(p => p.id === id);
+            if (item?.abortController) {
+                item.abortController.abort();
+            }
+            return prev.filter(p => p.id !== id);
+        });
+    };
+
     const handleFileSelect = (e) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
+        const files = e.target.files;
+        if (!files || files.length === 0) return;
+        addFilesToQueue(files);
+        e.target.value = '';
+    };
 
-        const allowedExts = ['.pdf', '.png', '.jpg', '.jpeg', '.docx', '.xlsx'];
-        const ext = '.' + file.name.split('.').pop().toLowerCase();
-        if (!allowedExts.includes(ext)) {
-            alert('File type not allowed. Allowed formats: PDF, PNG, JPG, DOCX, XLSX.');
-            e.target.value = '';
-            return;
+    const handleDragOver = (e) => {
+        e.preventDefault();
+        if (isParticipant) setIsDragging(true);
+    };
+
+    const handleDragLeave = (e) => {
+        e.preventDefault();
+        setIsDragging(false);
+    };
+
+    const handleDrop = (e) => {
+        e.preventDefault();
+        setIsDragging(false);
+        if (!isParticipant) return;
+        const files = e.dataTransfer?.files;
+        if (files && files.length > 0) {
+            addFilesToQueue(files);
+        }
+    };
+
+    const handlePaste = (e) => {
+        if (!isParticipant) return;
+        const files = Array.from(e.clipboardData?.files || []);
+        if (files.length > 0) {
+            e.preventDefault();
+            addFilesToQueue(files);
+        }
+    };
+
+    const uploadSingleFile = async (item, clientMessageId, textToSend = '') => {
+        const file = item.file;
+        const isLarge = file.size > 4 * 1024 * 1024; // >4MB bypasses Vercel limit via signed direct upload
+
+        setPendingFiles(prev => prev.map(p => p.id === item.id ? { ...p, status: 'uploading' } : p));
+
+        if (isLarge) {
+            try {
+                // 1. Get signed direct upload parameters
+                const { data: sigData } = await API.post('/messages/upload-signature', {
+                    filename: file.name,
+                    fileType: file.type,
+                    fileSize: file.size
+                });
+
+                if (sigData.provider === 'cloudinary' && sigData.uploadUrl) {
+                    const uploadForm = new FormData();
+                    uploadForm.append('file', file);
+                    Object.entries(sigData.params || {}).forEach(([k, v]) => uploadForm.append(k, v));
+
+                    const uploadRes = await axios.post(sigData.uploadUrl, uploadForm, {
+                        signal: item.abortController.signal,
+                        onUploadProgress: (progressEvent) => {
+                            if (progressEvent.total) {
+                                const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+                                setPendingFiles(prev => prev.map(p => p.id === item.id ? { ...p, progress: percent } : p));
+                            }
+                        }
+                    });
+
+                    const secureUrl = uploadRes.data?.secure_url || uploadRes.data?.url;
+
+                    // 2. Post message with direct fileUrl
+                    const { data: msgData } = await API.post('/messages', {
+                        conversationId: activeConv._id,
+                        clientMessageId,
+                        text: textToSend,
+                        fileUrl: secureUrl,
+                        fileName: file.name,
+                        fileSize: file.size,
+                        fileType: file.type.startsWith('image/') ? 'image' : (file.type.startsWith('video/') ? 'video' : (file.type.startsWith('audio/') ? 'audio' : 'file')),
+                        mimeType: file.type
+                    });
+
+                    setPendingFiles(prev => prev.filter(p => p.id !== item.id));
+                    return msgData?.message;
+                }
+            } catch (err) {
+                if (axios.isCancel(err)) {
+                    console.info('Upload cancelled by user');
+                    return null;
+                }
+                console.error('Direct upload failed:', err);
+                setPendingFiles(prev => prev.map(p => p.id === item.id ? { ...p, status: 'failed', error: err.message } : p));
+                throw err;
+            }
         }
 
-        if (file.size > 10 * 1024 * 1024) {
-            alert('File must be 10 MB or smaller.');
-            e.target.value = '';
-            return;
-        }
+        // Standard multipart upload for files <= 4MB
+        const formData = new FormData();
+        formData.append('conversationId', activeConv._id);
+        formData.append('clientMessageId', clientMessageId);
+        if (textToSend) formData.append('text', textToSend);
+        formData.append('file', file);
 
-        setSelectedFile(file);
+        try {
+            const { data } = await API.post('/messages', formData, {
+                signal: item.abortController.signal,
+                headers: { 'Content-Type': 'multipart/form-data' },
+                onUploadProgress: (progressEvent) => {
+                    if (progressEvent.total) {
+                        const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+                        setPendingFiles(prev => prev.map(p => p.id === item.id ? { ...p, progress: percent } : p));
+                    }
+                }
+            });
+
+            setPendingFiles(prev => prev.filter(p => p.id !== item.id));
+            return data?.message;
+        } catch (err) {
+            if (axios.isCancel(err)) {
+                return null;
+            }
+            setPendingFiles(prev => prev.map(p => p.id === item.id ? { ...p, status: 'failed', error: err.message } : p));
+            throw err;
+        }
     };
 
     const handleSend = async (e) => {
         if (e) e.preventDefault();
         const textToSend = inputText.trim();
-        if ((!textToSend && !selectedFile) || !activeConv || sending) return;
+        const filesToUpload = [...pendingFiles];
+        if ((!textToSend && filesToUpload.length === 0) || !activeConv || sending) return;
 
+        setInputText('');
+
+        // If there are files in queue, upload each one
+        if (filesToUpload.length > 0) {
+            setSending(true);
+            for (let i = 0; i < filesToUpload.length; i++) {
+                const item = filesToUpload[i];
+                const clientMessageId = uuidv4();
+                const now = new Date().toISOString();
+                const fileCaption = (i === 0 && textToSend) ? textToSend : '';
+
+                const optimisticMsg = {
+                    _id: `temp_${clientMessageId}`,
+                    clientMessageId,
+                    conversationId: activeConv._id,
+                    sender: {
+                        _id: user?._id,
+                        id: user?.id,
+                        name: user?.name,
+                        profile_image: user?.profile_image
+                    },
+                    text: fileCaption,
+                    fileName: item.name,
+                    fileSize: item.size,
+                    fileType: item.file.type.startsWith('image/') ? 'image' : (item.file.type.startsWith('video/') ? 'video' : (item.file.type.startsWith('audio/') ? 'audio' : 'file')),
+                    status: 'sending',
+                    createdAt: now,
+                    updatedAt: now
+                };
+
+                setMessages(prev => [...prev, optimisticMsg]);
+                setTimeout(() => scrollToBottom('smooth'), 50);
+
+                try {
+                    const serverMsg = await uploadSingleFile(item, clientMessageId, fileCaption);
+                    if (serverMsg) {
+                        setMessages(prev => prev.map(m =>
+                            (m.clientMessageId === clientMessageId || m._id === optimisticMsg._id)
+                                ? serverMsg
+                                : m
+                        ));
+                        loadConversations();
+                    }
+                } catch (err) {
+                    setMessages(prev => prev.map(m =>
+                        (m.clientMessageId === clientMessageId || m._id === optimisticMsg._id)
+                            ? { ...m, status: 'failed' }
+                            : m
+                    ));
+                }
+            }
+            setSending(false);
+            return;
+        }
+
+        // Text-only message
         const clientMessageId = uuidv4();
         const now = new Date().toISOString();
 
-        // Optimistic message update
         const optimisticMsg = {
             _id: `temp_${clientMessageId}`,
             clientMessageId,
@@ -367,31 +568,23 @@ export default function Messages() {
                 profile_image: user?.profile_image
             },
             text: textToSend,
-            fileName: selectedFile?.name || null,
-            fileSize: selectedFile?.size || null,
-            fileType: selectedFile ? (selectedFile.type.startsWith('image/') ? 'image' : 'file') : null,
+            fileName: null,
+            fileSize: null,
+            fileType: null,
             status: 'sending',
             createdAt: now,
             updatedAt: now
         };
 
         setMessages(prev => [...prev, optimisticMsg]);
-        setInputText('');
-        const fileToUpload = selectedFile;
-        setSelectedFile(null);
-        if (fileInputRef.current) fileInputRef.current.value = '';
         setTimeout(() => scrollToBottom('smooth'), 50);
 
         setSending(true);
-        const formData = new FormData();
-        formData.append('conversationId', activeConv._id);
-        formData.append('clientMessageId', clientMessageId);
-        if (textToSend) formData.append('text', textToSend);
-        if (fileToUpload) formData.append('file', fileToUpload);
-
         try {
-            const { data } = await API.post('/messages', formData, {
-                headers: { 'Content-Type': 'multipart/form-data' }
+            const { data } = await API.post('/messages', {
+                conversationId: activeConv._id,
+                clientMessageId,
+                text: textToSend
             });
 
             if (data.success && data.message) {
@@ -404,10 +597,9 @@ export default function Messages() {
             }
         } catch (err) {
             console.error('Send failed', err);
-            // Mark optimistic message as failed with retry option
             setMessages(prev => prev.map(m =>
                 (m.clientMessageId === clientMessageId || m._id === optimisticMsg._id)
-                    ? { ...m, status: 'failed', retryData: { text: textToSend, file: fileToUpload } }
+                    ? { ...m, status: 'failed', retryData: { text: textToSend } }
                     : m
             ));
         } finally {
@@ -792,7 +984,21 @@ export default function Messages() {
                             )}
                         </div>
 
-                        <div className="msgr-messages-container" ref={scrollContainerRef} onScroll={handleScroll}>
+                        <div
+                            className="msgr-messages-container"
+                            ref={scrollContainerRef}
+                            onScroll={handleScroll}
+                            onDragOver={handleDragOver}
+                            onDragLeave={handleDragLeave}
+                            onDrop={handleDrop}
+                            style={{ position: 'relative' }}
+                        >
+                            {isDragging && (
+                                <div className="msgr-dropzone-overlay">
+                                    <FiUploadCloud size={48} />
+                                    <span>Drop files here to upload to conversation</span>
+                                </div>
+                            )}
                             {messages.map((msg, i) => {
                                 const isMe = isMyMessage(msg);
                                 const msgKey = msg.clientMessageId || msg._id || i;
@@ -833,21 +1039,29 @@ export default function Messages() {
                                                     const displaySize = msg.fileSize ? (msg.fileSize > 1024 * 1024 ? (msg.fileSize / (1024 * 1024)).toFixed(1) + ' MB' : (msg.fileSize / 1024).toFixed(0) + ' KB') : null;
 
                                                     if (msg.fileType === 'image') {
-                                                        return <img src={fullUrl} className="msgr-msg-file" alt="Sent" onClick={() => window.open(fullUrl)} />;
+                                                        return (
+                                                            <img
+                                                                src={fullUrl}
+                                                                className="msgr-msg-file"
+                                                                alt={displayName}
+                                                                onClick={() => setLightboxImage({ src: fullUrl, fileName: displayName })}
+                                                                title="Click to expand"
+                                                            />
+                                                        );
                                                     } else if (msg.fileType === 'video') {
-                                                        return <video src={fullUrl} className="msgr-msg-video" controls />;
+                                                        return <video src={fullUrl} className="msgr-msg-video" controls preload="metadata" />;
                                                     } else if (msg.fileType === 'audio') {
                                                         return (
                                                             <div className="msgr-audio-player">
                                                                 <FiMusic style={{ marginRight: 10, fontSize: '1.2rem', color: isMe ? '#fff' : 'var(--accent-primary)' }} />
-                                                                <audio src={fullUrl} controls style={{ height: 32 }} />
+                                                                <audio src={fullUrl} controls preload="metadata" style={{ height: 32 }} />
                                                             </div>
                                                         );
                                                     } else {
                                                         return (
-                                                            <a href={fullUrl} target="_blank" rel="noreferrer" className="msgr-file-link">
+                                                            <a href={fullUrl} target="_blank" rel="noopener noreferrer" className="msgr-file-link">
                                                                 <div className="msgr-file-icon-box" style={{ background: isMe ? 'rgba(255,255,255,0.2)' : 'var(--accent-primary)' }}>
-                                                                    <FiFile />
+                                                                    {getFileIcon(displayName)}
                                                                 </div>
                                                                 <div className="msgr-file-details">
                                                                     <div className="msgr-file-name" title={displayName}>
@@ -862,7 +1076,11 @@ export default function Messages() {
                                                     }
                                                 })()}
 
-                                                {msg.text && <div style={{ whiteSpace: 'pre-wrap' }}>{msg.text}</div>}
+                                                {msg.text && (
+                                                    <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                                                        <LinkifiedText text={msg.text} />
+                                                    </div>
+                                                )}
 
                                                 <div className="msgr-msg-footer">
                                                     <span>{new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
@@ -930,19 +1148,40 @@ export default function Messages() {
                             </div>
                         ) : (
                             <div>
-                                {selectedFile && (
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 16px', background: 'rgba(255, 255, 255, 0.05)', borderTop: '1px solid var(--border-color)', fontSize: '0.8rem' }}>
-                                        <FiPaperclip size={14} />
-                                        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                            {selectedFile.name} ({(selectedFile.size / 1024).toFixed(0)} KB)
-                                        </span>
-                                        <button
-                                            type="button"
-                                            onClick={() => { setSelectedFile(null); if (fileInputRef.current) fileInputRef.current.value = ''; }}
-                                            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
-                                        >
-                                            <FiX />
-                                        </button>
+                                {pendingFiles.length > 0 && (
+                                    <div className="msgr-pending-uploads">
+                                        {pendingFiles.map(item => (
+                                            <div key={item.id} className="msgr-upload-item">
+                                                <div style={{ fontSize: '1.2rem', display: 'flex', alignItems: 'center' }}>
+                                                    {getFileIcon(item.name)}
+                                                </div>
+                                                <div style={{ flex: 1, minWidth: 0 }}>
+                                                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+                                                        <span style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '70%' }}>
+                                                            {item.name}
+                                                        </span>
+                                                        <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                                                            {item.size > 1024 * 1024 ? (item.size / (1024 * 1024)).toFixed(1) + ' MB' : (item.size / 1024).toFixed(0) + ' KB'}
+                                                            {item.status === 'uploading' && ` • ${item.progress}%`}
+                                                            {item.status === 'failed' && ` • Failed`}
+                                                        </span>
+                                                    </div>
+                                                    {item.status === 'uploading' && (
+                                                        <div className="msgr-upload-progress-track">
+                                                            <div className="msgr-upload-progress-fill" style={{ width: `${item.progress}%` }} />
+                                                        </div>
+                                                    )}
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => removePendingFile(item.id)}
+                                                    style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', padding: '4px' }}
+                                                    title="Remove / Cancel upload"
+                                                >
+                                                    <FiX size={16} />
+                                                </button>
+                                            </div>
+                                        ))}
                                     </div>
                                 )}
                                 <form className="msgr-input-area" onSubmit={handleSend}>
@@ -950,15 +1189,15 @@ export default function Messages() {
                                         type="file"
                                         ref={fileInputRef}
                                         style={{ display: 'none' }}
-                                        accept=".pdf,.png,.jpg,.jpeg,.docx,.xlsx"
+                                        multiple
                                         onChange={handleFileSelect}
                                     />
                                     <button
                                         type="button"
                                         className="btn btn-icon btn-sm"
                                         onClick={() => fileInputRef.current?.click()}
-                                        title="Attach file (PDF, PNG, JPG, DOCX, XLSX up to 10 MB)"
-                                        style={{ marginRight: 4, color: selectedFile ? 'var(--accent-primary)' : 'var(--text-muted)' }}
+                                        title="Attach any file (Documents, Images, Audio, Video, Archives)"
+                                        style={{ marginRight: 4, color: pendingFiles.length > 0 ? 'var(--accent-primary)' : 'var(--text-muted)' }}
                                     >
                                         <FiPaperclip size={18} />
                                     </button>
@@ -966,7 +1205,7 @@ export default function Messages() {
                                     <div className="msgr-input-wrapper">
                                         <textarea
                                             className="msgr-main-input"
-                                            placeholder="Type a message... (Enter to send, Shift+Enter for new line)"
+                                            placeholder="Type a message or paste files... (Enter to send, Shift+Enter for new line)"
                                             value={inputText}
                                             rows={1}
                                             onChange={e => {
@@ -975,6 +1214,7 @@ export default function Messages() {
                                                 e.target.style.height = Math.min(e.target.scrollHeight, 100) + 'px';
                                             }}
                                             onKeyDown={handleKeyDown}
+                                            onPaste={handlePaste}
                                             style={{ maxHeight: 100, resize: 'none' }}
                                         />
                                     </div>
@@ -982,7 +1222,7 @@ export default function Messages() {
                                     <button
                                         className="msgr-send-btn"
                                         type="submit"
-                                        disabled={(!inputText.trim() && !selectedFile) || sending}
+                                        disabled={(!inputText.trim() && pendingFiles.length === 0) || sending}
                                         aria-label="Send message"
                                     >
                                         <FiSend />
@@ -1060,6 +1300,14 @@ export default function Messages() {
                         </div>
                     </div>
                 </div>
+            )}
+
+            {lightboxImage && (
+                <ImageLightbox
+                    src={lightboxImage.src}
+                    fileName={lightboxImage.fileName}
+                    onClose={() => setLightboxImage(null)}
+                />
             )}
         </div>
     );

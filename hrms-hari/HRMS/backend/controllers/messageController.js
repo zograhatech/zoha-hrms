@@ -111,16 +111,16 @@ exports.sendMessage = async (req, res) => {
 
         const rawText = text !== undefined ? text : content;
         const cleanText = typeof rawText === 'string' ? rawText.trim() : '';
-        if (!cleanText && !req.file) {
+        if (!cleanText && !req.file && !req.body.fileUrl) {
             return res.status(400).json({ success: false, message: 'Message content or attachment is required.' });
         }
 
         const senderId = userId;
-        let fileUrl = null;
-        let fileName = null;
-        let fileSize = null;
-        let calculatedFileType = null;
-        let mimeType = null;
+        let fileUrl = req.body.fileUrl || null;
+        let fileName = req.body.fileName || null;
+        let fileSize = req.body.fileSize ? Number(req.body.fileSize) : null;
+        let calculatedFileType = req.body.fileType || null;
+        let mimeType = req.body.mimeType || null;
 
         if (req.file) {
             fileName = req.file.originalname;
@@ -148,6 +148,18 @@ exports.sendMessage = async (req, res) => {
             } catch (uploadError) {
                 console.error('Cloudinary: Upload Failed, using fallback', uploadError);
                 fileUrl = `/uploads/test_${Date.now()}_${fileName}`;
+            }
+        } else if (fileUrl && !calculatedFileType) {
+            // Infer fileType from extension
+            const ext = (fileName || fileUrl).split('.').pop()?.toLowerCase();
+            if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(ext)) {
+                calculatedFileType = 'image';
+            } else if (['mp4', 'webm', 'ogg', 'mov', 'mkv'].includes(ext)) {
+                calculatedFileType = 'video';
+            } else if (['mp3', 'wav', 'm4a', 'aac', 'flac'].includes(ext)) {
+                calculatedFileType = 'audio';
+            } else {
+                calculatedFileType = 'file';
             }
         }
 
@@ -445,5 +457,62 @@ exports.exportConversation = async (req, res) => {
         if (!res.headersSent) {
             res.status(500).json({ success: false, message: err.message });
         }
+    }
+};
+
+// POST /api/messages/upload-signature
+// Generates direct-to-storage signed parameters for files > 4MB (bypassing Vercel 4.5MB limit)
+exports.getUploadSignature = async (req, res) => {
+    try {
+        const { filename, fileType, fileSize } = req.body;
+        const maxBytes = parseInt(process.env.MAX_UPLOAD_BYTES || '104857600', 10); // 100 MB default
+        if (fileSize && fileSize > maxBytes) {
+            return res.status(400).json({
+                success: false,
+                message: `File size exceeds the maximum limit of ${Math.round(maxBytes / (1024 * 1024))} MB.`
+            });
+        }
+
+        const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+        const apiKey = process.env.CLOUDINARY_API_KEY;
+        const apiSecret = process.env.CLOUDINARY_API_SECRET;
+
+        if (cloudName && apiKey && apiSecret) {
+            const cloudinary = require('cloudinary').v2;
+            cloudinary.config({ cloud_name: cloudName, api_key: apiKey, api_secret: apiSecret });
+
+            const timestamp = Math.round(Date.now() / 1000);
+            const folder = 'chat_attachments';
+            const paramsToSign = { folder, timestamp };
+            const signature = cloudinary.utils.api_sign_request(paramsToSign, apiSecret);
+
+            let resourceType = 'auto';
+            if (fileType?.startsWith('image/')) resourceType = 'image';
+            else if (fileType?.startsWith('video/')) resourceType = 'video';
+            else if (fileType?.startsWith('audio/')) resourceType = 'video';
+            else resourceType = 'raw';
+
+            return res.json({
+                success: true,
+                provider: 'cloudinary',
+                uploadUrl: `https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/upload`,
+                params: {
+                    api_key: apiKey,
+                    timestamp,
+                    folder,
+                    signature
+                }
+            });
+        }
+
+        // Fallback: direct multipart upload to backend
+        return res.json({
+            success: true,
+            provider: 'multipart',
+            uploadUrl: '/messages/send'
+        });
+    } catch (err) {
+        console.error('[getUploadSignature]', err);
+        res.status(500).json({ success: false, message: 'Failed to generate upload signature.' });
     }
 };
