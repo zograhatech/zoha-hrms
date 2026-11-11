@@ -58,12 +58,18 @@ const generateAuthPayload = async (employee, rememberMe, settings) => {
     );
 
     const refreshToken = jwt.sign(
-        { id: employee.id },
+        { id: employee.id, rememberMe: Boolean(rememberMe) },
         process.env.JWT_REFRESH_SECRET,
         { expiresIn: rememberMe ? '30d' : '1d' }
     );
 
+    if (!Array.isArray(employee.refresh_tokens)) {
+        employee.refresh_tokens = [];
+    }
     employee.refresh_tokens.push(refreshToken);
+    if (employee.refresh_tokens.length > 10) {
+        employee.refresh_tokens = employee.refresh_tokens.slice(-10);
+    }
     await employee.save();
 
     const { password_hash, refresh_tokens, push_subscription, push_subscriptions, ...rest } = employee.toObject();
@@ -196,11 +202,21 @@ const login = async (req, res) => {
 const logout = async (req, res) => {
     try {
         const { refreshToken } = req.body;
-        if (refreshToken) {
-            // Remove specific refresh token from DB
+        if (refreshToken && req.user?.id) {
+            // Remove specific refresh token and matching rotated history from DB
             await Employee.updateOne(
                 { id: req.user.id },
-                { $pull: { refresh_tokens: refreshToken } }
+                { 
+                    $pull: { 
+                        refresh_tokens: refreshToken,
+                        rotated_tokens: {
+                            $or: [
+                                { old_token: refreshToken },
+                                { new_refresh_token: refreshToken }
+                            ]
+                        }
+                    } 
+                }
             );
         }
         res.json({ success: true, message: 'Logged out successfully.' });
@@ -286,17 +302,39 @@ const refreshToken = async (req, res) => {
         const { refreshToken: token } = req.body;
         if (!token) return res.status(401).json({ success: false, message: 'Refresh token required.' });
 
-        const employee = await Employee.findOne({ refresh_tokens: token });
-        if (!employee) return res.status(403).json({ success: false, message: 'Invalid refresh token.' });
+        // 1. First check if token is active in employee's refresh_tokens
+        let employee = await Employee.findOne({ refresh_tokens: token });
+
+        // 2. If not found in active refresh_tokens, check if it was recently rotated within a 60s grace window
+        // (absorbs concurrent requests across tabs/network retries without invalidating the session)
+        if (!employee) {
+            const now = Date.now();
+            const graceWindowMs = 60 * 1000;
+            const rotatedEmployee = await Employee.findOne({ 'rotated_tokens.old_token': token });
+
+            if (rotatedEmployee && Array.isArray(rotatedEmployee.rotated_tokens)) {
+                const match = rotatedEmployee.rotated_tokens.find(r => r.old_token === token);
+                if (match && (now - new Date(match.rotated_at).getTime()) < graceWindowMs) {
+                    return res.json({
+                        success: true,
+                        token: match.new_token,
+                        refreshToken: match.new_refresh_token,
+                        grace: true
+                    });
+                }
+            }
+            return res.status(403).json({ success: false, message: 'Invalid or expired refresh token.' });
+        }
 
         try {
             const decoded = jwt.verify(token, process.env.JWT_REFRESH_SECRET);
+            const isRemembered = Boolean(decoded.rememberMe);
 
             req.user = { id: employee.id, employee_id: employee.id, role: employee.role };
             const ipAllowed = await checkIpAccess(req, res, employee.role);
             if (!ipAllowed) return;
 
-            // Issue new tokens
+            // Issue new tokens (maintaining rememberMe: 30d vs 1d)
             const newAccessToken = jwt.sign(
                 { id: employee.id, _id: employee._id, name: employee.name, email: employee.email, role: employee.role },
                 process.env.JWT_SECRET,
@@ -304,24 +342,46 @@ const refreshToken = async (req, res) => {
             );
 
             const newRefreshToken = jwt.sign(
-                { id: employee.id },
+                { id: employee.id, rememberMe: isRemembered },
                 process.env.JWT_REFRESH_SECRET,
-                { expiresIn: '7d' }
+                { expiresIn: isRemembered ? '30d' : '1d' }
             );
 
             // Rotate refresh token (replace old with new)
-            employee.refresh_tokens = employee.refresh_tokens.filter(t => t !== token);
+            employee.refresh_tokens = (employee.refresh_tokens || []).filter(t => t !== token);
             employee.refresh_tokens.push(newRefreshToken);
+            if (employee.refresh_tokens.length > 10) {
+                employee.refresh_tokens = employee.refresh_tokens.slice(-10);
+            }
+            employee.markModified('refresh_tokens');
+
+            // Track in rotated_tokens with timestamp
+            if (!Array.isArray(employee.rotated_tokens)) {
+                employee.rotated_tokens = [];
+            }
+            const twoMinutesAgo = Date.now() - 2 * 60 * 1000;
+            employee.rotated_tokens = employee.rotated_tokens.filter(
+                r => r.rotated_at && new Date(r.rotated_at).getTime() > twoMinutesAgo
+            );
+            employee.rotated_tokens.push({
+                old_token: token,
+                new_token: newAccessToken,
+                new_refresh_token: newRefreshToken,
+                rotated_at: new Date()
+            });
+            employee.markModified('rotated_tokens');
+
             await employee.save();
 
             res.json({ success: true, token: newAccessToken, refreshToken: newRefreshToken });
         } catch (err) {
             // Token expired or invalid - cleanup database
-            employee.refresh_tokens = employee.refresh_tokens.filter(t => t !== token);
+            employee.refresh_tokens = (employee.refresh_tokens || []).filter(t => t !== token);
             await employee.save();
             return res.status(403).json({ success: false, message: 'Invalid or expired refresh token.' });
         }
     } catch (err) {
+        console.error('Refresh token error:', err);
         res.status(500).json({ success: false, message: 'Server error.' });
     }
 };

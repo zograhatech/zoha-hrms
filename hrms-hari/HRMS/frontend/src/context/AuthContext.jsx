@@ -85,12 +85,30 @@ export const AuthProvider = ({ children }) => {
         };
     }, [token, refreshUser]);
 
-    const logout = () => {
-        localStorage.removeItem('hrms_token');
-        localStorage.removeItem('hrms_refresh_token');
-        localStorage.removeItem('hrms_user');
-        setToken(null);
-        setUser(null);
+    const logout = async () => {
+        const refreshToken = localStorage.getItem('hrms_refresh_token');
+        try {
+            if (refreshToken) {
+                await API.post('/auth/logout', { refreshToken });
+            }
+        } catch {
+            // Ignore logout network errors
+        } finally {
+            localStorage.removeItem('hrms_token');
+            localStorage.removeItem('hrms_refresh_token');
+            localStorage.removeItem('hrms_user');
+            setToken(null);
+            setUser(null);
+            if (typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined') {
+                try {
+                    const ch = new BroadcastChannel('hrms_auth_channel');
+                    ch.postMessage({ type: 'LOGOUT' });
+                    ch.close();
+                } catch {
+                    // Ignore channel errors
+                }
+            }
+        }
     };
 
     return (

@@ -46,6 +46,12 @@ const employeeSchema = new mongoose.Schema({
         bank_name: { type: String, default: '' },
     },
     refresh_tokens: [String],
+    rotated_tokens: [{
+        old_token: { type: String, required: true },
+        new_token: { type: String, required: true },
+        new_refresh_token: { type: String, required: true },
+        rotated_at: { type: Date, default: Date.now }
+    }],
     reset_otp: { type: String },
     reset_otp_expiry: { type: Date },
     push_subscription: { type: Object, default: null, select: false },
