@@ -19,6 +19,9 @@ public static class CompanionConfig
     public static string LogFilePath =>
         Path.Combine(AppDataFolder, "companion.log");
 
+    public static string PolicyCachePath =>
+        Path.Combine(AppDataFolder, "policy.json");
+
     public static string StopFlagPath =>
         Path.Combine(AppDataFolder, "stop.flag");
 }

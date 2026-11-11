@@ -1008,12 +1008,25 @@ const getAttendanceTrends = async (req, res) => {
     }
 };
 
+// In-memory TTL cache for Settings (60 seconds)
+let cachedIdlePolicySetting = null;
+let cachedIdlePolicyExpiry = 0;
+
+async function getCachedIdleSettings() {
+    const now = Date.now();
+    if (cachedIdlePolicySetting && now < cachedIdlePolicyExpiry) {
+        return cachedIdlePolicySetting;
+    }
+    const Setting = require('../models/Setting');
+    cachedIdlePolicySetting = await Setting.findOne().lean();
+    cachedIdlePolicyExpiry = now + 60 * 1000;
+    return cachedIdlePolicySetting;
+}
+
 // GET /api/attendance/idle-policy
 const getIdlePolicy = async (req, res) => {
     try {
-        const Setting = require('../models/Setting');
-        // Fresh read directly from MongoDB on every call; no cache.
-        const settings = await Setting.findOne().lean();
+        const settings = await getCachedIdleSettings();
 
         const DEFAULTS = {
             idle_timeout_minutes: 10,
@@ -1111,14 +1124,12 @@ const autoClockOut = async (req, res) => {
             }
             const nowTime = Date.now();
             const repTime = reportedDate.getTime();
-            // More than 5 minutes old (300,000 ms)
             if (nowTime - repTime > 5 * 60 * 1000) {
                 return res.status(400).json({
                     success: false,
                     message: 'reported_at is older than 5 minutes.'
                 });
             }
-            // In the future by more than 1 minute (allow 60s clock skew)
             if (repTime - nowTime > 60 * 1000) {
                 return res.status(400).json({
                     success: false,
@@ -1127,8 +1138,7 @@ const autoClockOut = async (req, res) => {
             }
         }
 
-        const Setting = require('../models/Setting');
-        const settings = await Setting.findOne();
+        const settings = await getCachedIdleSettings();
 
         // 1. Feature flag check
         if (!settings?.idle_auto_clockout_enabled) {
@@ -1157,6 +1167,9 @@ const autoClockOut = async (req, res) => {
             });
         }
 
+        // Clamp idle_seconds to a sane ceiling (max 24 hours)
+        const safeIdleSeconds = Math.min(Math.max(idle_seconds, 0), 24 * 3600);
+
         // 4. Office hours check (IST)
         const now = new Date();
         const istOffsetMs = 5.5 * 60 * 60 * 1000;
@@ -1177,32 +1190,45 @@ const autoClockOut = async (req, res) => {
             });
         }
 
-        // 5. Open session check
+        // 5. Open session check (Idempotent: if already closed, return 200 with already_closed: true)
         const attendance = await findOpenSession(req.user.id);
         if (!attendance) {
-            return res.status(409).json({
-                success: false,
-                message: 'No open clock-in session found for auto clock-out.'
+            return res.status(200).json({
+                success: true,
+                message: 'No open clock-in session found (already clocked out).',
+                already_closed: true
             });
         }
 
         const checkInTime = new Date(attendance.check_in || attendance.date);
-        const isInvertedOrFuture = checkInTime > now;
+        
+        // Server-authoritative: calculate clock-out time as the user's LAST ACTIVITY time:
+        // check_out = now - idle_seconds
+        let effectiveClockOutTime = new Date(now.getTime() - safeIdleSeconds * 1000);
 
-        let diffHrs = 0;
-        if (!isInvertedOrFuture) {
-            const diffMs = Math.max(0, now - checkInTime);
-            diffHrs = diffMs / (1000 * 60 * 60);
+        // Clamp: cannot be in the future
+        if (effectiveClockOutTime > now) {
+            effectiveClockOutTime = now;
         }
 
-        attendance.check_out = now;
-        attendance.work_hours = isInvertedOrFuture ? 0 : Number(diffHrs.toFixed(2));
+        // Clamp: cannot be before check_in time
+        if (effectiveClockOutTime < checkInTime) {
+            effectiveClockOutTime = checkInTime;
+        }
+
+        const diffMs = Math.max(0, effectiveClockOutTime - checkInTime);
+        const diffHrs = diffMs / (1000 * 60 * 60);
+
+        attendance.check_out = effectiveClockOutTime;
+        attendance.last_activity_at = effectiveClockOutTime;
+        attendance.work_hours = Number(diffHrs.toFixed(2));
         attendance.is_open_session = false;
         attendance.auto_clock_out = true;
+        attendance.source = 'auto-idle';
 
         const checkInIST = toISTDateString(checkInTime);
-        const checkOutIST = toISTDateString(now);
-        if (isInvertedOrFuture || (checkInIST && checkOutIST && checkInIST !== checkOutIST)) {
+        const checkOutIST = toISTDateString(effectiveClockOutTime);
+        if (checkInIST && checkOutIST && checkInIST !== checkOutIST) {
             attendance.needs_review = true;
         } else {
             attendance.needs_review = false;
@@ -1251,6 +1277,79 @@ const autoClockOut = async (req, res) => {
     }
 };
 
+// POST /api/attendance/heartbeat
+// Lightweight heartbeat from companion or web app to refresh last_activity_at on open sessions
+const heartbeat = async (req, res) => {
+    try {
+        const now = new Date();
+        const empId = req.user?.id;
+        if (empId) {
+            await Attendance.updateOne(
+                { employee_id: empId, is_open_session: true },
+                { $set: { last_activity_at: now } }
+            );
+        }
+        res.json({ success: true, timestamp: now });
+    } catch (err) {
+        res.status(500).json({ success: false, message: 'Heartbeat error.' });
+    }
+};
+
+// POST /api/attendance/sweep-idle-sessions
+// Server-side sweeper to close stale open sessions if companion dies or fails
+const sweepStaleSessions = async (req, res) => {
+    try {
+        const providedSecret = req.headers['x-sweeper-secret'] || req.query.secret;
+        const validSecret = process.env.SWEEPER_SECRET || process.env.CRON_SECRET;
+
+        if (!validSecret || providedSecret !== validSecret) {
+            return res.status(401).json({ success: false, message: 'Unauthorized sweeper request.' });
+        }
+
+        const settings = await getCachedIdleSettings();
+        if (!settings?.idle_auto_clockout_enabled) {
+            return res.json({ success: true, message: 'Idle auto clock-out is globally disabled.', closed_count: 0 });
+        }
+
+        const timeout_minutes = settings?.idle_timeout_minutes ?? 10;
+        const idleLimitMs = timeout_minutes * 60 * 1000;
+        const now = new Date();
+
+        // Find all active open sessions
+        const openSessions = await Attendance.find({ is_open_session: true });
+        let closedCount = 0;
+
+        for (const session of openSessions) {
+            const checkInTime = new Date(session.check_in || session.date);
+            const lastActivity = session.last_activity_at ? new Date(session.last_activity_at) : checkInTime;
+            const timeSinceLastActivity = now.getTime() - lastActivity.getTime();
+
+            // If time since last activity exceeds idle timeout limit
+            if (timeSinceLastActivity >= idleLimitMs) {
+                const effectiveClockOut = new Date(Math.max(checkInTime.getTime(), lastActivity.getTime()));
+                const diffMs = Math.max(0, effectiveClockOut - checkInTime);
+
+                session.check_out = effectiveClockOut;
+                session.work_hours = Number((diffMs / (1000 * 60 * 60)).toFixed(2));
+                session.is_open_session = false;
+                session.auto_clock_out = true;
+                session.source = 'auto-idle';
+                await session.save();
+                closedCount++;
+            }
+        }
+
+        return res.json({
+            success: true,
+            message: `Sweeper processed successfully. Closed ${closedCount} stale session(s).`,
+            closed_count: closedCount
+        });
+    } catch (err) {
+        console.error('[sweepStaleSessions]', err);
+        return res.status(500).json({ success: false, message: 'Server error during stale session sweep.' });
+    }
+};
+
 module.exports = {
     getEmployeeAttendance,
     getTeamAttendance,
@@ -1263,6 +1362,8 @@ module.exports = {
     exportAttendance,
     getAttendanceLogs,
     getIdlePolicy,
-    autoClockOut
+    autoClockOut,
+    sweepStaleSessions,
+    heartbeat
 };
 

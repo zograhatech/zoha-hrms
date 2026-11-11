@@ -6,6 +6,8 @@ import { BrandingProvider } from './context/BrandingContext';
 import { ThemeProvider } from './context/ThemeContext';
 import { ToastProvider } from './context/ToastContext';
 import { SocketProvider } from './context/SocketContext';
+import { useIdleTimeout } from './hooks/useIdleTimeout';
+import IdleWarningModal from './components/IdleWarningModal';
 
 const safeLazy = (importFunc) => lazy(() => 
     importFunc().catch((error) => {
@@ -63,6 +65,17 @@ const AppRoutes = () => {
   );
 };
 
+const GlobalIdleMonitor = () => {
+  const { showWarning, secondsRemaining, resetIdleTimer } = useIdleTimeout();
+  return (
+    <IdleWarningModal
+      show={showWarning}
+      secondsRemaining={secondsRemaining}
+      onStaySignedIn={resetIdleTimer}
+    />
+  );
+};
+
 function App() {
   useEffect(() => {
     const handleWheel = () => {
@@ -81,6 +94,7 @@ function App() {
           <ToastProvider>
             <SocketProvider>
               <BrandingProvider>
+                <GlobalIdleMonitor />
                 <AppRoutes />
               </BrandingProvider>
             </SocketProvider>

@@ -4,7 +4,7 @@ const auth = require('../middleware/auth');
 const {
     getEmployeeAttendance, getTeamAttendance, clockIn, clockOut,
     getTodayStatus, updateAttendanceManual, markHoliday, exportAttendance, getAttendanceTrends,
-    getAttendanceLogs, getIdlePolicy, autoClockOut
+    getAttendanceLogs, getIdlePolicy, autoClockOut, sweepStaleSessions, heartbeat
 } = require('../controllers/attendanceController');
 
 router.post('/clock-in', auth(), clockIn);
@@ -13,6 +13,8 @@ router.get('/today', auth(), getTodayStatus);
 router.post('/clock-out', auth(), clockOut);
 router.get('/idle-policy', auth(), getIdlePolicy);
 router.post('/auto-clock-out', auth(), autoClockOut);
+router.post('/heartbeat', auth(), heartbeat);
+router.post('/sweep-idle-sessions', sweepStaleSessions);
 router.get('/status', auth(), getTodayStatus);
 router.get('/team', auth(['manage_attendance', 'attendance_report', 'manager', 'team_lead']), getTeamAttendance);
 router.get('/logs', auth(), getAttendanceLogs);

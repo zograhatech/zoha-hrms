@@ -10,6 +10,8 @@ const attendanceSchema = new mongoose.Schema({
     is_open_session: { type: Boolean, default: false },
     needs_review: { type: Boolean, default: false },
     auto_clock_out: { type: Boolean, default: false },
+    source: { type: String, enum: ['manual', 'auto-idle', 'companion', 'system', 'web'], default: 'manual' },
+    last_activity_at: { type: Date },
 }, { timestamps: true });
 
 attendanceSchema.index({ employee_id: 1, date: 1 });

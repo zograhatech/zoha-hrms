@@ -2,6 +2,11 @@ const jwt = require('jsonwebtoken');
 const Setting = require('../models/Setting');
 const Employee = require('../models/Employee');
 
+// In-memory TTL caches for companion device token authentication (60s TTL)
+const deviceTokenCache = new Map(); // tokenHash -> { doc, cachedAt }
+const employeeStatusCache = new Map(); // employee_id -> { employee, cachedAt }
+const CACHE_TTL_MS = 60 * 1000;
+
 /**
  * Authorization Middleware
  * Validates the JWT and checks if the user has the required individual module access.
@@ -27,8 +32,9 @@ const auth = (rolesOrPermissions = []) => {
 
             const isIdlePolicy = method === 'GET' && cleanPath === '/api/attendance/idle-policy';
             const isAutoClockOut = method === 'POST' && cleanPath === '/api/attendance/auto-clock-out';
+            const isHeartbeat = method === 'POST' && cleanPath === '/api/attendance/heartbeat';
 
-            if (!isIdlePolicy && !isAutoClockOut) {
+            if (!isIdlePolicy && !isAutoClockOut && !isHeartbeat) {
                 return res.status(403).json({
                     success: false,
                     message: 'Device token unauthorized for this route.'
@@ -37,12 +43,26 @@ const auth = (rolesOrPermissions = []) => {
 
             const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
             const now = new Date();
+            const nowTime = now.getTime();
 
-            const deviceTokenDoc = await DeviceToken.findOne({
-                token_hash: tokenHash,
-                revoked: false,
-                expires_at: { $gt: now }
-            });
+            // 1. Check DeviceToken cache
+            let deviceTokenDoc = null;
+            const cachedToken = deviceTokenCache.get(tokenHash);
+            if (cachedToken && (nowTime - cachedToken.cachedAt < CACHE_TTL_MS) && new Date(cachedToken.doc.expires_at) > now) {
+                deviceTokenDoc = cachedToken.doc;
+            } else {
+                deviceTokenDoc = await DeviceToken.findOne({
+                    token_hash: tokenHash,
+                    revoked: false,
+                    expires_at: { $gt: now }
+                }).lean();
+
+                if (deviceTokenDoc) {
+                    deviceTokenCache.set(tokenHash, { doc: deviceTokenDoc, cachedAt: nowTime });
+                } else {
+                    deviceTokenCache.delete(tokenHash);
+                }
+            }
 
             if (!deviceTokenDoc) {
                 return res.status(401).json({
@@ -51,8 +71,20 @@ const auth = (rolesOrPermissions = []) => {
                 });
             }
 
-            // Load employee, require status active
-            const employee = await Employee.findOne({ id: deviceTokenDoc.employee_id }).select('role status').lean();
+            // 2. Check Employee active status cache
+            let employee = null;
+            const cachedEmp = employeeStatusCache.get(deviceTokenDoc.employee_id);
+            if (cachedEmp && (nowTime - cachedEmp.cachedAt < CACHE_TTL_MS)) {
+                employee = cachedEmp.employee;
+            } else {
+                employee = await Employee.findOne({ id: deviceTokenDoc.employee_id }).select('role status').lean();
+                if (employee) {
+                    employeeStatusCache.set(deviceTokenDoc.employee_id, { employee, cachedAt: nowTime });
+                } else {
+                    employeeStatusCache.delete(deviceTokenDoc.employee_id);
+                }
+            }
+
             if (!employee || employee.status !== 'active') {
                 return res.status(403).json({
                     success: false,

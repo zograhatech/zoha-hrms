@@ -50,6 +50,8 @@ public class CompanionRunner
         DateTime lastPolicyFetch = DateTime.MinValue;
         bool standbyMode = false;
         DateTime backoffUntil = DateTime.MinValue;
+        DateTime policyFetchBackoffUntil = DateTime.MinValue;
+        int consecutivePolicyFailures = 0;
 
         // Clean stale stop.flag from previous runs
         if (File.Exists(CompanionConfig.StopFlagPath))
@@ -60,6 +62,23 @@ public class CompanionRunner
                 CompanionLogger.Log("Stale stop.flag found, removing.");
             }
             catch { }
+        }
+
+        // Initialize policy from disk cache or safe default so idle detection is never disabled
+        if (policy == null)
+        {
+            policy = LoadPolicyFromDisk();
+            if (policy != null)
+            {
+                pollIntervalSeconds = policy.GetEffectivePollSeconds();
+                CompanionLogger.Log($"Loaded cached idle policy from disk. Enabled: {policy.IsFeatureEnabled()}, Timeout: {policy.GetEffectiveTimeoutMinutes()}m, OfficeHours: {policy.GetEffectiveStartTime()}-{policy.GetEffectiveEndTime()}");
+            }
+            else
+            {
+                policy = CreateDefaultFallbackPolicy();
+                pollIntervalSeconds = policy.GetEffectivePollSeconds();
+                CompanionLogger.Log("Using safe default idle policy (10m timeout, 09:00-18:00) until server policy is reachable.");
+            }
         }
 
         while (!cancellationToken.IsCancellationRequested)
@@ -78,38 +97,40 @@ public class CompanionRunner
                 continue;
             }
 
-            // Policy refresh: every poll interval (or initial load)
+            // Policy refresh: every poll interval (if not in backoff)
             double secondsSincePolicy = (DateTime.UtcNow - lastPolicyFetch).TotalSeconds;
-            if (secondsSincePolicy >= pollIntervalSeconds || policy == null)
+            if ((secondsSincePolicy >= pollIntervalSeconds || lastPolicyFetch == DateTime.MinValue) && DateTime.UtcNow >= policyFetchBackoffUntil)
             {
                 var fetchResult = await FetchPolicyAsync();
                 if (fetchResult.IsRevoked)
                 {
-                    CompanionLogger.Log("HTTP 401 received: Token is revoked or invalid. Stopping companion loop.");
+                    CompanionLogger.Log("HTTP 401 Unauthorized received: Device token is revoked or invalid. Stopping companion loop.");
                     return;
                 }
 
-                if (fetchResult.Policy != null)
+                if (fetchResult.IsForbidden)
                 {
+                    consecutivePolicyFailures++;
+                    int jitterSec = Random.Shared.Next(0, 60);
+                    policyFetchBackoffUntil = DateTime.UtcNow.AddSeconds(270 + jitterSec);
+                    CompanionLogger.Log($"HTTP 403 Forbidden: {fetchResult.ErrorMessage}. Account may be deactivated or unregistered. Backing off ~5 minutes.");
+                }
+                else if (fetchResult.Policy != null)
+                {
+                    consecutivePolicyFailures = 0;
                     var newPolicy = fetchResult.Policy;
                     pollIntervalSeconds = newPolicy.GetEffectivePollSeconds();
 
-                    if (policy == null)
-                    {
-                        CompanionLogger.Log($"Initial idle policy loaded. Enabled: {newPolicy.IsFeatureEnabled()}, Timeout: {newPolicy.GetEffectiveTimeoutMinutes()}m, Exempt: {newPolicy.Exempt}, OfficeHours: {newPolicy.GetEffectiveStartTime()}-{newPolicy.GetEffectiveEndTime()}, PollInterval: {pollIntervalSeconds}s");
-                    }
-                    else
-                    {
-                        LogPolicyChanges(policy, newPolicy);
-                    }
-
+                    LogPolicyChanges(policy, newPolicy);
                     policy = newPolicy;
                     lastPolicyFetch = DateTime.UtcNow;
                 }
                 else
                 {
-                    CompanionLogger.Log("Failed to fetch idle policy. Keeping last good policy and retrying at normal interval.");
-                    lastPolicyFetch = DateTime.UtcNow;
+                    consecutivePolicyFailures++;
+                    int backoffSec = Math.Min(300, (int)(15 * Math.Pow(1.8, Math.Min(consecutivePolicyFailures - 1, 5)))) + Random.Shared.Next(0, 15);
+                    policyFetchBackoffUntil = DateTime.UtcNow.AddSeconds(backoffSec);
+                    CompanionLogger.Log($"Failed to fetch idle policy (HTTP {fetchResult.StatusCode}: {fetchResult.ErrorMessage}). Keeping current policy and backing off {backoffSec}s.");
                 }
             }
 
@@ -205,7 +226,7 @@ public class CompanionRunner
         }
     }
 
-    private async Task<(IdlePolicyResponse? Policy, bool IsRevoked)> FetchPolicyAsync()
+    private async Task<(IdlePolicyResponse? Policy, bool IsRevoked, bool IsForbidden, int StatusCode, string ErrorMessage)> FetchPolicyAsync()
     {
         try
         {
@@ -214,25 +235,96 @@ public class CompanionRunner
             req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
             using var res = await _httpClient.SendAsync(req);
+            int statusCode = (int)res.StatusCode;
+            string rawBody = await res.Content.ReadAsStringAsync();
+
+            string errorMessage = string.Empty;
+            if (!string.IsNullOrWhiteSpace(rawBody))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(rawBody);
+                    if (doc.RootElement.TryGetProperty("message", out var msgProp))
+                    {
+                        errorMessage = msgProp.GetString() ?? string.Empty;
+                    }
+                }
+                catch
+                {
+                    errorMessage = rawBody.Length > 120 ? rawBody[..120] + "..." : rawBody;
+                }
+            }
+            if (string.IsNullOrWhiteSpace(errorMessage))
+            {
+                errorMessage = res.ReasonPhrase ?? $"HTTP {statusCode}";
+            }
+
             if (res.StatusCode == HttpStatusCode.Unauthorized)
             {
-                return (null, true);
+                return (null, true, false, statusCode, errorMessage);
+            }
+
+            if (res.StatusCode == HttpStatusCode.Forbidden)
+            {
+                return (null, false, true, statusCode, errorMessage);
             }
 
             if (!res.IsSuccessStatusCode)
             {
-                return (null, false);
+                return (null, false, false, statusCode, errorMessage);
             }
 
-            string json = await res.Content.ReadAsStringAsync();
-            var parsed = JsonSerializer.Deserialize<IdlePolicyResponse>(json);
-            return (parsed, false);
+            var parsed = JsonSerializer.Deserialize<IdlePolicyResponse>(rawBody);
+            if (parsed != null && parsed.Success)
+            {
+                // Persist successful policy to local disk cache
+                try
+                {
+                    string dir = Path.GetDirectoryName(CompanionConfig.PolicyCachePath)!;
+                    if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                    File.WriteAllText(CompanionConfig.PolicyCachePath, rawBody);
+                }
+                catch { }
+
+                return (parsed, false, false, statusCode, string.Empty);
+            }
+
+            return (null, false, false, statusCode, errorMessage);
         }
         catch (Exception ex)
         {
-            CompanionLogger.Log($"Network error fetching policy: {ex.Message}");
-            return (null, false);
+            return (null, false, false, 0, ex.Message);
         }
+    }
+
+    private static IdlePolicyResponse? LoadPolicyFromDisk()
+    {
+        try
+        {
+            if (File.Exists(CompanionConfig.PolicyCachePath))
+            {
+                string json = File.ReadAllText(CompanionConfig.PolicyCachePath);
+                return JsonSerializer.Deserialize<IdlePolicyResponse>(json);
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    private static IdlePolicyResponse CreateDefaultFallbackPolicy()
+    {
+        return new IdlePolicyResponse
+        {
+            Success = true,
+            Enabled = true,
+            IdleAutoClockoutEnabled = true,
+            TimeoutMinutes = 10,
+            IdleTimeoutMinutes = 10,
+            Exempt = false,
+            OfficeStartTime = "09:00",
+            OfficeEndTime = "18:00",
+            PollSeconds = 60
+        };
     }
 
     private async Task<(int StatusCode, bool IsRevoked)> SendAutoClockOutAsync(int idleSeconds)
