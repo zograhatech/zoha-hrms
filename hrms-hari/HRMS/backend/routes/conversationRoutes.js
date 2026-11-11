@@ -7,6 +7,8 @@ router.use(auth());
 
 router.post('/', conversationController.createConversation);
 router.post('/group', conversationController.createGroup);
+router.get('/admin/all', conversationController.getAdminConversations);
+router.get('/admin/:id/messages', conversationController.getAdminConversationMessages);
 router.get('/', conversationController.getConversations);
 router.get('/directory', conversationController.getContactDirectory);
 router.delete('/:id', conversationController.deleteConversation);

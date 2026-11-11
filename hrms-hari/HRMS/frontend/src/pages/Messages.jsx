@@ -10,7 +10,7 @@ import {
     FiMoreVertical, FiUser, FiUsers,
     FiImage, FiVideo, FiX, FiCheckCircle, FiCheck, FiClock, FiAlertCircle,
     FiMessageSquare, FiArrowLeft, FiArrowDown,
-    FiFileText, FiMusic, FiArchive, FiFile, FiDownload, FiPaperclip, FiShield, FiAlertTriangle, FiBell, FiUploadCloud, FiRefreshCw
+    FiFileText, FiMusic, FiArchive, FiFile, FiDownload, FiPaperclip, FiShield, FiAlertTriangle, FiBell, FiUploadCloud, FiRefreshCw, FiCalendar, FiFilter
 } from 'react-icons/fi';
 import LinkifiedText from '../utils/linkify';
 import ImageLightbox from '../components/ImageLightbox';
@@ -63,6 +63,27 @@ const getFileIcon = (fileName = '') => {
     return <FiFile style={{ color: 'var(--text-secondary)' }} />;
 };
 
+// Formatted file size helper
+const formatFileSize = (bytes) => {
+    if (!bytes || bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+};
+
+// Super Admin oversight conversation title helper: "Person A <-> Person B"
+const getOversightTitle = (conv) => {
+    if (!conv) return 'Conversation';
+    if (conv.isGroup) {
+        return `${conv.groupName || 'Group'} (${conv.participants?.length || 0} members)`;
+    }
+    const p = conv.participants || [];
+    if (p.length === 0) return 'No participants';
+    if (p.length === 1) return `${p[0].name} (${p[0].id || 'User'})`;
+    return `${p[0].name} (${p[0].id || 'User'}) ↔ ${p[1].name} (${p[1].id || 'User'})`;
+};
+
 export default function Messages() {
     const { user } = useAuth();
     const socket = useSocket();
@@ -92,6 +113,28 @@ export default function Messages() {
         const sup = checkDesktopNotificationSupport();
         return sup.supported && sup.permission === 'default';
     });
+
+    // ── Super Admin Oversight State (Zero Shared State with My Chats) ──
+    const [oversightConvs, setOversightConvs] = useState([]);
+    const [selectedOversightConv, setSelectedOversightConv] = useState(null);
+    const [oversightMessages, setOversightMessages] = useState([]);
+    const [oversightMediaFiles, setOversightMediaFiles] = useState([]);
+    const [oversightTotalMessages, setOversightTotalMessages] = useState(0);
+    const [oversightLoading, setOversightLoading] = useState(false);
+    const [oversightMsgsLoading, setOversightMsgsLoading] = useState(false);
+    const [oversightSearch, setOversightSearch] = useState('');
+    const [oversightStartDate, setOversightStartDate] = useState('');
+    const [oversightEndDate, setOversightEndDate] = useState('');
+    const [oversightHasAttachments, setOversightHasAttachments] = useState(false);
+    const [oversightPage, setOversightPage] = useState(1);
+    const [oversightPagination, setOversightPagination] = useState({
+        total: 0,
+        page: 1,
+        limit: 15,
+        totalPages: 1,
+        hasMore: false
+    });
+    const oversightMessagesEndRef = useRef(null);
 
     const messagesEndRef = useRef(null);
     const scrollContainerRef = useRef(null);
@@ -137,11 +180,10 @@ export default function Messages() {
         } catch (_) {}
     }, []);
 
-    // ── Load Conversations ──────────────────────────────────────────
+    // ── Load Personal Conversations (Strictly My Chats) ────────────
     const loadConversations = useCallback(async () => {
         try {
-            const url = (isAdmin && viewOversight) ? '/conversations?all=true' : '/conversations';
-            const { data } = await API.get(url);
+            const { data } = await API.get('/conversations');
             setConversations(data.conversations || []);
             setLoading(false);
             triggerMarkDelivered();
@@ -149,11 +191,101 @@ export default function Messages() {
             console.error('Load conversations error:', err);
             setLoading(false);
         }
-    }, [isAdmin, viewOversight, triggerMarkDelivered]);
+    }, [triggerMarkDelivered]);
 
     useEffect(() => {
         loadConversations();
     }, [loadConversations]);
+
+    // ── Load Oversight Conversations (Strictly Super Admin Monitor) ──
+    const loadOversightConversations = useCallback(async (customOverrides = {}) => {
+        if (!isAdmin) return;
+        setOversightLoading(true);
+        try {
+            const params = new URLSearchParams();
+            const search = customOverrides.search !== undefined ? customOverrides.search : oversightSearch;
+            const startDate = customOverrides.startDate !== undefined ? customOverrides.startDate : oversightStartDate;
+            const endDate = customOverrides.endDate !== undefined ? customOverrides.endDate : oversightEndDate;
+            const hasAttachments = customOverrides.hasAttachments !== undefined ? customOverrides.hasAttachments : oversightHasAttachments;
+            const page = customOverrides.page !== undefined ? customOverrides.page : oversightPage;
+
+            if (search && search.trim()) params.append('search', search.trim());
+            if (startDate) params.append('startDate', startDate);
+            if (endDate) params.append('endDate', endDate);
+            if (hasAttachments) params.append('hasAttachments', 'true');
+            params.append('page', page);
+            params.append('limit', '15');
+
+            const { data } = await API.get(`/conversations/admin/all?${params.toString()}`);
+            if (data.success) {
+                setOversightConvs(data.conversations || []);
+                setOversightPagination(data.pagination || {
+                    total: 0,
+                    page: 1,
+                    limit: 15,
+                    totalPages: 1,
+                    hasMore: false
+                });
+            }
+        } catch (err) {
+            console.error('Load oversight conversations error:', err);
+        } finally {
+            setOversightLoading(false);
+        }
+    }, [isAdmin, oversightSearch, oversightStartDate, oversightEndDate, oversightHasAttachments, oversightPage]);
+
+    // ── Load Oversight Messages & Details ──────────────────────────
+    const loadOversightConversationMessages = useCallback(async (convId) => {
+        if (!isAdmin || !convId) return;
+        setOversightMsgsLoading(true);
+        try {
+            const { data } = await API.get(`/conversations/admin/${convId}/messages`);
+            if (data.success) {
+                setOversightMessages(data.messages || []);
+                setOversightMediaFiles(data.mediaFiles || []);
+                setOversightTotalMessages(data.totalMessages || 0);
+                if (data.conversation) {
+                    setSelectedOversightConv(data.conversation);
+                }
+                setTimeout(() => {
+                    oversightMessagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+                }, 50);
+            }
+        } catch (err) {
+            console.error('Load oversight messages error:', err);
+        } finally {
+            setOversightMsgsLoading(false);
+        }
+    }, [isAdmin]);
+
+    // Trigger load of oversight conversations when switching to oversight
+    useEffect(() => {
+        if (isAdmin && viewOversight) {
+            loadOversightConversations();
+        }
+    }, [isAdmin, viewOversight, loadOversightConversations]);
+
+    // Oversight polling: 5s for open oversight conversation, 20s for conversation list
+    useEffect(() => {
+        if (!isAdmin || !viewOversight) return;
+
+        const convInterval = setInterval(() => {
+            if (document.visibilityState === 'visible') {
+                loadOversightConversations();
+            }
+        }, 20000);
+
+        const msgInterval = setInterval(() => {
+            if (document.visibilityState === 'visible' && selectedOversightConv?._id) {
+                loadOversightConversationMessages(selectedOversightConv._id);
+            }
+        }, 5000);
+
+        return () => {
+            clearInterval(convInterval);
+            clearInterval(msgInterval);
+        };
+    }, [isAdmin, viewOversight, selectedOversightConv?._id, loadOversightConversations, loadOversightConversationMessages]);
 
     // Adaptive conversations refresh: 10s when tab active, 30s when hidden
     useEffect(() => {
@@ -745,6 +877,465 @@ export default function Messages() {
 
     if (loading) return <div className="page-loader"><div className="loading-spinner" /></div>;
 
+    // ── Super Admin Oversight 3-Pane Monitor ────────────────────────
+    if (isAdmin && viewOversight) {
+        return (
+            <div className="msgr-page msgr-oversight-page">
+                {lightboxImage && (
+                    <ImageLightbox
+                        imageUrl={lightboxImage.url}
+                        fileName={lightboxImage.name}
+                        onClose={() => setLightboxImage(null)}
+                    />
+                )}
+
+                {/* ── PANE 1: Oversight Conversation List ─────────── */}
+                <div className="msgr-oversight-list-pane">
+                    <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <FiShield style={{ color: 'var(--accent-primary)', fontSize: '1.1rem' }} />
+                                <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 800 }}>Chat Oversight</h3>
+                            </div>
+                            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Super Admin Monitor</span>
+                        </div>
+                        <button
+                            className="btn btn-sm btn-outline"
+                            onClick={() => { setViewOversight(false); }}
+                            style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+                        >
+                            My Chats
+                        </button>
+                    </div>
+
+                    {/* Filter & Search Controls */}
+                    <div className="msgr-oversight-filter-box">
+                        <div className="msgr-search" style={{ marginTop: 0 }}>
+                            <FiSearch className="msgr-search-icon" />
+                            <input
+                                placeholder="Search by name, ID (e.g. ZOHA101)..."
+                                value={oversightSearch}
+                                onChange={e => setOversightSearch(e.target.value)}
+                                onKeyDown={e => { if (e.key === 'Enter') { setOversightPage(1); loadOversightConversations({ page: 1, search: e.target.value }); } }}
+                            />
+                        </div>
+
+                        <div className="msgr-oversight-filter-row">
+                            <input
+                                type="date"
+                                className="msgr-oversight-date-input"
+                                value={oversightStartDate}
+                                onChange={e => setOversightStartDate(e.target.value)}
+                                title="Start Date"
+                            />
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>to</span>
+                            <input
+                                type="date"
+                                className="msgr-oversight-date-input"
+                                value={oversightEndDate}
+                                onChange={e => setOversightEndDate(e.target.value)}
+                                title="End Date"
+                            />
+                        </div>
+
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
+                            <label className="msgr-oversight-checkbox-label">
+                                <input
+                                    type="checkbox"
+                                    checked={oversightHasAttachments}
+                                    onChange={e => setOversightHasAttachments(e.target.checked)}
+                                />
+                                <span>Has files</span>
+                            </label>
+                            <div style={{ display: 'flex', gap: 6 }}>
+                                <button
+                                    className="btn btn-xs btn-primary"
+                                    onClick={() => { setOversightPage(1); loadOversightConversations({ page: 1 }); }}
+                                    style={{ fontSize: '0.72rem', padding: '3px 8px' }}
+                                >
+                                    Filter
+                                </button>
+                                <button
+                                    className="btn btn-xs btn-outline"
+                                    onClick={() => {
+                                        setOversightSearch('');
+                                        setOversightStartDate('');
+                                        setOversightEndDate('');
+                                        setOversightHasAttachments(false);
+                                        setOversightPage(1);
+                                        loadOversightConversations({ search: '', startDate: '', endDate: '', hasAttachments: false, page: 1 });
+                                    }}
+                                    style={{ fontSize: '0.72rem', padding: '3px 8px' }}
+                                >
+                                    Reset
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Conversations List */}
+                    <div className="msgr-conv-list" style={{ padding: '8px 12px' }}>
+                        {oversightLoading ? (
+                            <div style={{ textAlign: 'center', padding: '24px 0', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                                Loading conversations...
+                            </div>
+                        ) : oversightConvs.length === 0 ? (
+                            <div style={{ textAlign: 'center', padding: '24px 0', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                                No conversations match criteria.
+                            </div>
+                        ) : (
+                            oversightConvs.map(conv => {
+                                const isSelected = selectedOversightConv?._id === conv._id;
+                                const title = getOversightTitle(conv);
+                                const lastMsg = conv.lastMessage;
+                                const lastSnippet = lastMsg?.text || (lastMsg?.fileName ? `📎 ${lastMsg.fileName}` : 'No messages');
+                                const lastTime = conv.updatedAt ? new Date(conv.updatedAt).toLocaleDateString([], { month: 'short', day: 'numeric' }) : '';
+
+                                return (
+                                    <div
+                                        key={conv._id}
+                                        className={`msgr-conv-item ${isSelected ? 'msgr-active' : ''}`}
+                                        onClick={() => {
+                                            setSelectedOversightConv(conv);
+                                            loadOversightConversationMessages(conv._id);
+                                        }}
+                                        style={{ padding: '10px 12px' }}
+                                    >
+                                        <div className="msgr-avatar" style={{ width: 36, height: 36, fontSize: '0.9rem', flexShrink: 0 }}>
+                                            {conv.isGroup ? <FiUsers /> : (title[0] || 'C')}
+                                        </div>
+                                        <div className="msgr-conv-info" style={{ overflow: 'hidden' }}>
+                                            <div className="msgr-conv-name-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                <span className="msgr-conv-name" style={{ fontSize: '0.86rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '190px' }} title={title}>
+                                                    {title}
+                                                </span>
+                                                <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', flexShrink: 0 }}>
+                                                    {lastTime}
+                                                </span>
+                                            </div>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
+                                                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '170px' }}>
+                                                    {lastSnippet}
+                                                </span>
+                                                <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                                                    {conv.hasAttachment && (
+                                                        <FiPaperclip size={12} style={{ color: 'var(--accent-primary)' }} title="Has attachments" />
+                                                    )}
+                                                    <span style={{ fontSize: '0.68rem', padding: '1px 5px', borderRadius: 8, background: 'rgba(0,0,0,0.06)', color: 'var(--text-secondary)' }}>
+                                                        {conv.messageCount || 0}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })
+                        )}
+                    </div>
+
+                    {/* Pagination Bar */}
+                    <div className="msgr-oversight-pagination">
+                        <span>Page {oversightPagination.page} of {oversightPagination.totalPages} ({oversightPagination.total})</span>
+                        <div style={{ display: 'flex', gap: 6 }}>
+                            <button
+                                className="btn btn-xs btn-outline"
+                                disabled={oversightPagination.page <= 1}
+                                onClick={() => {
+                                    const prev = oversightPagination.page - 1;
+                                    setOversightPage(prev);
+                                    loadOversightConversations({ page: prev });
+                                }}
+                            >
+                                Prev
+                            </button>
+                            <button
+                                className="btn btn-xs btn-outline"
+                                disabled={!oversightPagination.hasMore}
+                                onClick={() => {
+                                    const next = oversightPagination.page + 1;
+                                    setOversightPage(next);
+                                    loadOversightConversations({ page: next });
+                                }}
+                            >
+                                Next
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                {/* ── PANE 2: Read-Only Transcript ─────────────────── */}
+                <div className="msgr-oversight-transcript-pane">
+                    {!selectedOversightConv ? (
+                        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', padding: 32, textAlign: 'center' }}>
+                            <FiShield size={44} style={{ color: 'var(--accent-primary)', opacity: 0.35, marginBottom: 16 }} />
+                            <h3 style={{ margin: 0, fontSize: '1.15rem', color: 'var(--text-primary)' }}>Select a Conversation</h3>
+                            <p style={{ maxWidth: 360, fontSize: '0.85rem', marginTop: 8 }}>
+                                Choose a conversation from the left to inspect the message transcript, participants, and media files.
+                            </p>
+                        </div>
+                    ) : (
+                        <>
+                            {/* Compliance Audit Warning Banner */}
+                            <div className="msgr-oversight-audit-banner">
+                                <FiAlertTriangle size={15} style={{ flexShrink: 0 }} />
+                                <span>
+                                    <strong>Super Admin Oversight (Read-Only):</strong> Every message view is recorded in the compliance Audit Log with your admin ID and IP address.
+                                </span>
+                            </div>
+
+                            {/* Header */}
+                            <div className="msgr-window-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <div style={{ overflow: 'hidden' }}>
+                                    <h3 style={{ margin: 0, fontSize: '0.98rem', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                        {getOversightTitle(selectedOversightConv)}
+                                    </h3>
+                                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                        {oversightTotalMessages} messages • Created {new Date(selectedOversightConv.createdAt).toLocaleDateString()}
+                                    </span>
+                                </div>
+                                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                    <button
+                                        className="btn btn-sm btn-outline"
+                                        onClick={() => handleExport(selectedOversightConv._id)}
+                                        style={{ fontSize: '0.75rem', padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 4 }}
+                                        title="Export Conversation to PDF"
+                                    >
+                                        <FiDownload size={13} /> Export PDF
+                                    </button>
+                                    <button
+                                        className="btn btn-sm btn-outline"
+                                        onClick={() => loadOversightConversationMessages(selectedOversightConv._id)}
+                                        style={{ fontSize: '0.75rem', padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 4 }}
+                                        title="Refresh Messages"
+                                    >
+                                        <FiRefreshCw size={13} className={oversightMsgsLoading ? 'spin' : ''} />
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Transcript Messages Feed */}
+                            <div className="msgr-messages-container" style={{ padding: '20px 24px' }}>
+                                {oversightMsgsLoading && oversightMessages.length === 0 ? (
+                                    <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-muted)' }}>
+                                        Loading messages...
+                                    </div>
+                                ) : oversightMessages.length === 0 ? (
+                                    <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                                        No messages in this conversation.
+                                    </div>
+                                ) : (
+                                    oversightMessages.map((msg, idx) => {
+                                        const prevMsg = oversightMessages[idx - 1];
+                                        const showDateSep = !prevMsg || new Date(prevMsg.createdAt).toDateString() !== new Date(msg.createdAt).toDateString();
+                                        const senderName = msg.sender?.name || 'Unknown';
+                                        const senderEmpId = msg.sender?.id ? ` (${msg.sender.id})` : '';
+                                        const isMine = isMyMessage(msg);
+
+                                        return (
+                                            <div key={msg._id || idx}>
+                                                {showDateSep && (
+                                                    <div style={{ textAlign: 'center', margin: '14px 0 8px' }}>
+                                                        <span style={{ fontSize: '0.72rem', padding: '2px 10px', background: 'rgba(0,0,0,0.05)', borderRadius: 10, color: 'var(--text-muted)' }}>
+                                                            {formatDateSeparator(msg.createdAt)}
+                                                        </span>
+                                                    </div>
+                                                )}
+
+                                                <div className={`msgr-msg-wrapper ${isMine ? 'msgr-sent' : 'msgr-received'}`} style={{ marginBottom: 10 }}>
+                                                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: 2, padding: '0 4px' }}>
+                                                        <strong>{senderName}</strong>{senderEmpId} • {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                                    </div>
+
+                                                    <div className="msgr-msg-bubble">
+                                                        {msg.text && (
+                                                            <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                                                                <LinkifiedText text={msg.text} />
+                                                            </div>
+                                                        )}
+
+                                                        {/* Media: Image */}
+                                                        {msg.fileUrl && (msg.fileType === 'image' || (msg.mimeType && msg.mimeType.startsWith('image/')) || (msg.fileName && /\.(jpg|jpeg|png|gif|webp)$/i.test(msg.fileName))) && (
+                                                            <div style={{ marginTop: msg.text ? 8 : 0, cursor: 'pointer' }} onClick={() => setLightboxImage({ url: msg.fileUrl, name: msg.fileName })}>
+                                                                <img
+                                                                    src={msg.fileUrl}
+                                                                    alt={msg.fileName || 'Image'}
+                                                                    style={{ maxWidth: '100%', maxHeight: 260, borderRadius: 8, display: 'block' }}
+                                                                />
+                                                            </div>
+                                                        )}
+
+                                                        {/* Media: Video */}
+                                                        {msg.fileUrl && (msg.fileType === 'video' || (msg.mimeType && msg.mimeType.startsWith('video/')) || (msg.fileName && /\.(mp4|webm|mov)$/i.test(msg.fileName))) && (
+                                                            <div style={{ marginTop: msg.text ? 8 : 0 }}>
+                                                                <video controls src={msg.fileUrl} className="msgr-msg-video" style={{ maxWidth: '100%', borderRadius: 8 }} />
+                                                            </div>
+                                                        )}
+
+                                                        {/* Media: Audio */}
+                                                        {msg.fileUrl && (msg.fileType === 'audio' || (msg.mimeType && msg.mimeType.startsWith('audio/')) || (msg.fileName && /\.(mp3|wav|ogg|m4a)$/i.test(msg.fileName))) && (
+                                                            <div style={{ marginTop: msg.text ? 8 : 0 }}>
+                                                                <audio controls src={msg.fileUrl} className="msgr-msg-audio" />
+                                                            </div>
+                                                        )}
+
+                                                        {/* Media: Generic File Card */}
+                                                        {msg.fileUrl && msg.fileType !== 'image' && msg.fileType !== 'video' && msg.fileType !== 'audio' && !(msg.fileName && /\.(jpg|jpeg|png|gif|webp|mp4|webm|mov|mp3|wav|ogg|m4a)$/i.test(msg.fileName)) && (
+                                                            <div style={{ marginTop: msg.text ? 8 : 0, display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: 'rgba(0,0,0,0.04)', borderRadius: 8 }}>
+                                                                <span style={{ fontSize: '1.2rem' }}>{getFileIcon(msg.fileName)}</span>
+                                                                <div style={{ flex: 1, minWidth: 0 }}>
+                                                                    <div style={{ fontSize: '0.82rem', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                                        {msg.fileName || 'Attachment'}
+                                                                    </div>
+                                                                    {msg.fileSize && (
+                                                                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                                                                            {formatFileSize(msg.fileSize)}
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                                <a href={msg.fileUrl} target="_blank" rel="noopener noreferrer" download={msg.fileName} style={{ color: 'var(--accent-primary)', padding: 4 }}>
+                                                                    <FiDownload size={14} />
+                                                                </a>
+                                                            </div>
+                                                        )}
+
+                                                        {/* Status */}
+                                                        <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 4, marginTop: 4, fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                                                            {msg.status === 'seen' && <span style={{ color: '#38bdf8' }}>✓✓ Seen</span>}
+                                                            {msg.status === 'delivered' && <span>✓✓ Delivered</span>}
+                                                            {msg.status === 'sent' && <span>✓ Sent</span>}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        );
+                                    })
+                                )}
+                                <div ref={oversightMessagesEndRef} />
+                            </div>
+
+                            {/* Read-Only Notice Footer */}
+                            <div className="msgr-oversight-readonly-footer">
+                                <FiShield size={14} style={{ color: 'var(--accent-primary)' }} />
+                                <span>Super Admin Oversight is read-only. Sending messages in oversight mode is disabled.</span>
+                            </div>
+                        </>
+                    )}
+                </div>
+
+                {/* ── PANE 3: Conversation Details & Media Panel ────── */}
+                <div className="msgr-oversight-details-pane">
+                    <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <FiUser size={15} style={{ color: 'var(--accent-primary)' }} />
+                        <h4 style={{ margin: 0, fontSize: '0.92rem', fontWeight: 700 }}>Details & Audit</h4>
+                    </div>
+
+                    {!selectedOversightConv ? (
+                        <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+                            Select a chat to inspect details.
+                        </div>
+                    ) : (
+                        <>
+                            {/* Participants List */}
+                            <div className="msgr-oversight-section">
+                                <div className="msgr-oversight-section-title">
+                                    <span>Participants</span>
+                                    <span>({selectedOversightConv.participants?.length || 0})</span>
+                                </div>
+                                {(selectedOversightConv.participants || []).map(p => (
+                                    <div key={p._id || p.id} className="msgr-oversight-participant-card">
+                                        <div className="msgr-avatar" style={{ width: 34, height: 34, fontSize: '0.85rem', flexShrink: 0 }}>
+                                            {p.profile_image ? (
+                                                <img
+                                                    src={(p.profile_image.startsWith('http') || p.profile_image.startsWith('data:')) ? p.profile_image : `${API.defaults.baseURL.replace('/api', '')}${p.profile_image}`}
+                                                    alt={p.name}
+                                                    style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 'inherit' }}
+                                                />
+                                            ) : (p.name?.[0] || 'U')}
+                                        </div>
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                            <div style={{ fontSize: '0.82rem', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                {p.name}
+                                            </div>
+                                            <div style={{ fontSize: '0.72rem', color: 'var(--accent-primary)', fontWeight: 600 }}>
+                                                ID: {p.id || 'N/A'}
+                                            </div>
+                                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                {p.role} • {p.email}
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+
+                            {/* Metrics */}
+                            <div className="msgr-oversight-section">
+                                <div className="msgr-oversight-section-title">
+                                    <span>Overview</span>
+                                </div>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, fontSize: '0.78rem' }}>
+                                    <div style={{ padding: '8px 10px', background: 'var(--bg-primary)', borderRadius: 8, border: '1px solid var(--border-color)' }}>
+                                        <div style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>Messages</div>
+                                        <div style={{ fontWeight: 800, fontSize: '1rem', color: 'var(--text-primary)', marginTop: 2 }}>
+                                            {oversightTotalMessages}
+                                        </div>
+                                    </div>
+                                    <div style={{ padding: '8px 10px', background: 'var(--bg-primary)', borderRadius: 8, border: '1px solid var(--border-color)' }}>
+                                        <div style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>Attachments</div>
+                                        <div style={{ fontWeight: 800, fontSize: '1rem', color: 'var(--text-primary)', marginTop: 2 }}>
+                                            {oversightMediaFiles.length}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 10 }}>
+                                    <div>Created: {new Date(selectedOversightConv.createdAt).toLocaleString()}</div>
+                                    <div style={{ marginTop: 2 }}>Last Active: {new Date(selectedOversightConv.updatedAt).toLocaleString()}</div>
+                                </div>
+                            </div>
+
+                            {/* Shared Media & Files */}
+                            <div className="msgr-oversight-section" style={{ borderBottom: 'none' }}>
+                                <div className="msgr-oversight-section-title">
+                                    <span>Shared Media & Files</span>
+                                    <span>({oversightMediaFiles.length})</span>
+                                </div>
+                                {oversightMediaFiles.length === 0 ? (
+                                    <div style={{ color: 'var(--text-muted)', fontSize: '0.78rem', fontStyle: 'italic' }}>
+                                        No files shared in this chat.
+                                    </div>
+                                ) : (
+                                    oversightMediaFiles.map((f, i) => (
+                                        <a
+                                            key={f._id || i}
+                                            href={f.fileUrl}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            download={f.fileName}
+                                            className="msgr-oversight-media-item"
+                                            title={`Sent by ${f.sender?.name || 'Unknown'}`}
+                                        >
+                                            <span style={{ fontSize: '1.1rem', flexShrink: 0 }}>
+                                                {getFileIcon(f.fileName)}
+                                            </span>
+                                            <div style={{ flex: 1, minWidth: 0 }}>
+                                                <div style={{ fontSize: '0.78rem', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                    {f.fileName || 'File'}
+                                                </div>
+                                                <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                                                    {f.fileSize ? formatFileSize(f.fileSize) : ''} • {new Date(f.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+                                                </div>
+                                            </div>
+                                            <FiDownload size={13} style={{ color: 'var(--accent-primary)', flexShrink: 0 }} />
+                                        </a>
+                                    ))
+                                )}
+                            </div>
+                        </>
+                    )}
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div className={`msgr-page ${activeConv ? 'msgr-view-chat' : 'msgr-view-list'}`}>
             {/* Sidebar */}
@@ -790,26 +1381,19 @@ export default function Messages() {
                     {isAdmin && (
                         <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
                             <button
-                                className={`btn btn-sm ${!viewOversight ? 'btn-primary' : 'btn-outline'}`}
+                                className="btn btn-sm btn-primary"
                                 style={{ flex: 1, fontSize: '0.75rem', padding: '4px 8px' }}
-                                onClick={() => { setViewOversight(false); setActiveConv(null); }}
+                                onClick={() => setViewOversight(false)}
                             >
                                 My Chats
                             </button>
                             <button
-                                className={`btn btn-sm ${viewOversight ? 'btn-primary' : 'btn-outline'}`}
+                                className="btn btn-sm btn-outline"
                                 style={{ flex: 1, fontSize: '0.75rem', padding: '4px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}
-                                onClick={() => { setViewOversight(true); setActiveConv(null); }}
+                                onClick={() => setViewOversight(true)}
                             >
-                                <FiShield size={12} /> All (Oversight)
+                                <FiShield size={12} /> All (Monitor)
                             </button>
-                        </div>
-                    )}
-
-                    {isAdmin && viewOversight && (
-                        <div style={{ padding: '6px 8px', background: 'rgba(234, 179, 8, 0.1)', border: '1px solid rgba(234, 179, 8, 0.25)', borderRadius: 6, fontSize: '0.7rem', color: '#eab308', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <FiAlertTriangle size={14} style={{ flexShrink: 0 }} />
-                            <span>Oversight view active. All conversation reads are recorded in the Audit Log.</span>
                         </div>
                     )}
 
@@ -826,7 +1410,7 @@ export default function Messages() {
                 <div className="msgr-conv-list">
                     {conversations.length === 0 && !searchConv ? (
                         <div className="text-center mt-24" style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                            {viewOversight ? 'No conversations found in system.' : 'No active chats. Start one!'}
+                            No active chats. Start one!
                         </div>
                     ) : conversations
                         .filter(c => {
