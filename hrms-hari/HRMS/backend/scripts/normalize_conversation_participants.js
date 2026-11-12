@@ -27,8 +27,8 @@ function isBsonObjectId(val) {
 // Safety check against production
 function assertNotProduction(dbName, uri) {
     const isProdEnv = process.env.NODE_ENV === 'production';
-    const isProdDb = (dbName && dbName.toLowerCase() === 'hrms_db') ||
-                     (uri && uri.toLowerCase().includes('/hrms_db'));
+    const activeDb = (dbName || '').toLowerCase();
+    const isProdDb = activeDb === 'hrms_db' || (!activeDb && uri && uri.toLowerCase().includes('/hrms_db'));
 
     if ((isProdEnv || isProdDb) && !process.env.ALLOW_DEV_SCRIPT) {
         throw new Error(
