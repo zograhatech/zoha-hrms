@@ -242,6 +242,18 @@ exports.sendMessage = async (req, res) => {
             }
         } catch (_) {}
 
+        // Trigger hosted realtime (Pusher) if configured
+        try {
+            const { triggerRealtime } = require('../utils/realtimeService');
+            triggerRealtime(`chat-${conversationId}`, 'receive_message', populatedMessage);
+            if (recipientId) {
+                triggerRealtime(`user-${recipientId}`, 'chat-notification', {
+                    conversationId: conversationId.toString(),
+                    message: populatedMessage
+                });
+            }
+        } catch (_) {}
+
         res.json({ success: true, message: populatedMessage });
     } catch (err) {
         console.error('[sendMessage]', err);
@@ -286,6 +298,14 @@ exports.markDelivered = async (req, res) => {
                 $addToSet: { deliveredTo: userId }
             }
         );
+
+        if (updateResult.modifiedCount > 0) {
+            try {
+                const { triggerRealtime } = require('../utils/realtimeService');
+                const channels = convIds.slice(0, 10).map(id => `chat-${id}`);
+                triggerRealtime(channels, 'messages_delivered', { deliveredTo: userId, deliveredAt: now });
+            } catch (_) {}
+        }
 
         res.json({ success: true, modifiedCount: updateResult.modifiedCount });
     } catch (err) {
@@ -353,6 +373,16 @@ exports.markSeen = async (req, res) => {
                     seenAt: now
                 });
             }
+        } catch (_) {}
+
+        // Trigger hosted realtime (Pusher) if configured
+        try {
+            const { triggerRealtime } = require('../utils/realtimeService');
+            triggerRealtime(`chat-${conversationId}`, 'messages_seen', {
+                conversationId: conversationId.toString(),
+                seenBy: userId,
+                seenAt: now
+            });
         } catch (_) {}
 
         res.json({ success: true, modifiedCount: updateResult.modifiedCount });

@@ -17,5 +17,6 @@ const attendanceSchema = new mongoose.Schema({
 attendanceSchema.index({ employee_id: 1, date: 1 });
 attendanceSchema.index({ date: 1 });
 attendanceSchema.index({ status: 1 });
+attendanceSchema.index({ status: 1, check_out: 1, last_activity_at: 1 });
 
 module.exports = mongoose.models.Attendance || mongoose.model('Attendance', attendanceSchema);

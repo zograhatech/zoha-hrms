@@ -34,6 +34,7 @@ const connectDB = async () => {
   try {
     const options = {
       dbName: process.env.DB_NAME || 'hrms_db',
+      autoIndex: process.env.NODE_ENV !== 'production' && !process.env.VERCEL,
       serverSelectionTimeoutMS: 5000, // Fail fast on Vercel serverless (10s limit)
       connectTimeoutMS: 10000,
       heartbeatFrequencyMS: 2000,

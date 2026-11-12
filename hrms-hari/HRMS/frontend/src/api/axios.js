@@ -10,6 +10,47 @@ const API = axios.create({
     headers: { 'Content-Type': 'application/json' },
 });
 
+// In-flight GET request deduplication and 1.5s short-TTL cache for polling queries
+const inFlightRequests = new Map();
+const shortTtlCache = new Map();
+
+const originalGet = API.get.bind(API);
+
+API.get = function (url, config = {}) {
+    if (config?.noDedup || config?.responseType === 'blob') {
+        return originalGet(url, config);
+    }
+
+    const queryString = config.params ? JSON.stringify(config.params) : '';
+    const cacheKey = `GET:${url}:${queryString}`;
+    const now = Date.now();
+
+    // 1. Check short-TTL cache for high-frequency polling endpoints
+    const cached = shortTtlCache.get(cacheKey);
+    if (cached && (now - cached.timestamp < 1500)) {
+        return Promise.resolve({ ...cached.response });
+    }
+
+    // 2. Check in-flight concurrent requests to share single promise
+    if (inFlightRequests.has(cacheKey)) {
+        return inFlightRequests.get(cacheKey);
+    }
+
+    const promise = originalGet(url, config)
+        .then((response) => {
+            if (response?.status === 200 && (url.includes('unread-count') || url.includes('/settings/branding') || url.includes('/attendance/idle-policy'))) {
+                shortTtlCache.set(cacheKey, { response, timestamp: Date.now() });
+            }
+            return response;
+        })
+        .finally(() => {
+            inFlightRequests.delete(cacheKey);
+        });
+
+    inFlightRequests.set(cacheKey, promise);
+    return promise;
+};
+
 // Startup diagnostic log for preview and dev environments
 if (typeof window !== 'undefined') {
     const isProdMode = import.meta.env.MODE === 'production';

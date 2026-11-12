@@ -414,9 +414,12 @@ export default function Messages() {
         };
     }, [activeConv, isMyMessage, triggerMarkSeen]);
 
-    // Socket listener for real-time updates when Socket.io is available
+    // Socket / Realtime listener for instant updates
     useEffect(() => {
         if (!socket || !activeConv) return;
+
+        socket.subscribe?.(`chat-${activeConv._id}`);
+
         const handleReceive = (msg) => {
             const msgConvId = msg.conversationId?._id || msg.conversationId;
             if (msgConvId === activeConv._id) {
@@ -435,11 +438,17 @@ export default function Messages() {
                 setMessages(prev => prev.map(m => isMyMessage(m) ? { ...m, status: 'seen' } : m));
             }
         };
+        const handleDelivered = () => {
+            setMessages(prev => prev.map(m => isMyMessage(m) && m.status === 'sent' ? { ...m, status: 'delivered' } : m));
+        };
+
         socket.on('receive_message', handleReceive);
         socket.on('messages_seen', handleSeen);
+        socket.on('messages_delivered', handleDelivered);
         return () => {
             socket.off('receive_message', handleReceive);
             socket.off('messages_seen', handleSeen);
+            socket.off('messages_delivered', handleDelivered);
         };
     }, [socket, activeConv, isMyMessage, triggerMarkSeen]);
 

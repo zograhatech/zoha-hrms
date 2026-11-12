@@ -2,23 +2,10 @@ import { useState, lazy, Suspense, useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import Sidebar from '../components/Sidebar';
 import Navbar from '../components/Navbar';
-import FloatingChatButton from '../components/FloatingChatButton';
-import ChatWidget from '../components/ChatWidget';
-import FunChatbot from '../components/FunChatbot';
-import AnnouncementBanner from '../components/AnnouncementBanner';
 import { useAuth } from '../context/AuthContext';
 import { isManagerRole } from '../utils/roleHelper';
 import { FiFileText } from 'react-icons/fi';
 import ModuleGuard from '../components/ModuleGuard';
-
-const AdminRoute = ({ children }) => {
-    const { user } = useAuth();
-    const isAdmin = (user?.role || '').toLowerCase().replace(/\s+/g, '') === 'admin';
-    if (!isAdmin) {
-        return <Navigate to="/dashboard" replace />;
-    }
-    return children;
-};
 
 const safeLazy = (importFunc) => lazy(() => 
     importFunc().catch((error) => {
@@ -31,6 +18,21 @@ const safeLazy = (importFunc) => lazy(() =>
         return Promise.reject(error);
     })
 );
+
+// Lazy loaded floating widgets
+const FloatingChatButton = safeLazy(() => import('../components/FloatingChatButton'));
+const ChatWidget = safeLazy(() => import('../components/ChatWidget'));
+const FunChatbot = safeLazy(() => import('../components/FunChatbot'));
+const AnnouncementBanner = safeLazy(() => import('../components/AnnouncementBanner'));
+
+const AdminRoute = ({ children }) => {
+    const { user } = useAuth();
+    const isAdmin = (user?.role || '').toLowerCase().replace(/\s+/g, '') === 'admin';
+    if (!isAdmin) {
+        return <Navigate to="/dashboard" replace />;
+    }
+    return children;
+};
 
 // Pages - Lazy loaded
 const EmployeeDashboard = safeLazy(() => import('./employee/EmployeeDashboard'));
@@ -73,9 +75,22 @@ const BankingManagement = safeLazy(() => import('./admin/BankingManagement'));
 const InactiveDashboard = safeLazy(() => import('./employee/InactiveDashboard'));
 
 
+// Skeleton Loader for Page Transitions
 const SubLoader = () => (
-    <div className="flex-center" style={{ minHeight: '60vh' }}>
-        <div className="loading-spinner" />
+    <div style={{ padding: '24px', width: '100%', animation: 'fadeIn 0.2s ease-out' }}>
+        <div style={{ height: 26, width: '220px', background: 'var(--border-color)', borderRadius: 8, marginBottom: 20, opacity: 0.6 }} />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16, marginBottom: 24 }}>
+            {[1, 2, 3, 4].map(i => (
+                <div key={i} style={{ height: 96, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 14, padding: 16, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                    <div style={{ height: 12, width: '40%', background: 'var(--border-color)', borderRadius: 4, opacity: 0.5 }} />
+                    <div style={{ height: 22, width: '60%', background: 'var(--border-color)', borderRadius: 6, opacity: 0.7 }} />
+                </div>
+            ))}
+        </div>
+        <div style={{ height: 260, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 16, padding: 20 }}>
+            <div style={{ height: 16, width: '180px', background: 'var(--border-color)', borderRadius: 4, marginBottom: 16, opacity: 0.5 }} />
+            <div style={{ height: 180, background: 'var(--bg-primary)', borderRadius: 10, opacity: 0.3 }} />
+        </div>
     </div>
 );
 
@@ -101,7 +116,9 @@ export default function Dashboard() {
             <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
             <Navbar onToggleSidebar={() => setSidebarOpen(v => !v)} />
             <main className="main-content">
-                <AnnouncementBanner />
+                <Suspense fallback={null}>
+                    <AnnouncementBanner />
+                </Suspense>
                 <Suspense fallback={<SubLoader />}>
                     <Routes>
                         <Route index element={user?.status === 'inactive' ? <InactiveDashboard /> : <EmployeeDashboard />} />
@@ -162,9 +179,11 @@ export default function Dashboard() {
                 </Suspense>
 
             </main>
-            {(isManagerRole(role) || user?.permissions?.includes('fun')) && <FunChatbot />}
-            <FloatingChatButton />
-            <ChatWidget />
+            <Suspense fallback={null}>
+                {(isManagerRole(role) || user?.permissions?.includes('fun')) && <FunChatbot />}
+                <FloatingChatButton />
+                <ChatWidget />
+            </Suspense>
         </div>
     );
 }

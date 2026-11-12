@@ -23,4 +23,7 @@ const conversationSchema = new mongoose.Schema({
     }
 }, { timestamps: true });
 
+conversationSchema.index({ participants: 1, updatedAt: -1 });
+conversationSchema.index({ updatedAt: -1 });
+
 module.exports = mongoose.models.Conversation || mongoose.model('Conversation', conversationSchema);
