@@ -190,6 +190,59 @@ exports.getContactDirectory = async (req, res) => {
     }
 };
 
+// Helper to hydrate/resolve participants regardless of whether stored as ObjectIds or String IDs
+const hydrateConversationParticipants = async (conversations) => {
+    if (!conversations || conversations.length === 0) return conversations;
+    const isArray = Array.isArray(conversations);
+    const convList = isArray ? conversations : [conversations];
+
+    const neededObjectIds = new Set();
+    const neededStringIds = new Set();
+
+    for (const c of convList) {
+        for (const p of (c.participants || [])) {
+            if (!p) continue;
+            if (typeof p === 'object' && p.name && (p.id || p._id)) continue;
+            const pStr = p._id ? p._id.toString() : p.toString();
+            if (mongoose.Types.ObjectId.isValid(pStr)) {
+                neededObjectIds.add(new mongoose.Types.ObjectId(pStr));
+            } else {
+                neededStringIds.add(pStr);
+            }
+        }
+    }
+
+    const orClauses = [];
+    if (neededObjectIds.size > 0) orClauses.push({ _id: { $in: Array.from(neededObjectIds) } });
+    if (neededStringIds.size > 0) {
+        orClauses.push({ id: { $in: Array.from(neededStringIds) } });
+    }
+
+    let foundEmps = [];
+    if (orClauses.length > 0) {
+        foundEmps = await Employee.find({ $or: orClauses })
+            .select('name id employee_id email designation profile_image role department_id')
+            .lean();
+    }
+
+    const byOid = new Map(foundEmps.map(e => [e._id.toString(), e]));
+    const byStr = new Map(foundEmps.filter(e => e.id).map(e => [e.id.toUpperCase(), e]));
+    const byEmpId = new Map(foundEmps.filter(e => e.employee_id).map(e => [e.employee_id.toUpperCase(), e]));
+
+    for (const c of convList) {
+        const raw = c.toObject ? c.toObject() : c;
+        c.participants = (raw.participants || []).map(p => {
+            if (p && typeof p === 'object' && p.name && (p.id || p._id)) return p;
+            const pStr = (p?._id || p || '').toString();
+            const matched = byOid.get(pStr) || byStr.get(pStr.toUpperCase()) || byEmpId.get(pStr.toUpperCase());
+            if (matched) return matched;
+            return typeof p === 'object' ? p : { _id: pStr, id: pStr, name: pStr, email: '' };
+        });
+    }
+
+    return isArray ? convList : convList[0];
+};
+
 // Super Admin: get all conversations with pagination and search
 exports.getAdminConversations = async (req, res) => {
     try {
@@ -208,23 +261,58 @@ exports.getAdminConversations = async (req, res) => {
         const conditions = [];
 
         if (search && search.trim()) {
-            const term = search.trim();
-            // Find matching employees by name, id or email
-            const matchingEmps = await Employee.find({
-                $or: [
-                    { name: { $regex: term, $options: 'i' } },
-                    { id: { $regex: term, $options: 'i' } },
-                    { email: { $regex: term, $options: 'i' } }
-                ]
-            }).select('_id');
-            const empIds = matchingEmps.map(e => e._id);
+            const rawTerm = search.trim();
+            const escapedTerm = rawTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const termRegex = new RegExp(escapedTerm, 'i');
 
-            conditions.push({
-                $or: [
-                    { participants: { $in: empIds } },
-                    { groupName: { $regex: term, $options: 'i' } }
-                ]
-            });
+            // Find matching employees by id, employee_id, name, or email
+            const employeeOrConditions = [
+                { id: termRegex },
+                { employee_id: termRegex },
+                { name: termRegex },
+                { email: termRegex }
+            ];
+            if (mongoose.Types.ObjectId.isValid(rawTerm)) {
+                employeeOrConditions.push({ _id: new mongoose.Types.ObjectId(rawTerm) });
+            }
+
+            const matchingEmps = await Employee.find({
+                $or: employeeOrConditions
+            }).select('_id id employee_id name email').lean();
+
+            const empObjectIds = [];
+            const empStringIds = new Set();
+
+            for (const emp of matchingEmps) {
+                if (emp._id) {
+                    empObjectIds.push(emp._id);
+                    empStringIds.add(emp._id.toString());
+                }
+                if (emp.id) {
+                    empStringIds.add(emp.id);
+                    empStringIds.add(emp.id.toUpperCase());
+                }
+                if (emp.employee_id) {
+                    empStringIds.add(emp.employee_id);
+                    empStringIds.add(emp.employee_id.toUpperCase());
+                }
+            }
+
+            // Always add rawTerm directly in case participant is stored as raw string or code
+            empStringIds.add(rawTerm);
+            empStringIds.add(rawTerm.toUpperCase());
+
+            const participantFilters = [];
+            if (empObjectIds.length > 0) {
+                participantFilters.push({ participants: { $in: empObjectIds } });
+            }
+            if (empStringIds.size > 0) {
+                participantFilters.push({ participants: { $in: Array.from(empStringIds) } });
+            }
+            participantFilters.push({ participants: termRegex });
+            participantFilters.push({ groupName: termRegex });
+
+            conditions.push({ $or: participantFilters });
         }
 
         if (startDate || endDate) {
@@ -250,7 +338,6 @@ exports.getAdminConversations = async (req, res) => {
         const [total, conversations] = await Promise.all([
             Conversation.countDocuments(query),
             Conversation.find(query)
-                .populate('participants', 'name id email designation profile_image role department_id')
                 .populate({
                     path: 'lastMessage',
                     populate: { path: 'sender', select: 'name id profile_image' }
@@ -260,6 +347,9 @@ exports.getAdminConversations = async (req, res) => {
                 .limit(parsedLimit)
         ]);
 
+        // Hydrate all participants safely without Mongoose CastError on string IDs
+        await hydrateConversationParticipants(conversations);
+
         const convIds = conversations.map(c => c._id);
         const convsWithAttachments = await Message.distinct('conversationId', {
             conversationId: { $in: convIds },
@@ -267,7 +357,7 @@ exports.getAdminConversations = async (req, res) => {
         });
         const attachmentSet = new Set(convsWithAttachments.map(id => id.toString()));
 
-        // Also fetch total messages per conversation for overview
+        // Fetch total messages per conversation for overview
         const msgCounts = await Message.aggregate([
             { $match: { conversationId: { $in: convIds } } },
             { $group: { _id: '$conversationId', count: { $sum: 1 } } }
@@ -309,11 +399,13 @@ exports.getAdminConversationMessages = async (req, res) => {
         }
 
         const { id } = req.params;
-        const conversation = await Conversation.findById(id)
-            .populate('participants', 'name id email designation profile_image role department_id');
+        const conversation = await Conversation.findById(id);
         if (!conversation) {
             return res.status(404).json({ success: false, message: 'Conversation not found' });
         }
+
+        // Hydrate participants safely (handles ObjectIds and String IDs)
+        await hydrateConversationParticipants([conversation]);
 
         // AuditLog entry on every admin view of oversight transcript
         const adminUserId = await resolveEmployeeObjectId(req.user);
@@ -370,3 +462,5 @@ exports.getAdminConversationMessages = async (req, res) => {
         res.status(500).json({ success: false, message: err.message });
     }
 };
+
+exports.hydrateConversationParticipants = hydrateConversationParticipants;

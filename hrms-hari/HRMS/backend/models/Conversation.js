@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 
 const conversationSchema = new mongoose.Schema({
     participants: [{
-        type: mongoose.Schema.Types.ObjectId,
+        type: mongoose.Schema.Types.Mixed,
         ref: 'Employee'
     }],
     isGroup: {
@@ -14,7 +14,7 @@ const conversationSchema = new mongoose.Schema({
         trim: true
     },
     groupAdmin: {
-        type: mongoose.Schema.Types.ObjectId,
+        type: mongoose.Schema.Types.Mixed,
         ref: 'Employee'
     },
     lastMessage: {

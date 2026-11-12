@@ -856,14 +856,19 @@ export default function Messages() {
         }
     };
 
-    const handleExport = async (convId) => {
+    const handleExport = async (convId, format = 'pdf') => {
         try {
-            const res = await API.get(`/messages/${convId}/export`, { responseType: 'blob' });
-            const blob = new Blob([res.data], { type: 'application/pdf' });
+            const res = await API.get(`/conversations/admin/${convId}/export?format=${format}`, { responseType: 'blob' });
+            const mimeMap = {
+                pdf: 'application/pdf',
+                txt: 'text/plain',
+                csv: 'text/csv'
+            };
+            const blob = new Blob([res.data], { type: mimeMap[format] || 'application/octet-stream' });
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `chat_export_${convId}.pdf`;
+            a.download = `chat_oversight_${convId}.${format}`;
             document.body.appendChild(a);
             a.click();
             window.URL.revokeObjectURL(url);
@@ -1176,15 +1181,33 @@ export default function Messages() {
                                         {oversightTotalMessages} messages • Created {new Date(selectedOversightConv.createdAt).toLocaleDateString()}
                                     </span>
                                 </div>
-                                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                                    <button
-                                        className="btn btn-sm btn-outline"
-                                        onClick={() => handleExport(selectedOversightConv._id)}
-                                        style={{ fontSize: '0.75rem', padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 4 }}
-                                        title="Export Conversation to PDF"
-                                    >
-                                        <FiDownload size={13} /> Export PDF
-                                    </button>
+                                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                                    <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                                        <button
+                                            className="btn btn-sm btn-outline"
+                                            onClick={() => handleExport(selectedOversightConv._id, 'pdf')}
+                                            style={{ fontSize: '0.72rem', padding: '4px 6px', display: 'flex', alignItems: 'center', gap: 3 }}
+                                            title="Export to PDF"
+                                        >
+                                            <FiDownload size={12} /> PDF
+                                        </button>
+                                        <button
+                                            className="btn btn-sm btn-outline"
+                                            onClick={() => handleExport(selectedOversightConv._id, 'txt')}
+                                            style={{ fontSize: '0.72rem', padding: '4px 6px', display: 'flex', alignItems: 'center', gap: 3 }}
+                                            title="Export to TXT"
+                                        >
+                                            <FiDownload size={12} /> TXT
+                                        </button>
+                                        <button
+                                            className="btn btn-sm btn-outline"
+                                            onClick={() => handleExport(selectedOversightConv._id, 'csv')}
+                                            style={{ fontSize: '0.72rem', padding: '4px 6px', display: 'flex', alignItems: 'center', gap: 3 }}
+                                            title="Export to CSV"
+                                        >
+                                            <FiDownload size={12} /> CSV
+                                        </button>
+                                    </div>
                                     <button
                                         className="btn btn-sm btn-outline"
                                         onClick={() => loadOversightConversationMessages(selectedOversightConv._id)}

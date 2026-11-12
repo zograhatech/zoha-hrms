@@ -7,6 +7,7 @@ const AuditLog = require('../models/AuditLog');
 const Notification = require('../models/Notification');
 const { uploadFromBuffer } = require('../utils/cloudinary');
 const { normalizeRole } = require('../utils/visibilityHelper');
+const { isSuperAdminUser } = require('../utils/authHelper');
 const r2Storage = require('../utils/r2Storage');
 const PDFDocument = require('pdfkit');
 
@@ -436,55 +437,128 @@ exports.getUnreadCount = async (req, res) => {
     }
 };
 
-// Export conversation to PDF (Super Admin only)
+// Export conversation to PDF, TXT, or CSV (Strictly Super Admin only)
 exports.exportConversation = async (req, res) => {
     try {
-        const callerRole = normalizeRole(req.user?.role || '');
-        if (callerRole !== 'admin') {
-            return res.status(403).json({ success: false, message: 'Only Super Admins can export chats.' });
+        if (!isSuperAdminUser(req.user)) {
+            return res.status(403).json({ success: false, message: 'Forbidden. Only Super Admins can export chats.' });
         }
 
-        const { conversationId } = req.params;
-        const conversation = await Conversation.findById(conversationId).populate('participants', 'name email id');
+        const conversationId = req.params.conversationId || req.params.id;
+        const conversation = await Conversation.findById(conversationId);
         if (!conversation) {
             return res.status(404).json({ success: false, message: 'Conversation not found' });
         }
 
-        const userId = await resolveUserId(req.user);
-        if (userId) {
-            await AuditLog.create({
-                user_id: userId,
-                action: 'EXPORT',
-                resource: 'conversation',
-                resource_id: conversation._id,
-                ip_address: req.ip || req.connection?.remoteAddress,
-                user_agent: req.get('user-agent')
-            });
+        // Hydrate conversation participants for display
+        const { hydrateConversationParticipants } = require('./conversationController');
+        if (typeof hydrateConversationParticipants === 'function') {
+            await hydrateConversationParticipants(conversation);
         }
 
         const messages = await Message.find({ conversationId })
-            .populate('sender', 'name id')
-            .sort({ createdAt: 1 });
+            .populate('sender', 'name id email')
+            .sort({ createdAt: 1 })
+            .lean();
 
+        // AuditLog entry with action CHAT_OVERSIGHT_EXPORT
+        const format = (req.query.format || 'pdf').toLowerCase();
+        const adminUserId = await resolveUserId(req.user);
+        if (adminUserId) {
+            try {
+                await AuditLog.create({
+                    user_id: adminUserId,
+                    action: 'CHAT_OVERSIGHT_EXPORT',
+                    resource: 'conversation',
+                    resource_id: conversation._id,
+                    new_value: {
+                        format,
+                        totalMessages: messages.length,
+                        exportedAt: new Date()
+                    },
+                    ip_address: req.ip || req.connection?.remoteAddress,
+                    user_agent: req.get('user-agent')
+                });
+            } catch (auditErr) {
+                console.error('[exportConversation] AuditLog creation failed:', auditErr.message);
+            }
+        }
+
+        const participantStr = (conversation.participants || [])
+            .map(p => `${p.name || p.id || 'Unknown'} (${p.id || p.email || '—'})`)
+            .join(', ');
+
+        if (format === 'txt') {
+            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+            res.setHeader('Content-Disposition', `attachment; filename="chat_oversight_${conversationId}.txt"`);
+            
+            let textOutput = `=== CHAT CONVERSATION OVERSIGHT EXPORT ===\n`;
+            textOutput += `Conversation ID: ${conversationId}\n`;
+            textOutput += `Participants: ${participantStr}\n`;
+            textOutput += `Exported At: ${new Date().toISOString()}\n`;
+            textOutput += `Total Messages: ${messages.length}\n`;
+            textOutput += `------------------------------------------------------------\n\n`;
+
+            for (const msg of messages) {
+                const time = new Date(msg.createdAt).toLocaleString();
+                const senderName = msg.sender?.name || msg.sender?.id || 'Unknown';
+                const senderId = msg.sender?.id ? ` (${msg.sender.id})` : '';
+                const fileInfo = msg.fileUrl ? ` [Attachment: ${msg.fileName || 'file'} - ${msg.fileUrl}]` : '';
+                textOutput += `[${time}] ${senderName}${senderId}: ${msg.text || ''}${fileInfo}\n`;
+            }
+
+            return res.send(textOutput);
+        }
+
+        if (format === 'csv') {
+            res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+            res.setHeader('Content-Disposition', `attachment; filename="chat_oversight_${conversationId}.csv"`);
+            
+            const escapeCsv = (str) => {
+                if (str === null || str === undefined) return '""';
+                const s = String(str).replace(/"/g, '""');
+                return `"${s}"`;
+            };
+
+            let csvOutput = `"Timestamp","Sender ID","Sender Name","Message","Attachment Name","Attachment URL"\n`;
+            for (const msg of messages) {
+                const time = new Date(msg.createdAt).toISOString();
+                const senderId = msg.sender?.id || '';
+                const senderName = msg.sender?.name || 'Unknown';
+                const text = msg.text || '';
+                const fileName = msg.fileName || '';
+                const fileUrl = msg.fileUrl || '';
+                csvOutput += `${escapeCsv(time)},${escapeCsv(senderId)},${escapeCsv(senderName)},${escapeCsv(text)},${escapeCsv(fileName)},${escapeCsv(fileUrl)}\n`;
+            }
+
+            return res.send(csvOutput);
+        }
+
+        // Default: PDF format
         const doc = new PDFDocument({ margin: 50 });
         res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', `attachment; filename=conversation_${conversationId}.pdf`);
+        res.setHeader('Content-Disposition', `attachment; filename="chat_oversight_${conversationId}.pdf"`);
         doc.pipe(res);
 
-        doc.fontSize(18).text('Chat Conversation Export', { align: 'center' });
+        doc.fontSize(16).text('Chat Conversation Oversight Export', { align: 'center' });
         doc.moveDown();
-        const participantNames = conversation.participants.map(p => `${p.name} (${p.id || p.email})`).join(', ');
-        doc.fontSize(10).text(`Participants: ${participantNames}`);
+        doc.fontSize(9).fillColor('#666666').text(`Conversation ID: ${conversationId}`);
+        doc.text(`Participants: ${participantStr}`);
         doc.text(`Generated at: ${new Date().toISOString()}`);
+        doc.text(`Total Messages: ${messages.length}`);
         doc.moveDown();
-        doc.text('------------------------------------------------------------');
+        doc.text('--------------------------------------------------------------------------------------------------');
         doc.moveDown();
 
         for (const msg of messages) {
             const time = new Date(msg.createdAt).toLocaleString();
-            const sender = msg.sender ? `${msg.sender.name}` : 'Unknown';
-            doc.fontSize(10).fillColor('#333333').text(`[${time}] ${sender}:`, { continued: true });
-            doc.fillColor('#000000').text(` ${msg.text || (msg.fileUrl ? `[File: ${msg.fileName || msg.fileUrl}]` : '')}`);
+            const sender = msg.sender ? `${msg.sender.name} (${msg.sender.id || '—'})` : 'Unknown';
+            doc.fontSize(9).fillColor('#0284c7').text(`[${time}] ${sender}:`, { continued: true });
+            doc.fillColor('#111827').text(` ${msg.text || ''}`);
+            if (msg.fileUrl) {
+                doc.fontSize(8).fillColor('#d97706').text(`   📎 Attachment: ${msg.fileName || 'file'} (${msg.fileUrl})`);
+            }
+            doc.moveDown(0.3);
         }
 
         doc.end();
