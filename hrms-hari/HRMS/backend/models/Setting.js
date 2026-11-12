@@ -75,6 +75,7 @@ const settingSchema = new mongoose.Schema({
     idle_auto_clockout_enabled: { type: Boolean, default: false },
     auto_clock_back_in: { type: Boolean, default: false },
     auto_clock_back_in_window_minutes: { type: Number, default: 15, min: 1, max: 120 },
+    max_meeting_media_minutes: { type: Number, default: 90, min: 10, max: 480 },
     companion_download_url: { type: String, default: '' },
     monthly_leave_allowance: { type: Number, default: 1, min: 0 },
     days_worked_convention: { type: String, enum: ['payable', 'attended'], default: 'payable' },

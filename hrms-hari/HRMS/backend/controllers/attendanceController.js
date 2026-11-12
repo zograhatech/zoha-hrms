@@ -1096,6 +1096,7 @@ const getIdlePolicy = async (req, res) => {
             idle_grace_period_seconds: grace_period_seconds,
             auto_clock_back_in,
             auto_clock_back_in_window_minutes,
+            max_meeting_media_minutes: Number(settings?.max_meeting_media_minutes ?? 90),
             exempt_app_names,
             idle_exempt_app_names: exempt_app_names,
             exempt: isExempt,
@@ -1119,7 +1120,7 @@ const getIdlePolicy = async (req, res) => {
 // POST /api/attendance/auto-clock-out
 const autoClockOut = async (req, res) => {
     try {
-        const { idle_seconds, reported_at, device_id, hostname } = req.body;
+        const { idle_seconds, reported_at, device_id, hostname, companion_version } = req.body;
         const devId = device_id || (req.user?.is_device_token ? 'companion-default' : 'web-browser');
         const devHostname = hostname || '';
 
@@ -1228,6 +1229,7 @@ const autoClockOut = async (req, res) => {
             device_id: devId,
             hostname: devHostname || (existingIdx >= 0 ? attendance.devices[existingIdx].hostname : ''),
             source: req.user?.is_device_token ? 'companion' : 'web',
+            companion_version: companion_version || (existingIdx >= 0 ? attendance.devices[existingIdx].companion_version : null),
             last_activity_at: devLastActivity,
             idle_seconds: safeIdleSeconds,
             in_meeting: false,
@@ -1241,9 +1243,14 @@ const autoClockOut = async (req, res) => {
 
         // 6. Multi-device check: Check if ANY other device or web session is active within the timeout window
         const timeoutMs = timeout_minutes * 60 * 1000;
+        const maxMeetingMediaMinutes = Number(settings?.max_meeting_media_minutes ?? 90);
+        const maxMeetingMediaSeconds = maxMeetingMediaMinutes * 60;
+
         const otherActiveDevices = attendance.devices.filter(d => {
             if (d.device_id === devId) return false;
-            if (d.in_meeting || d.media_active) return true;
+            // Cap media/meeting-only activity: if idle_seconds > maxMeetingMediaSeconds (default 90m), do NOT count as active
+            const meetingOrMediaActive = (d.in_meeting || d.media_active) && (d.idle_seconds || 0) <= maxMeetingMediaSeconds;
+            if (meetingOrMediaActive) return true;
             const lastAct = d.last_activity_at ? new Date(d.last_activity_at).getTime() : 0;
             return (now.getTime() - lastAct) < timeoutMs;
         });
@@ -1364,18 +1371,28 @@ const heartbeat = async (req, res) => {
             idle_seconds = 0,
             in_meeting = false,
             media_active = false,
-            source = (req.user?.is_device_token ? 'companion' : 'web')
+            source = (req.user?.is_device_token ? 'companion' : 'web'),
+            companion_version
         } = req.body || {};
 
+        const settings = await getCachedIdleSettings();
+        const maxMeetingMediaMinutes = Number(settings?.max_meeting_media_minutes ?? 90);
+        const maxMeetingMediaSeconds = maxMeetingMediaMinutes * 60;
+
         const devId = device_id || (req.user?.is_device_token ? 'companion-default' : 'web-browser');
-        const isDeviceActive = in_meeting || media_active || (typeof idle_seconds === 'number' && idle_seconds < 60);
-        const safeIdleSeconds = (in_meeting || media_active) ? 0 : Math.max(0, Number(idle_seconds) || 0);
+        const rawIdleSeconds = Math.max(0, Number(idle_seconds) || 0);
+
+        // Cap media/meeting-only activity: if no keyboard/mouse input for > maxMeetingMediaSeconds, stop counting
+        const isMediaMeetingCapped = rawIdleSeconds > maxMeetingMediaSeconds;
+        const effectiveInMeeting = Boolean(in_meeting) && !isMediaMeetingCapped;
+        const effectiveMediaActive = Boolean(media_active) && !isMediaMeetingCapped;
+
+        const isDeviceActive = effectiveInMeeting || effectiveMediaActive || (rawIdleSeconds < 60);
+        const safeIdleSeconds = (effectiveInMeeting || effectiveMediaActive) ? 0 : rawIdleSeconds;
         const devLastActivity = new Date(now.getTime() - safeIdleSeconds * 1000);
 
         let attendance = await findOpenSession(empId);
         let resumed = false;
-
-        const settings = await getCachedIdleSettings();
 
         // Auto clock back in: if no open session, but user is active and was auto-clocked-out today within window
         if (!attendance && settings?.auto_clock_back_in && isDeviceActive) {
@@ -1415,10 +1432,11 @@ const heartbeat = async (req, res) => {
                 device_id: devId,
                 hostname: hostname || (existingIdx >= 0 ? attendance.devices[existingIdx].hostname : ''),
                 source,
+                companion_version: companion_version || (existingIdx >= 0 ? attendance.devices[existingIdx].companion_version : null),
                 last_activity_at: devLastActivity,
-                idle_seconds: safeIdleSeconds,
-                in_meeting: Boolean(in_meeting),
-                media_active: Boolean(media_active)
+                idle_seconds: rawIdleSeconds,
+                in_meeting: effectiveInMeeting,
+                media_active: effectiveMediaActive
             };
 
             if (existingIdx >= 0) {
@@ -1480,11 +1498,41 @@ const sweepStaleSessions = async (req, res) => {
         const openSessions = await Attendance.find({ is_open_session: true });
         let closedCount = 0;
 
+        // Helper to check version >= minVersion
+        const isVersionAtLeast = (ver, minVer) => {
+            if (!ver) return false;
+            const parse = v => String(v).replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
+            const vParts = parse(ver);
+            const minParts = parse(minVer);
+            for (let i = 0; i < Math.max(vParts.length, minParts.length); i++) {
+                const a = vParts[i] || 0;
+                const b = minParts[i] || 0;
+                if (a > b) return true;
+                if (a < b) return false;
+            }
+            return true;
+        };
+
+        const maxMeetingMediaMinutes = Number(settings?.max_meeting_media_minutes ?? 90);
+        const maxMeetingMediaSeconds = maxMeetingMediaMinutes * 60;
+
         for (const session of openSessions) {
             const checkInTime = new Date(session.check_in || session.date);
 
-            // If any device is currently in a meeting or playing media, do not sweep
-            const hasMeetingOrMedia = (session.devices || []).some(d => d.in_meeting || d.media_active);
+            // Backward compatibility: Until an employee's devices report the new version (>= 2.0.0),
+            // the sweeper must NOT close their session based on missing heartbeats.
+            // Legacy companions do not send heartbeats, so their sessions must never be wrongly swept.
+            const hasNewCompanionDevice = (session.devices || []).some(d => 
+                d.companion_version && isVersionAtLeast(d.companion_version, '2.0.0')
+            );
+            if (!hasNewCompanionDevice) {
+                continue;
+            }
+
+            // If any device is currently in a meeting or playing media (and keyboard/mouse inactivity has not exceeded 90m), do not sweep
+            const hasMeetingOrMedia = (session.devices || []).some(d =>
+                (d.in_meeting || d.media_active) && (d.idle_seconds || 0) <= maxMeetingMediaSeconds
+            );
             if (hasMeetingOrMedia) {
                 continue;
             }

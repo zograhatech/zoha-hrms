@@ -5,6 +5,7 @@ namespace ZograhaIdleCompanion;
 
 public static class CompanionConfig
 {
+    public const string Version = "2.0.0";
     public const string BackendUrl = "https://zoha-hrms.vercel.app";
     public const string MutexName = @"Global\ZograhaIdleCompanion";
     public const string RunRegistryKey = @"Software\Microsoft\Windows\CurrentVersion\Run";

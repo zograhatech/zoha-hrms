@@ -23,6 +23,7 @@ Privacy Guarantee:
 # Configuration
 $BackendUrl = "https://zoha-hrms.vercel.app"
 $AppDataDir = [System.IO.Path]::Combine($env:APPDATA, "ZograhaIdle")
+$CompanionVersion = "2.0.0"
 $TokenFile  = [System.IO.Path]::Combine($AppDataDir, "token.txt")
 $DeviceIdFile = [System.IO.Path]::Combine($AppDataDir, "device_id.txt")
 $LogFile    = [System.IO.Path]::Combine($AppDataDir, "companion.log")
@@ -257,6 +258,13 @@ try {
         # Measure system idle seconds and active calls/media
         $inMeeting = Test-IsMicrophoneOrCameraActive
         $rawIdleSeconds = Get-IdleSeconds
+        # Cap media/meeting activity: if no keyboard/mouse input for > maxMeetingMediaSeconds (default 90m), stop counting as active
+        $maxMeetingMediaMinutes = if ($null -ne $Policy.max_meeting_media_minutes) { [int]$Policy.max_meeting_media_minutes } else { 90 }
+        $maxMeetingMediaSeconds = $maxMeetingMediaMinutes * 60
+        if ($inMeeting -and $rawIdleSeconds -gt $maxMeetingMediaSeconds) {
+            $inMeeting = $false
+        }
+
         $effectiveIdleSeconds = if ($inMeeting) { 0 } else { $rawIdleSeconds }
 
         # Send heartbeat every 60s
@@ -264,12 +272,13 @@ try {
         if ($secondsSinceHeartbeat -ge 60 -or $LastHeartbeat -eq [DateTime]::MinValue) {
             try {
                 $hbBody = @{
-                    device_id    = $DeviceId
-                    hostname     = $Hostname
-                    idle_seconds = $effectiveIdleSeconds
-                    in_meeting   = $inMeeting
-                    media_active = $false
-                    source       = "companion"
+                    device_id         = $DeviceId
+                    hostname          = $Hostname
+                    companion_version = $CompanionVersion
+                    idle_seconds      = $effectiveIdleSeconds
+                    in_meeting        = $inMeeting
+                    media_active      = $false
+                    source            = "companion"
                 } | ConvertTo-Json
 
                 $hbHeaders = @{
@@ -386,10 +395,11 @@ try {
                 Write-Log "Confirmed idle condition on 2 consecutive checks (${confirmedIdle}s). Attempting auto clock-out."
 
                 $body = @{
-                    device_id    = $DeviceId
-                    hostname     = $Hostname
-                    idle_seconds = $confirmedIdle
-                    reported_at  = [DateTime]::UtcNow.ToString("o")
+                    device_id         = $DeviceId
+                    hostname          = $Hostname
+                    companion_version = $CompanionVersion
+                    idle_seconds      = $confirmedIdle
+                    reported_at       = [DateTime]::UtcNow.ToString("o")
                 } | ConvertTo-Json
 
                 $headers = @{

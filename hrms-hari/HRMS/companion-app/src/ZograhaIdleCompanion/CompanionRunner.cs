@@ -172,6 +172,16 @@ public class CompanionRunner
             bool inMeeting = UserInputTracker.IsMicrophoneOrCameraActive();
             bool mediaActive = UserInputTracker.IsFullScreenOrMediaActive();
             int rawIdleSeconds = UserInputTracker.GetIdleSeconds();
+
+            // Cap media/meeting-only activity: if no keyboard/mouse input for > maxMeetingMediaSeconds (default 90m), stop counting
+            int maxMeetingMediaMinutes = policy.GetEffectiveMaxMeetingMediaMinutes();
+            int maxMeetingMediaSeconds = maxMeetingMediaMinutes * 60;
+            if (rawIdleSeconds > maxMeetingMediaSeconds)
+            {
+                inMeeting = false;
+                mediaActive = false;
+            }
+
             int effectiveIdleSeconds = (inMeeting || mediaActive) ? 0 : rawIdleSeconds;
 
             // 2. Periodic heartbeat every 60s

@@ -276,7 +276,7 @@ If you did not request this, please contact your administrator.`;
 // POST /api/devices/enroll (public, rate limited)
 const enrollDevice = async (req, res) => {
     try {
-        const { code, device_name } = req.body;
+        const { code, device_name, companion_version } = req.body;
         if (!code || typeof code !== 'string') {
             return res.status(400).json({
                 success: false,
@@ -324,6 +324,7 @@ const enrollDevice = async (req, res) => {
             employee_id: employee.id,
             token_hash: tokenHash,
             device_name: finalDeviceName,
+            companion_version: typeof companion_version === 'string' ? companion_version.trim().slice(0, 30) : null,
             created_by: 'enrollment',
             expires_at: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
             revoked: false

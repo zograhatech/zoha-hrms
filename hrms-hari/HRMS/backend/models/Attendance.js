@@ -16,6 +16,7 @@ const attendanceSchema = new mongoose.Schema({
         device_id: { type: String },
         hostname: { type: String },
         source: { type: String, default: 'companion' },
+        companion_version: { type: String, default: null },
         last_activity_at: { type: Date },
         idle_seconds: { type: Number, default: 0 },
         in_meeting: { type: Boolean, default: false },
@@ -27,7 +28,6 @@ const attendanceSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 attendanceSchema.index({ employee_id: 1, date: 1 });
-attendanceSchema.index({ date: 1 });
 attendanceSchema.index({ status: 1 });
 attendanceSchema.index({ is_open_session: 1, last_activity_at: 1 });
 attendanceSchema.index({ status: 1, check_out: 1, last_activity_at: 1 });

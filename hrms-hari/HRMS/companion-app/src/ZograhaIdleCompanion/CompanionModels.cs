@@ -48,6 +48,9 @@ public class IdlePolicyResponse
     [JsonPropertyName("auto_clock_back_in_window_minutes")]
     public int? AutoClockBackInWindowMinutes { get; set; }
 
+    [JsonPropertyName("max_meeting_media_minutes")]
+    public int? MaxMeetingMediaMinutes { get; set; }
+
     public bool IsFeatureEnabled()
     {
         if (IdleAutoClockoutEnabled.HasValue) return IdleAutoClockoutEnabled.Value;
@@ -88,6 +91,11 @@ public class IdlePolicyResponse
     {
         return (IdleGracePeriodSeconds.HasValue && IdleGracePeriodSeconds.Value > 0) ? IdleGracePeriodSeconds.Value : 60;
     }
+
+    public int GetEffectiveMaxMeetingMediaMinutes()
+    {
+        return (MaxMeetingMediaMinutes.HasValue && MaxMeetingMediaMinutes.Value > 0) ? MaxMeetingMediaMinutes.Value : 90;
+    }
 }
 
 public class HeartbeatPayload
@@ -97,6 +105,9 @@ public class HeartbeatPayload
 
     [JsonPropertyName("hostname")]
     public string Hostname { get; set; } = string.Empty;
+
+    [JsonPropertyName("companion_version")]
+    public string CompanionVersion { get; set; } = CompanionConfig.Version;
 
     [JsonPropertyName("idle_seconds")]
     public int IdleSeconds { get; set; }
@@ -134,6 +145,9 @@ public class AutoClockOutPayload
     [JsonPropertyName("hostname")]
     public string Hostname { get; set; } = string.Empty;
 
+    [JsonPropertyName("companion_version")]
+    public string CompanionVersion { get; set; } = CompanionConfig.Version;
+
     [JsonPropertyName("idle_seconds")]
     public int IdleSeconds { get; set; }
 
@@ -163,6 +177,9 @@ public class EnrollPayload
 
     [JsonPropertyName("device_name")]
     public string DeviceName { get; set; } = string.Empty;
+
+    [JsonPropertyName("companion_version")]
+    public string CompanionVersion { get; set; } = CompanionConfig.Version;
 }
 
 public class EnrollResponse

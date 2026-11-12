@@ -27,12 +27,15 @@ const deviceTokenSchema = new mongoose.Schema({
         type: Boolean,
         default: false
     },
+    companion_version: {
+        type: String,
+        default: null
+    },
     last_used_at: {
         type: Date
     }
 }, { timestamps: true });
 
-deviceTokenSchema.index({ token_hash: 1 });
 deviceTokenSchema.index({ employee_id: 1 });
 
 module.exports = mongoose.models.DeviceToken || mongoose.model('DeviceToken', deviceTokenSchema);
