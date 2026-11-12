@@ -33,10 +33,17 @@ exports.createConversation = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Invalid sender or recipient' });
         }
 
-        // Check for existing 1-on-1
+        // Check for existing 1-on-1 (match ObjectId or legacy string representation)
+        const senderMatches = [senderId, senderId.toString(), req.user?.id, req.user?.employee_id].filter(Boolean);
+        const targetMatches = [targetId, targetId.toString(), recipientId].filter(Boolean);
+
         let conversation = await Conversation.findOne({
             isGroup: false,
-            participants: { $all: [senderId, targetId], $size: 2 }
+            $and: [
+                { participants: { $in: senderMatches } },
+                { participants: { $in: targetMatches } },
+                { participants: { $size: 2 } }
+            ]
         }).populate('participants', 'name id profile_image email');
 
         if (!conversation) {
@@ -48,6 +55,7 @@ exports.createConversation = async (req, res) => {
             return res.status(201).json({ success: true, conversation });
         }
 
+        await hydrateConversationParticipants([conversation]);
         res.json({ success: true, conversation });
     } catch (err) {
         console.error('[createConversation]', err);
@@ -67,12 +75,13 @@ exports.createGroup = async (req, res) => {
         const validParticipants = resolvedParticipants.filter(Boolean);
         const allParticipants = [...new Set([...validParticipants.map(p => p.toString()), adminId.toString()])].map(id => new mongoose.Types.ObjectId(id));
 
-        const conversation = await Conversation.create({
+        let conversation = await Conversation.create({
             participants: allParticipants,
             isGroup: true,
             groupName,
             groupAdmin: adminId
         });
+        conversation = await conversation.populate('participants', 'name id profile_image email');
 
         res.json({ success: true, conversation });
     } catch (err) {
@@ -84,17 +93,29 @@ exports.createGroup = async (req, res) => {
 // Get User's Conversations
 exports.getConversations = async (req, res) => {
     try {
-        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        if (typeof res.setHeader === 'function') {
+            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        }
         const callerRole = normalizeRole(req.user?.role || '');
         const userId = await resolveEmployeeObjectId(req.user);
+        const userObjIdStr = userId ? userId.toString() : null;
+        const userCode = req.user?.id || req.user?.employee_id;
 
         let query = {};
         if (callerRole === 'admin' && (req.query.all === 'true' || req.query.oversight === 'true')) {
             // Super Admin oversight view returns all conversations
             query = {};
         } else {
-            // For all other roles and normal view, only where caller is a participant
-            query = { participants: userId };
+            // For all other roles and normal view, match where caller is a participant
+            // (handles both ObjectIds and legacy string IDs)
+            const participantMatches = [userId];
+            if (userObjIdStr) participantMatches.push(userObjIdStr);
+            if (userCode) {
+                participantMatches.push(userCode);
+                participantMatches.push(userCode.toUpperCase());
+                participantMatches.push(userCode.toLowerCase());
+            }
+            query = { participants: { $in: Array.from(new Set(participantMatches.filter(Boolean))) } };
         }
 
         const conversations = await Conversation.find(query)
@@ -105,6 +126,9 @@ exports.getConversations = async (req, res) => {
             })
             .sort({ updatedAt: -1 });
 
+        // Hydrate any string participants safely without CastErrors
+        await hydrateConversationParticipants(conversations);
+
         // Calculate unread count per conversation for caller in a single aggregated query
         const convIds = conversations.map(c => c._id);
         const unreadCounts = await Message.aggregate([
@@ -112,7 +136,10 @@ exports.getConversations = async (req, res) => {
                 $match: {
                     conversationId: { $in: convIds },
                     sender: { $ne: userId },
-                    status: { $in: ['sent', 'delivered'] }
+                    $or: [
+                        { status: { $in: ['sent', 'delivered'] } },
+                        { 'seenBy.employee': { $ne: userId } }
+                    ]
                 }
             },
             {
@@ -146,8 +173,11 @@ exports.deleteConversation = async (req, res) => {
         const conversation = await Conversation.findById(id);
         if (!conversation) return res.status(404).json({ success: false, message: 'Conversation not found' });
 
-        // Check if user is a participant
-        const isParticipant = (conversation.participants || []).some(p => p.toString() === userId?.toString());
+        // Check if user is a participant (matches ObjectId or string employee code)
+        const isParticipant = (conversation.participants || []).some(p => {
+            const pid = (p?._id || p).toString();
+            return (userId && pid === userId.toString()) || (req.user?.id && pid === req.user.id);
+        });
         if (!isParticipant) {
             return res.status(403).json({ success: false, message: 'Unauthorized' });
         }

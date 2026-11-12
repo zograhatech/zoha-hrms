@@ -1030,6 +1030,7 @@ const getIdlePolicy = async (req, res) => {
 
         const DEFAULTS = {
             idle_timeout_minutes: 10,
+            idle_grace_period_seconds: 60,
             idle_auto_clockout_enabled: false,
             idle_exempt_app_names: [],
             office_start_time: '09:00',
@@ -1046,6 +1047,16 @@ const getIdlePolicy = async (req, res) => {
         } else {
             timeout_minutes = Number(timeout_minutes);
         }
+
+        let grace_period_seconds = settings?.idle_grace_period_seconds;
+        if (grace_period_seconds == null || isNaN(Number(grace_period_seconds))) {
+            grace_period_seconds = DEFAULTS.idle_grace_period_seconds;
+        } else {
+            grace_period_seconds = Number(grace_period_seconds);
+        }
+
+        const auto_clock_back_in = Boolean(settings?.auto_clock_back_in);
+        const auto_clock_back_in_window_minutes = Number(settings?.auto_clock_back_in_window_minutes) || 15;
 
         let enabled = settings?.idle_auto_clockout_enabled;
         if (enabled == null) {
@@ -1082,6 +1093,9 @@ const getIdlePolicy = async (req, res) => {
             idle_auto_clockout_enabled: enabled,
             timeout_minutes,
             idle_timeout_minutes: timeout_minutes,
+            idle_grace_period_seconds: grace_period_seconds,
+            auto_clock_back_in,
+            auto_clock_back_in_window_minutes,
             exempt_app_names,
             idle_exempt_app_names: exempt_app_names,
             exempt: isExempt,
@@ -1105,7 +1119,9 @@ const getIdlePolicy = async (req, res) => {
 // POST /api/attendance/auto-clock-out
 const autoClockOut = async (req, res) => {
     try {
-        const { idle_seconds, reported_at } = req.body;
+        const { idle_seconds, reported_at, device_id, hostname } = req.body;
+        const devId = device_id || (req.user?.is_device_token ? 'companion-default' : 'web-browser');
+        const devHostname = hostname || '';
 
         // Device token validation for reported_at: reject if missing, invalid, >5m old or in future
         if (req.user?.is_device_token) {
@@ -1201,17 +1217,68 @@ const autoClockOut = async (req, res) => {
         }
 
         const checkInTime = new Date(attendance.check_in || attendance.date);
-        
-        // Server-authoritative: calculate clock-out time as the user's LAST ACTIVITY time:
-        // check_out = now - idle_seconds
-        let effectiveClockOutTime = new Date(now.getTime() - safeIdleSeconds * 1000);
+        const devLastActivity = new Date(now.getTime() - safeIdleSeconds * 1000);
 
-        // Clamp: cannot be in the future
+        // Update reporting device's last activity
+        if (!Array.isArray(attendance.devices)) {
+            attendance.devices = [];
+        }
+        const existingIdx = attendance.devices.findIndex(d => d.device_id === devId);
+        const devEntry = {
+            device_id: devId,
+            hostname: devHostname || (existingIdx >= 0 ? attendance.devices[existingIdx].hostname : ''),
+            source: req.user?.is_device_token ? 'companion' : 'web',
+            last_activity_at: devLastActivity,
+            idle_seconds: safeIdleSeconds,
+            in_meeting: false,
+            media_active: false
+        };
+        if (existingIdx >= 0) {
+            attendance.devices[existingIdx] = devEntry;
+        } else {
+            attendance.devices.push(devEntry);
+        }
+
+        // 6. Multi-device check: Check if ANY other device or web session is active within the timeout window
+        const timeoutMs = timeout_minutes * 60 * 1000;
+        const otherActiveDevices = attendance.devices.filter(d => {
+            if (d.device_id === devId) return false;
+            if (d.in_meeting || d.media_active) return true;
+            const lastAct = d.last_activity_at ? new Date(d.last_activity_at).getTime() : 0;
+            return (now.getTime() - lastAct) < timeoutMs;
+        });
+
+        if (otherActiveDevices.length > 0) {
+            // Recompute overall last_activity_at
+            const allTimes = attendance.devices
+                .map(d => d.last_activity_at ? new Date(d.last_activity_at).getTime() : 0)
+                .filter(t => !isNaN(t) && t > 0);
+            if (allTimes.length > 0) {
+                attendance.last_activity_at = new Date(Math.max(...allTimes));
+            }
+            await attendance.save();
+
+            const activeDevSummary = otherActiveDevices.map(d => d.hostname || d.device_id || d.source).join(', ');
+            return res.status(200).json({
+                success: true,
+                cancelled: true,
+                reason: `Active on another device or web portal (${activeDevSummary}). Clock-out cancelled.`
+            });
+        }
+
+        // All devices are idle: calculate clock-out time as the overall last activity time
+        const allTimes = attendance.devices
+            .map(d => d.last_activity_at ? new Date(d.last_activity_at).getTime() : 0)
+            .filter(t => !isNaN(t) && t > 0);
+        let overallLastActivity = allTimes.length > 0 ? new Date(Math.max(...allTimes)) : devLastActivity;
+        if (attendance.last_activity_at && new Date(attendance.last_activity_at) > overallLastActivity) {
+            overallLastActivity = new Date(attendance.last_activity_at);
+        }
+
+        let effectiveClockOutTime = overallLastActivity;
         if (effectiveClockOutTime > now) {
             effectiveClockOutTime = now;
         }
-
-        // Clamp: cannot be before check_in time
         if (effectiveClockOutTime < checkInTime) {
             effectiveClockOutTime = checkInTime;
         }
@@ -1225,6 +1292,9 @@ const autoClockOut = async (req, res) => {
         attendance.is_open_session = false;
         attendance.auto_clock_out = true;
         attendance.source = 'auto-idle';
+        attendance.closed_by_device_id = devId;
+        attendance.closed_by_hostname = devHostname;
+        attendance.closed_reason = `Inactivity timeout (${timeout_minutes}m) exceeded across all devices`;
 
         const checkInIST = toISTDateString(checkInTime);
         const checkOutIST = toISTDateString(effectiveClockOutTime);
@@ -1268,6 +1338,7 @@ const autoClockOut = async (req, res) => {
 
         res.status(200).json({
             success: true,
+            cancelled: false,
             message: 'Automatically clocked out due to inactivity.',
             attendance
         });
@@ -1283,14 +1354,102 @@ const heartbeat = async (req, res) => {
     try {
         const now = new Date();
         const empId = req.user?.id;
-        if (empId) {
-            await Attendance.updateOne(
-                { employee_id: empId, is_open_session: true },
-                { $set: { last_activity_at: now } }
-            );
+        if (!empId) {
+            return res.status(401).json({ success: false, message: 'Unauthorized' });
         }
-        res.json({ success: true, timestamp: now });
+
+        const {
+            device_id,
+            hostname,
+            idle_seconds = 0,
+            in_meeting = false,
+            media_active = false,
+            source = (req.user?.is_device_token ? 'companion' : 'web')
+        } = req.body || {};
+
+        const devId = device_id || (req.user?.is_device_token ? 'companion-default' : 'web-browser');
+        const isDeviceActive = in_meeting || media_active || (typeof idle_seconds === 'number' && idle_seconds < 60);
+        const safeIdleSeconds = (in_meeting || media_active) ? 0 : Math.max(0, Number(idle_seconds) || 0);
+        const devLastActivity = new Date(now.getTime() - safeIdleSeconds * 1000);
+
+        let attendance = await findOpenSession(empId);
+        let resumed = false;
+
+        const settings = await getCachedIdleSettings();
+
+        // Auto clock back in: if no open session, but user is active and was auto-clocked-out today within window
+        if (!attendance && settings?.auto_clock_back_in && isDeviceActive) {
+            const windowMinutes = settings.auto_clock_back_in_window_minutes || 15;
+            const windowMs = windowMinutes * 60 * 1000;
+            const todayISTStr = toISTDateString(now);
+            const todayStart = getISTDayStart(todayISTStr);
+            const todayEnd = getISTDayEnd(todayISTStr);
+
+            const lastAutoClosed = await Attendance.findOne({
+                employee_id: empId,
+                date: { $gte: todayStart, $lt: todayEnd },
+                is_open_session: false,
+                auto_clock_out: true,
+                check_out: { $gte: new Date(now.getTime() - windowMs) }
+            }).sort({ check_out: -1 });
+
+            if (lastAutoClosed) {
+                lastAutoClosed.is_open_session = true;
+                lastAutoClosed.auto_clock_out = false;
+                lastAutoClosed.check_out = undefined;
+                lastAutoClosed.closed_reason = undefined;
+                lastAutoClosed.closed_by_device_id = undefined;
+                lastAutoClosed.closed_by_hostname = undefined;
+                lastAutoClosed.last_activity_at = now;
+                attendance = lastAutoClosed;
+                resumed = true;
+            }
+        }
+
+        if (attendance) {
+            if (!Array.isArray(attendance.devices)) {
+                attendance.devices = [];
+            }
+            const existingIdx = attendance.devices.findIndex(d => d.device_id === devId);
+            const deviceEntry = {
+                device_id: devId,
+                hostname: hostname || (existingIdx >= 0 ? attendance.devices[existingIdx].hostname : ''),
+                source,
+                last_activity_at: devLastActivity,
+                idle_seconds: safeIdleSeconds,
+                in_meeting: Boolean(in_meeting),
+                media_active: Boolean(media_active)
+            };
+
+            if (existingIdx >= 0) {
+                attendance.devices[existingIdx] = deviceEntry;
+            } else {
+                attendance.devices.push(deviceEntry);
+            }
+
+            // Calculate overall last_activity_at across all devices & web
+            const allTimes = attendance.devices
+                .map(d => d.last_activity_at ? new Date(d.last_activity_at).getTime() : 0)
+                .filter(t => !isNaN(t) && t > 0);
+            
+            if (allTimes.length > 0) {
+                attendance.last_activity_at = new Date(Math.max(...allTimes));
+            } else {
+                attendance.last_activity_at = now;
+            }
+
+            await attendance.save();
+        }
+
+        res.json({
+            success: true,
+            timestamp: now,
+            resumed,
+            last_activity_at: attendance?.last_activity_at || now,
+            is_open_session: !!attendance
+        });
     } catch (err) {
+        console.error('[heartbeat]', err);
         res.status(500).json({ success: false, message: 'Heartbeat error.' });
     }
 };
@@ -1323,12 +1482,24 @@ const sweepStaleSessions = async (req, res) => {
 
         for (const session of openSessions) {
             const checkInTime = new Date(session.check_in || session.date);
-            const lastActivity = session.last_activity_at ? new Date(session.last_activity_at) : checkInTime;
-            const timeSinceLastActivity = now.getTime() - lastActivity.getTime();
+
+            // If any device is currently in a meeting or playing media, do not sweep
+            const hasMeetingOrMedia = (session.devices || []).some(d => d.in_meeting || d.media_active);
+            if (hasMeetingOrMedia) {
+                continue;
+            }
+
+            const devActivities = (session.devices || [])
+                .map(d => d.last_activity_at ? new Date(d.last_activity_at).getTime() : 0)
+                .filter(t => !isNaN(t) && t > 0);
+
+            const sessionActivity = session.last_activity_at ? new Date(session.last_activity_at).getTime() : checkInTime.getTime();
+            const overallLastActivityTime = devActivities.length > 0 ? Math.max(sessionActivity, ...devActivities) : sessionActivity;
+            const timeSinceLastActivity = now.getTime() - overallLastActivityTime;
 
             // If time since last activity exceeds idle timeout limit
             if (timeSinceLastActivity >= idleLimitMs) {
-                const effectiveClockOut = new Date(Math.max(checkInTime.getTime(), lastActivity.getTime()));
+                const effectiveClockOut = new Date(Math.max(checkInTime.getTime(), overallLastActivityTime));
                 const diffMs = Math.max(0, effectiveClockOut - checkInTime);
 
                 session.check_out = effectiveClockOut;
@@ -1336,6 +1507,9 @@ const sweepStaleSessions = async (req, res) => {
                 session.is_open_session = false;
                 session.auto_clock_out = true;
                 session.source = 'auto-idle';
+                session.closed_by_device_id = 'server-sweeper';
+                session.closed_by_hostname = 'server';
+                session.closed_reason = `Sweeper: idle timeout (${timeout_minutes}m) exceeded across all devices`;
                 await session.save();
                 closedCount++;
             }

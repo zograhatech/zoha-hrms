@@ -12,6 +12,18 @@ const attendanceSchema = new mongoose.Schema({
     auto_clock_out: { type: Boolean, default: false },
     source: { type: String, enum: ['manual', 'auto-idle', 'companion', 'system', 'web'], default: 'manual' },
     last_activity_at: { type: Date },
+    devices: [{
+        device_id: { type: String },
+        hostname: { type: String },
+        source: { type: String, default: 'companion' },
+        last_activity_at: { type: Date },
+        idle_seconds: { type: Number, default: 0 },
+        in_meeting: { type: Boolean, default: false },
+        media_active: { type: Boolean, default: false }
+    }],
+    closed_by_device_id: { type: String },
+    closed_by_hostname: { type: String },
+    closed_reason: { type: String },
 }, { timestamps: true });
 
 attendanceSchema.index({ employee_id: 1, date: 1 });

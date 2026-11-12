@@ -288,8 +288,11 @@ exports.markDelivered = async (req, res) => {
             }
             convIds = [conv._id];
         } else {
-            // Find all conversations user is part of
-            const userConversations = await Conversation.find({ participants: userId }).select('_id');
+            // Find all conversations user is part of (matches ObjectId or string employee code)
+            const participantMatches = [userId, userId?.toString(), req.user?.id, req.user?.employee_id].filter(Boolean);
+            const userConversations = await Conversation.find({
+                participants: { $in: Array.from(new Set(participantMatches)) }
+            }).select('_id');
             convIds = userConversations.map(c => c._id);
         }
 
@@ -345,7 +348,10 @@ exports.markSeen = async (req, res) => {
         const query = {
             conversationId: conv._id,
             sender: { $ne: userId },
-            status: { $in: ['sent', 'delivered'] }
+            $or: [
+                { status: { $in: ['sent', 'delivered'] } },
+                { 'seenBy.employee': { $ne: userId } }
+            ]
         };
 
         if (Array.isArray(messageIds) && messageIds.length > 0) {

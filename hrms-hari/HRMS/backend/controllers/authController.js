@@ -348,12 +348,9 @@ const refreshToken = async (req, res) => {
                 { expiresIn: isRemembered ? '30d' : '1d' }
             );
 
-            // Rotate refresh token atomically (pull old, then push new with cap & rotated history)
-            await Employee.updateOne(
-                { _id: employee._id },
-                { $pull: { refresh_tokens: token } }
-            );
-
+            // Rotate refresh token safely:
+            // Step 1: Push new refresh token and record rotated history FIRST.
+            // If the process crashes or step 2 fails, the user is never left without a valid session.
             await Employee.updateOne(
                 { _id: employee._id },
                 {
@@ -371,6 +368,16 @@ const refreshToken = async (req, res) => {
                     }
                 }
             );
+
+            // Step 2: Safely pull the old refresh token
+            try {
+                await Employee.updateOne(
+                    { _id: employee._id },
+                    { $pull: { refresh_tokens: token } }
+                );
+            } catch (pullErr) {
+                console.warn('[refreshToken] Failed to pull old token during rotation:', pullErr.message);
+            }
 
             res.json({ success: true, token: newAccessToken, refreshToken: newRefreshToken });
         } catch (err) {

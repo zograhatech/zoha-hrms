@@ -39,6 +39,15 @@ public class IdlePolicyResponse
     [JsonPropertyName("idle_exempt_app_names")]
     public List<string>? IdleExemptAppNames { get; set; }
 
+    [JsonPropertyName("idle_grace_period_seconds")]
+    public int? IdleGracePeriodSeconds { get; set; }
+
+    [JsonPropertyName("auto_clock_back_in")]
+    public bool? AutoClockBackIn { get; set; }
+
+    [JsonPropertyName("auto_clock_back_in_window_minutes")]
+    public int? AutoClockBackInWindowMinutes { get; set; }
+
     public bool IsFeatureEnabled()
     {
         if (IdleAutoClockoutEnabled.HasValue) return IdleAutoClockoutEnabled.Value;
@@ -74,15 +83,77 @@ public class IdlePolicyResponse
     {
         return (PollSeconds.HasValue && PollSeconds.Value > 0) ? PollSeconds.Value : 60;
     }
+
+    public int GetEffectiveGracePeriodSeconds()
+    {
+        return (IdleGracePeriodSeconds.HasValue && IdleGracePeriodSeconds.Value > 0) ? IdleGracePeriodSeconds.Value : 60;
+    }
+}
+
+public class HeartbeatPayload
+{
+    [JsonPropertyName("device_id")]
+    public string DeviceId { get; set; } = string.Empty;
+
+    [JsonPropertyName("hostname")]
+    public string Hostname { get; set; } = string.Empty;
+
+    [JsonPropertyName("idle_seconds")]
+    public int IdleSeconds { get; set; }
+
+    [JsonPropertyName("in_meeting")]
+    public bool InMeeting { get; set; }
+
+    [JsonPropertyName("media_active")]
+    public bool MediaActive { get; set; }
+
+    [JsonPropertyName("source")]
+    public string Source { get; set; } = "companion";
+}
+
+public class HeartbeatResponse
+{
+    [JsonPropertyName("success")]
+    public bool Success { get; set; }
+
+    [JsonPropertyName("resumed")]
+    public bool Resumed { get; set; }
+
+    [JsonPropertyName("is_open_session")]
+    public bool IsOpenSession { get; set; }
+
+    [JsonPropertyName("timestamp")]
+    public string? Timestamp { get; set; }
 }
 
 public class AutoClockOutPayload
 {
+    [JsonPropertyName("device_id")]
+    public string DeviceId { get; set; } = string.Empty;
+
+    [JsonPropertyName("hostname")]
+    public string Hostname { get; set; } = string.Empty;
+
     [JsonPropertyName("idle_seconds")]
     public int IdleSeconds { get; set; }
 
     [JsonPropertyName("reported_at")]
     public string ReportedAt { get; set; } = string.Empty;
+}
+
+public class AutoClockOutResponse
+{
+    [JsonPropertyName("success")]
+    public bool Success { get; set; }
+
+    [JsonPropertyName("cancelled")]
+    public bool Cancelled { get; set; }
+
+    [JsonPropertyName("already_closed")]
+    public bool AlreadyClosed { get; set; }
+
+    [JsonPropertyName("reason")]
+    public string? Reason { get; set; }
 }
 
 public class EnrollPayload

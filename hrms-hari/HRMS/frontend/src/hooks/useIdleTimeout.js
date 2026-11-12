@@ -119,7 +119,12 @@ export function useIdleTimeout() {
             // Periodic heartbeat every 60s while active (idle < 60s)
             if (idleMs < 60000 && now - lastHeartbeat >= 60000) {
                 lastHeartbeat = now;
-                API.post('/attendance/heartbeat').catch(() => {});
+                API.post('/attendance/heartbeat', {
+                    device_id: 'web-browser',
+                    hostname: typeof window !== 'undefined' ? window.location.hostname : 'web',
+                    source: 'web',
+                    idle_seconds: Math.floor(idleMs / 1000)
+                }).catch(() => {});
             }
 
             // If "Stay logged in" is enabled, web idle timer must NEVER sign the user out of the web portal
@@ -145,10 +150,19 @@ export function useIdleTimeout() {
                 if (!hasCompanion && policy.web_auto_clockout !== false) {
                     try {
                         const idleSec = Math.floor(idleMs / 1000);
-                        await API.post('/attendance/auto-clock-out', {
+                        const res = await API.post('/attendance/auto-clock-out', {
                             idle_seconds: idleSec,
-                            source: 'web'
+                            source: 'web',
+                            device_id: 'web-browser',
+                            hostname: typeof window !== 'undefined' ? window.location.hostname : 'web'
                         });
+
+                        // If auto clock-out was cancelled because user is active on another device, abort web logout
+                        if (res?.data?.cancelled) {
+                            console.info('[useIdleTimeout] Auto clock-out cancelled:', res.data.reason);
+                            isClockingOutRef.current = false;
+                            return;
+                        }
                     } catch (err) {
                         console.warn('[useIdleTimeout] Auto clock-out failed:', err.message);
                     }

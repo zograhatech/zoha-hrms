@@ -17,10 +17,15 @@ public class CompanionRunner
 {
     private readonly HttpClient _httpClient;
     private readonly string _token;
+    private readonly string _deviceId;
+    private readonly string _hostname;
 
     public CompanionRunner(string token, HttpClient? httpClient = null)
     {
         _token = token;
+        _hostname = Environment.MachineName;
+        _deviceId = GetOrCreateDeviceId();
+
         if (httpClient != null)
         {
             _httpClient = httpClient;
@@ -41,6 +46,27 @@ public class CompanionRunner
         }
     }
 
+    private static string GetOrCreateDeviceId()
+    {
+        try
+        {
+            string idPath = Path.Combine(CompanionConfig.AppDataDir, "device_id.txt");
+            if (File.Exists(idPath))
+            {
+                string id = File.ReadAllText(idPath).Trim();
+                if (!string.IsNullOrEmpty(id)) return id;
+            }
+            string newId = "dev-" + Guid.NewGuid().ToString("N")[..12];
+            Directory.CreateDirectory(CompanionConfig.AppDataDir);
+            File.WriteAllText(idPath, newId);
+            return newId;
+        }
+        catch
+        {
+            return "dev-" + Environment.MachineName.ToLowerInvariant();
+        }
+    }
+
     public async Task RunAsync(CancellationToken cancellationToken = default)
     {
         CompanionLogger.Log("Starting Zograha Idle Companion service loop.");
@@ -52,6 +78,8 @@ public class CompanionRunner
         DateTime backoffUntil = DateTime.MinValue;
         DateTime policyFetchBackoffUntil = DateTime.MinValue;
         int consecutivePolicyFailures = 0;
+        DateTime lastHeartbeatSent = DateTime.MinValue;
+        int consecutiveIdleChecks = 0;
 
         // Clean stale stop.flag from previous runs
         if (File.Exists(CompanionConfig.StopFlagPath))
@@ -140,16 +168,28 @@ public class CompanionRunner
                 continue;
             }
 
-            // Measure system idle seconds
-            int idleSeconds = UserInputTracker.GetIdleSeconds();
+            // 1. Measure system idle and active calls/media
+            bool inMeeting = UserInputTracker.IsMicrophoneOrCameraActive();
+            bool mediaActive = UserInputTracker.IsFullScreenOrMediaActive();
+            int rawIdleSeconds = UserInputTracker.GetIdleSeconds();
+            int effectiveIdleSeconds = (inMeeting || mediaActive) ? 0 : rawIdleSeconds;
+
+            // 2. Periodic heartbeat every 60s
+            double secondsSinceHeartbeat = (DateTime.UtcNow - lastHeartbeatSent).TotalSeconds;
+            if (secondsSinceHeartbeat >= 60 || lastHeartbeatSent == DateTime.MinValue)
+            {
+                await SendHeartbeatAsync(effectiveIdleSeconds, inMeeting, mediaActive);
+                lastHeartbeatSent = DateTime.UtcNow;
+            }
 
             // Standby mode handling: resume once user becomes active (idle < 30s)
             if (standbyMode)
             {
-                if (idleSeconds < 30)
+                if (effectiveIdleSeconds < 30)
                 {
                     CompanionLogger.Log("User activity detected. Exiting standby mode.");
                     standbyMode = false;
+                    consecutiveIdleChecks = 0;
                 }
                 else
                 {
@@ -158,9 +198,15 @@ public class CompanionRunner
                 }
             }
 
+            if (inMeeting || mediaActive)
+            {
+                consecutiveIdleChecks = 0;
+            }
+
             // Check enabled status & exempt status from server policy
             if (!policy.IsFeatureEnabled() || policy.Exempt)
             {
+                consecutiveIdleChecks = 0;
                 await Task.Delay(15000, cancellationToken);
                 continue;
             }
@@ -170,6 +216,7 @@ public class CompanionRunner
             string endStr = policy.GetEffectiveEndTime();
             if (!IdlePolicyEvaluator.IsOfficeHours(DateTime.UtcNow, startStr, endStr))
             {
+                consecutiveIdleChecks = 0;
                 await Task.Delay(15000, cancellationToken);
                 continue;
             }
@@ -181,6 +228,7 @@ public class CompanionRunner
                 var runningProcesses = GetRunningProcessNames();
                 if (IdlePolicyEvaluator.IsAnyExemptAppRunning(runningProcesses, exemptApps))
                 {
+                    consecutiveIdleChecks = 0;
                     await Task.Delay(15000, cancellationToken);
                     continue;
                 }
@@ -189,37 +237,87 @@ public class CompanionRunner
             // Check idle threshold
             int timeoutMinutes = policy.GetEffectiveTimeoutMinutes();
             int thresholdSeconds = timeoutMinutes * 60;
+            int gracePeriodSeconds = policy.GetEffectiveGracePeriodSeconds();
 
-            if (idleSeconds >= thresholdSeconds)
+            if (effectiveIdleSeconds >= thresholdSeconds && !inMeeting && !mediaActive)
             {
-                CompanionLogger.Log($"Idle threshold reached ({idleSeconds} s >= {thresholdSeconds} s). Attempting auto clock-out.");
+                consecutiveIdleChecks++;
+                if (consecutiveIdleChecks == 1)
+                {
+                    CompanionLogger.Log($"Idle threshold reached ({effectiveIdleSeconds} s >= {thresholdSeconds} s). Starting {gracePeriodSeconds}s grace period with warning.");
+                    ShowInactivityWarningToast(gracePeriodSeconds);
 
-                var clockOutResult = await SendAutoClockOutAsync(idleSeconds);
-                if (clockOutResult.IsRevoked)
-                {
-                    CompanionLogger.Log("HTTP 401 received on clock-out: Token is revoked or invalid. Exiting.");
-                    return;
+                    // Wait through grace period, checking for user input every 2 seconds
+                    DateTime graceEnd = DateTime.UtcNow.AddSeconds(gracePeriodSeconds);
+                    bool inputCancelled = false;
+                    while (DateTime.UtcNow < graceEnd)
+                    {
+                        await Task.Delay(2000, cancellationToken);
+                        if (UserInputTracker.GetIdleSeconds() < 5 || UserInputTracker.IsMicrophoneOrCameraActive() || UserInputTracker.IsFullScreenOrMediaActive())
+                        {
+                            CompanionLogger.Log("User resumed activity during grace period. Clock-out cancelled.");
+                            consecutiveIdleChecks = 0;
+                            inputCancelled = true;
+                            break;
+                        }
+                    }
+
+                    if (inputCancelled)
+                    {
+                        continue;
+                    }
                 }
 
-                if (clockOutResult.StatusCode == 200)
+                // Second check confirms idle condition persists
+                int confirmedIdle = UserInputTracker.GetIdleSeconds();
+                if (confirmedIdle >= thresholdSeconds && !UserInputTracker.IsMicrophoneOrCameraActive() && !UserInputTracker.IsFullScreenOrMediaActive())
                 {
-                    CompanionLogger.Log("Auto clock-out successful (HTTP 200). Entering standby until user activity.");
-                    standbyMode = true;
-                }
-                else if (clockOutResult.StatusCode == 409)
-                {
-                    CompanionLogger.Log("HTTP 409: Session already closed. Entering standby until user activity.");
-                    standbyMode = true;
-                }
-                else if (clockOutResult.StatusCode == 400 || clockOutResult.StatusCode == 403)
-                {
-                    CompanionLogger.Log($"HTTP {clockOutResult.StatusCode} received on clock-out. Backing off 5 minutes.");
-                    backoffUntil = DateTime.UtcNow.AddMinutes(5);
+                    CompanionLogger.Log($"Confirmed idle condition on 2 consecutive checks ({confirmedIdle}s). Sending auto clock-out.");
+                    var clockOutResult = await SendAutoClockOutAsync(confirmedIdle);
+
+                    if (clockOutResult.IsRevoked)
+                    {
+                        CompanionLogger.Log("HTTP 401 received on clock-out: Token is revoked or invalid. Exiting.");
+                        return;
+                    }
+
+                    if (clockOutResult.IsCancelled)
+                    {
+                        CompanionLogger.Log($"Auto clock-out cancelled by server: {clockOutResult.Reason}");
+                        consecutiveIdleChecks = 0;
+                    }
+                    else if (clockOutResult.StatusCode == 200)
+                    {
+                        CompanionLogger.Log("Auto clock-out successful (HTTP 200). Entering standby until user activity.");
+                        standbyMode = true;
+                        consecutiveIdleChecks = 0;
+                    }
+                    else if (clockOutResult.StatusCode == 409)
+                    {
+                        CompanionLogger.Log("HTTP 409: Session already closed. Entering standby until user activity.");
+                        standbyMode = true;
+                        consecutiveIdleChecks = 0;
+                    }
+                    else if (clockOutResult.StatusCode == 400 || clockOutResult.StatusCode == 403)
+                    {
+                        CompanionLogger.Log($"HTTP {clockOutResult.StatusCode} received on clock-out. Backing off 5 minutes.");
+                        backoffUntil = DateTime.UtcNow.AddMinutes(5);
+                        consecutiveIdleChecks = 0;
+                    }
+                    else
+                    {
+                        CompanionLogger.Log($"Clock-out request result: {clockOutResult.StatusCode}. Retrying at next loop.");
+                    }
                 }
                 else
                 {
-                    CompanionLogger.Log($"Clock-out request result: {clockOutResult.StatusCode}. Retrying at next loop.");
+                    CompanionLogger.Log("Idle condition cleared before second check. Resetting check count.");
+                    consecutiveIdleChecks = 0;
                 }
+            }
+            else
+            {
+                consecutiveIdleChecks = 0;
             }
 
             await Task.Delay(15000, cancellationToken);
@@ -327,12 +425,75 @@ public class CompanionRunner
         };
     }
 
-    private async Task<(int StatusCode, bool IsRevoked)> SendAutoClockOutAsync(int idleSeconds)
+    private async Task SendHeartbeatAsync(int idleSeconds, bool inMeeting, bool mediaActive)
+    {
+        try
+        {
+            var payload = new HeartbeatPayload
+            {
+                DeviceId = _deviceId,
+                Hostname = _hostname,
+                IdleSeconds = idleSeconds,
+                InMeeting = inMeeting,
+                MediaActive = mediaActive,
+                Source = "companion"
+            };
+
+            string jsonBody = JsonSerializer.Serialize(payload);
+            using var req = new HttpRequestMessage(HttpMethod.Post, $"{CompanionConfig.BackendUrl}/api/attendance/heartbeat")
+            {
+                Content = new StringContent(jsonBody, Encoding.UTF8, "application/json")
+            };
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _token);
+            req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+            using var res = await _httpClient.SendAsync(req);
+            if (res.IsSuccessStatusCode)
+            {
+                string resBody = await res.Content.ReadAsStringAsync();
+                var parsed = JsonSerializer.Deserialize<HeartbeatResponse>(resBody);
+                if (parsed != null && parsed.Resumed)
+                {
+                    CompanionLogger.Log("Attendance session was automatically resumed by server due to detected activity.");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            CompanionLogger.Log($"Heartbeat send failure: {ex.Message}");
+        }
+    }
+
+    private static void ShowInactivityWarningToast(int secondsRemaining)
+    {
+        CompanionLogger.Log($"[WARNING] Inactivity warning displayed: User will be clocked out in {secondsRemaining} seconds unless input is detected.");
+        try
+        {
+            string script = "$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); " +
+                            "$textNodes = $template.GetElementsByTagName('text'); " +
+                            "$textNodes.Item(0).AppendChild($template.CreateTextNode('Zograha HRMS - Inactivity Warning')) | Out-Null; " +
+                            $"$textNodes.Item(1).AppendChild($template.CreateTextNode('You will be clocked out in {secondsRemaining}s due to inactivity. Move mouse to resume.')) | Out-Null; " +
+                            "$toast = [Windows.UI.Notifications.ToastNotification]::new($template); " +
+                            "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Zograha HRMS').Show($toast);";
+
+            var psi = new ProcessStartInfo("powershell", $"-WindowStyle Hidden -NoProfile -Command \"{script}\"")
+            {
+                CreateNoWindow = true,
+                UseShellExecute = false
+            };
+            Process.Start(psi);
+        }
+        catch { }
+    }
+
+    private async Task<(int StatusCode, bool IsRevoked, bool IsCancelled, string? Reason)> SendAutoClockOutAsync(int idleSeconds)
     {
         try
         {
             var payload = new AutoClockOutPayload
             {
+                DeviceId = _deviceId,
+                Hostname = _hostname,
                 IdleSeconds = idleSeconds,
                 ReportedAt = DateTime.UtcNow.ToString("o")
             };
@@ -348,12 +509,30 @@ public class CompanionRunner
 
             using var res = await _httpClient.SendAsync(req);
             int code = (int)res.StatusCode;
-            return (code, code == 401);
+            string resBody = await res.Content.ReadAsStringAsync();
+            bool isCancelled = false;
+            string? reason = null;
+
+            if (!string.IsNullOrWhiteSpace(resBody))
+            {
+                try
+                {
+                    var parsed = JsonSerializer.Deserialize<AutoClockOutResponse>(resBody);
+                    if (parsed != null)
+                    {
+                        isCancelled = parsed.Cancelled;
+                        reason = parsed.Reason;
+                    }
+                }
+                catch { }
+            }
+
+            return (code, code == 401, isCancelled, reason);
         }
         catch (Exception ex)
         {
             CompanionLogger.Log($"Network error during auto clock-out: {ex.Message}");
-            return (0, false);
+            return (0, false, false, ex.Message);
         }
     }
 

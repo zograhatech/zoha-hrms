@@ -24,8 +24,20 @@ Privacy Guarantee:
 $BackendUrl = "https://zoha-hrms.vercel.app"
 $AppDataDir = [System.IO.Path]::Combine($env:APPDATA, "ZograhaIdle")
 $TokenFile  = [System.IO.Path]::Combine($AppDataDir, "token.txt")
+$DeviceIdFile = [System.IO.Path]::Combine($AppDataDir, "device_id.txt")
 $LogFile    = [System.IO.Path]::Combine($AppDataDir, "companion.log")
 $StopFlag   = [System.IO.Path]::Combine($AppDataDir, "stop.flag")
+
+# Persistent Device ID
+$DeviceId = ""
+if (Test-Path $DeviceIdFile) {
+    $DeviceId = (Get-Content -Path $DeviceIdFile -Raw -ErrorAction SilentlyContinue).Trim()
+}
+if ([string]::IsNullOrWhiteSpace($DeviceId)) {
+    $DeviceId = "dev-" + [Guid]::NewGuid().ToString("N").Substring(0, 12)
+    Set-Content -Path $DeviceIdFile -Value $DeviceId -Encoding UTF8 -Force
+}
+$Hostname = $env:COMPUTERNAME
 
 # Ensure AppData directory exists
 if (-not (Test-Path $AppDataDir)) {
@@ -71,6 +83,39 @@ public static class Win32Input {
 function Get-IdleSeconds {
     $idleMs = [Win32Input]::GetIdleTimeMs()
     return [Math]::Floor($idleMs / 1000)
+}
+
+function Test-IsMicrophoneOrCameraActive {
+    try {
+        $caps = @("microphone", "webcam")
+        foreach ($cap in $caps) {
+            $basePath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\$cap"
+            if (Test-Path $basePath) {
+                $subkeys = Get-ChildItem -Path $basePath -Recurse -ErrorAction SilentlyContinue
+                foreach ($k in $subkeys) {
+                    $stop = (Get-ItemProperty -Path $k.PSPath -Name "LastUsedTimeStop" -ErrorAction SilentlyContinue).LastUsedTimeStop
+                    $start = (Get-ItemProperty -Path $k.PSPath -Name "LastUsedTimeStart" -ErrorAction SilentlyContinue).LastUsedTimeStart
+                    if ($null -ne $stop -and $stop -eq 0 -and $null -ne $start -and $start -gt 0) {
+                        return $true
+                    }
+                }
+            }
+        }
+    } catch { }
+    return $false
+}
+
+function Show-InactivityWarningToast {
+    param([int]$SecondsRemaining)
+    Write-Log "[WARNING] Inactivity warning displayed: User will be clocked out in ${SecondsRemaining}s unless input is detected."
+    try {
+        $template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
+        $textNodes = $template.GetElementsByTagName('text')
+        $textNodes.Item(0).AppendChild($template.CreateTextNode('Zograha HRMS - Inactivity Warning')) | Out-Null
+        $textNodes.Item(1).AppendChild($template.CreateTextNode("You will be clocked out in ${SecondsRemaining}s due to inactivity. Move mouse to resume.")) | Out-Null
+        $toast = [Windows.UI.Notifications.ToastNotification]::new($template)
+        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Zograha HRMS').Show($toast)
+    } catch { }
 }
 
 function Get-CurrentISTDateTime {
@@ -128,6 +173,8 @@ try {
     $LastPolicyFetch = [DateTime]::MinValue
     $StandbyMode = $false
     $BackoffUntil = [DateTime]::MinValue
+    $LastHeartbeat = [DateTime]::MinValue
+    $ConsecutiveIdleChecks = 0
 
     while ($true) {
         # Check stop mechanism
@@ -207,28 +254,63 @@ try {
             continue
         }
 
-        # Measure system idle seconds
-        $idleSeconds = Get-IdleSeconds
+        # Measure system idle seconds and active calls/media
+        $inMeeting = Test-IsMicrophoneOrCameraActive
+        $rawIdleSeconds = Get-IdleSeconds
+        $effectiveIdleSeconds = if ($inMeeting) { 0 } else { $rawIdleSeconds }
+
+        # Send heartbeat every 60s
+        $secondsSinceHeartbeat = [DateTime]::UtcNow.Subtract($LastHeartbeat).TotalSeconds
+        if ($secondsSinceHeartbeat -ge 60 -or $LastHeartbeat -eq [DateTime]::MinValue) {
+            try {
+                $hbBody = @{
+                    device_id    = $DeviceId
+                    hostname     = $Hostname
+                    idle_seconds = $effectiveIdleSeconds
+                    in_meeting   = $inMeeting
+                    media_active = $false
+                    source       = "companion"
+                } | ConvertTo-Json
+
+                $hbHeaders = @{
+                    "Authorization" = "Bearer $Token"
+                    "Content-Type"  = "application/json"
+                    "Accept"        = "application/json"
+                }
+                $hbRes = Invoke-RestMethod -Uri "$BackendUrl/api/attendance/heartbeat" -Method Post -Headers $hbHeaders -Body $hbBody -TimeoutSec 10
+                if ($hbRes.resumed) {
+                    Write-Log "Attendance session was automatically resumed by server due to detected activity."
+                }
+                $LastHeartbeat = [DateTime]::UtcNow
+            } catch { }
+        }
 
         # If in standby, wait until user is active again (idle drops below 30s)
         if ($StandbyMode) {
-            if ($idleSeconds -lt 30) {
+            if ($effectiveIdleSeconds -lt 30) {
                 Write-Log "User activity detected. Exiting standby mode."
                 $StandbyMode = $false
+                $ConsecutiveIdleChecks = 0
             } else {
                 Start-Sleep -Seconds 15
                 continue
             }
         }
 
+        if ($inMeeting) {
+            $ConsecutiveIdleChecks = 0
+        }
+
         # Check feature toggle & employee exemption using server policy
         $isPolicyEnabled = if ($null -ne $Policy.idle_auto_clockout_enabled) { [bool]$Policy.idle_auto_clockout_enabled } else { [bool]$Policy.enabled }
         if (-not $isPolicyEnabled) {
+            $ConsecutiveIdleChecks = 0
             Start-Sleep -Seconds 15
             continue
         }
 
         if ([bool]$Policy.exempt) {
+            $ConsecutiveIdleChecks = 0
             Start-Sleep -Seconds 15
             continue
         }
@@ -238,6 +320,7 @@ try {
         $officeEnd   = [string]$Policy.office_end_time
 
         if (-not (Test-IsOfficeHours -StartTimeStr $officeStart -EndTimeStr $officeEnd)) {
+            $ConsecutiveIdleChecks = 0
             Start-Sleep -Seconds 15
             continue
         }
@@ -249,7 +332,6 @@ try {
             $matchedApp = $false
 
             foreach ($app in $exemptApps) {
-                # Strip trailing .exe if provided
                 $cleanName = if ($app.EndsWith(".exe", [System.StringComparison]::OrdinalIgnoreCase)) {
                     $app.Substring(0, $app.Length - 4)
                 } else {
@@ -263,6 +345,7 @@ try {
             }
 
             if ($matchedApp) {
+                $ConsecutiveIdleChecks = 0
                 Start-Sleep -Seconds 15
                 continue
             }
@@ -271,37 +354,80 @@ try {
         # Check idle threshold directly from server policy (no fallback)
         $timeoutMinutes = if ($null -ne $Policy.idle_timeout_minutes) { [int]$Policy.idle_timeout_minutes } else { [int]$Policy.timeout_minutes }
         $thresholdSeconds = $timeoutMinutes * 60
+        $graceSeconds = if ($null -ne $Policy.idle_grace_period_seconds) { [int]$Policy.idle_grace_period_seconds } else { 60 }
 
-        if ($idleSeconds -ge $thresholdSeconds) {
-            Write-Log "Idle threshold reached ($idleSeconds s >= $thresholdSeconds s). Attempting auto clock-out."
+        if ($effectiveIdleSeconds -ge $thresholdSeconds -and -not $inMeeting) {
+            $ConsecutiveIdleChecks++
+            if ($ConsecutiveIdleChecks -eq 1) {
+                Write-Log "Idle threshold reached ($effectiveIdleSeconds s >= $thresholdSeconds s). Starting ${graceSeconds}s grace period with warning."
+                Show-InactivityWarningToast -SecondsRemaining $graceSeconds
 
-            $body = @{
-                idle_seconds = $idleSeconds
-                reported_at  = [DateTime]::UtcNow.ToString("o")
-            } | ConvertTo-Json
+                # Monitor for activity during grace period
+                $graceEnd = [DateTime]::UtcNow.AddSeconds($graceSeconds)
+                $inputDetected = $false
+                while ([DateTime]::UtcNow -lt $graceEnd) {
+                    Start-Sleep -Seconds 2
+                    if ((Get-IdleSeconds) -lt 5 -or (Test-IsMicrophoneOrCameraActive)) {
+                        Write-Log "User resumed activity during grace period. Clock-out cancelled."
+                        $ConsecutiveIdleChecks = 0
+                        $inputDetected = $true
+                        break
+                    }
+                }
 
-            $headers = @{
-                "Authorization" = "Bearer $Token"
-                "Content-Type"  = "application/json"
-                "Accept"        = "application/json"
-            }
-
-            try {
-                $clockOutRes = Invoke-RestMethod -Uri "$BackendUrl/api/attendance/auto-clock-out" -Method Post -Headers $headers -Body $body -TimeoutSec 15
-                Write-Log "Auto clock-out successful (HTTP 200). Entering standby until user activity."
-                $StandbyMode = $true
-            } catch {
-                $statusCode = $_.Exception.Response.StatusCode.value__
-                if ($statusCode -eq 409) {
-                    Write-Log "HTTP 409: Session already closed. Entering standby until user activity."
-                    $StandbyMode = $true
-                } elseif ($statusCode -eq 400 -or $statusCode -eq 403) {
-                    Write-Log "HTTP $statusCode received. Backing off 5 minutes."
-                    $BackoffUntil = [DateTime]::UtcNow.AddMinutes(5)
-                } else {
-                    Write-Log "Request error: $($_.Exception.Message). Will retry at next loop."
+                if ($inputDetected) {
+                    continue
                 }
             }
+
+            # Second consecutive check confirms idle condition persists
+            $confirmedIdle = Get-IdleSeconds
+            if ($confirmedIdle -ge $thresholdSeconds -and -not (Test-IsMicrophoneOrCameraActive)) {
+                Write-Log "Confirmed idle condition on 2 consecutive checks (${confirmedIdle}s). Attempting auto clock-out."
+
+                $body = @{
+                    device_id    = $DeviceId
+                    hostname     = $Hostname
+                    idle_seconds = $confirmedIdle
+                    reported_at  = [DateTime]::UtcNow.ToString("o")
+                } | ConvertTo-Json
+
+                $headers = @{
+                    "Authorization" = "Bearer $Token"
+                    "Content-Type"  = "application/json"
+                    "Accept"        = "application/json"
+                }
+
+                try {
+                    $clockOutRes = Invoke-RestMethod -Uri "$BackendUrl/api/attendance/auto-clock-out" -Method Post -Headers $headers -Body $body -TimeoutSec 15
+                    if ($clockOutRes.cancelled) {
+                        Write-Log "Auto clock-out cancelled by server: $($clockOutRes.reason)"
+                        $ConsecutiveIdleChecks = 0
+                    } else {
+                        Write-Log "Auto clock-out successful (HTTP 200). Entering standby until user activity."
+                        $StandbyMode = $true
+                        $ConsecutiveIdleChecks = 0
+                    }
+                } catch {
+                    $statusCode = $_.Exception.Response.StatusCode.value__
+                    if ($statusCode -eq 409) {
+                        Write-Log "HTTP 409: Session already closed. Entering standby until user activity."
+                        $StandbyMode = $true
+                        $ConsecutiveIdleChecks = 0
+                    } elseif ($statusCode -eq 400 -or $statusCode -eq 403) {
+                        Write-Log "HTTP $statusCode received. Backing off 5 minutes."
+                        $BackoffUntil = [DateTime]::UtcNow.AddMinutes(5)
+                        $ConsecutiveIdleChecks = 0
+                    } else {
+                        Write-Log "Request error: $($_.Exception.Message). Will retry at next loop."
+                    }
+                }
+            } else {
+                Write-Log "Idle condition cleared before second check. Resetting check count."
+                $ConsecutiveIdleChecks = 0
+            }
+        } else {
+            $ConsecutiveIdleChecks = 0
         }
 
         Start-Sleep -Seconds 15
