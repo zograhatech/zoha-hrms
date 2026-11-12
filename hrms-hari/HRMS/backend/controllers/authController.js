@@ -58,19 +58,20 @@ const generateAuthPayload = async (employee, rememberMe, settings) => {
     );
 
     const refreshToken = jwt.sign(
-        { id: employee.id, rememberMe: Boolean(rememberMe) },
+        { id: employee.id, rememberMe: Boolean(rememberMe), jti: crypto.randomBytes(16).toString('hex') },
         process.env.JWT_REFRESH_SECRET,
         { expiresIn: rememberMe ? '30d' : '1d' }
     );
 
-    if (!Array.isArray(employee.refresh_tokens)) {
-        employee.refresh_tokens = [];
-    }
-    employee.refresh_tokens.push(refreshToken);
-    if (employee.refresh_tokens.length > 10) {
-        employee.refresh_tokens = employee.refresh_tokens.slice(-10);
-    }
-    await employee.save();
+    // Atomically persist refresh token without race conditions, capping at 50 active sessions
+    await Employee.updateOne(
+        { _id: employee._id },
+        {
+            $push: {
+                refresh_tokens: { $each: [refreshToken], $slice: -50 }
+            }
+        }
+    );
 
     const { password_hash, refresh_tokens, push_subscription, push_subscriptions, ...rest } = employee.toObject();
     return {
@@ -342,42 +343,42 @@ const refreshToken = async (req, res) => {
             );
 
             const newRefreshToken = jwt.sign(
-                { id: employee.id, rememberMe: isRemembered },
+                { id: employee.id, rememberMe: isRemembered, jti: crypto.randomBytes(16).toString('hex') },
                 process.env.JWT_REFRESH_SECRET,
                 { expiresIn: isRemembered ? '30d' : '1d' }
             );
 
-            // Rotate refresh token (replace old with new)
-            employee.refresh_tokens = (employee.refresh_tokens || []).filter(t => t !== token);
-            employee.refresh_tokens.push(newRefreshToken);
-            if (employee.refresh_tokens.length > 10) {
-                employee.refresh_tokens = employee.refresh_tokens.slice(-10);
-            }
-            employee.markModified('refresh_tokens');
-
-            // Track in rotated_tokens with timestamp
-            if (!Array.isArray(employee.rotated_tokens)) {
-                employee.rotated_tokens = [];
-            }
-            const twoMinutesAgo = Date.now() - 2 * 60 * 1000;
-            employee.rotated_tokens = employee.rotated_tokens.filter(
-                r => r.rotated_at && new Date(r.rotated_at).getTime() > twoMinutesAgo
+            // Rotate refresh token atomically (pull old, then push new with cap & rotated history)
+            await Employee.updateOne(
+                { _id: employee._id },
+                { $pull: { refresh_tokens: token } }
             );
-            employee.rotated_tokens.push({
-                old_token: token,
-                new_token: newAccessToken,
-                new_refresh_token: newRefreshToken,
-                rotated_at: new Date()
-            });
-            employee.markModified('rotated_tokens');
 
-            await employee.save();
+            await Employee.updateOne(
+                { _id: employee._id },
+                {
+                    $push: {
+                        refresh_tokens: { $each: [newRefreshToken], $slice: -50 },
+                        rotated_tokens: {
+                            $each: [{
+                                old_token: token,
+                                new_token: newAccessToken,
+                                new_refresh_token: newRefreshToken,
+                                rotated_at: new Date()
+                            }],
+                            $slice: -30
+                        }
+                    }
+                }
+            );
 
             res.json({ success: true, token: newAccessToken, refreshToken: newRefreshToken });
         } catch (err) {
-            // Token expired or invalid - cleanup database
-            employee.refresh_tokens = (employee.refresh_tokens || []).filter(t => t !== token);
-            await employee.save();
+            // Token expired or invalid - cleanup database atomically
+            await Employee.updateOne(
+                { _id: employee._id },
+                { $pull: { refresh_tokens: token } }
+            );
             return res.status(403).json({ success: false, message: 'Invalid or expired refresh token.' });
         }
     } catch (err) {

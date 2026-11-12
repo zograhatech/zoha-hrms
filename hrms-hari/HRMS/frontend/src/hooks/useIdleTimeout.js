@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import API from '../api/axios';
 import { useAuth } from '../context/AuthContext';
+import { recordLogoutDiagnostic } from '../utils/authDiagnostics';
 
 const IDLE_SYNC_CHANNEL = 'hrms_idle_sync';
 const LAST_ACTIVITY_KEY = 'hrms_last_activity';
@@ -81,10 +82,8 @@ export function useIdleTimeout() {
     useEffect(() => {
         if (!isAuthenticated) return;
 
-        // Initialize activity if not set
-        if (!localStorage.getItem(LAST_ACTIVITY_KEY)) {
-            localStorage.setItem(LAST_ACTIVITY_KEY, String(Date.now()));
-        }
+        // Fresh page load always resets last activity to now (never assume idle from hours earlier when app was closed)
+        localStorage.setItem(LAST_ACTIVITY_KEY, String(Date.now()));
 
         const events = ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart', 'focus'];
         const handleActivity = () => recordActivity();
@@ -105,6 +104,7 @@ export function useIdleTimeout() {
         const isEnabled = policy.enabled ?? policy.idle_auto_clockout_enabled ?? true;
         if (!isEnabled) return;
 
+        const isRemembered = localStorage.getItem('hrms_remember_me') === 'true';
         const timeoutMinutes = policy.timeout_minutes ?? policy.idle_timeout_minutes ?? 10;
         const timeoutMs = timeoutMinutes * 60 * 1000;
         let lastHeartbeat = 0;
@@ -120,6 +120,13 @@ export function useIdleTimeout() {
             if (idleMs < 60000 && now - lastHeartbeat >= 60000) {
                 lastHeartbeat = now;
                 API.post('/attendance/heartbeat').catch(() => {});
+            }
+
+            // If "Stay logged in" is enabled, web idle timer must NEVER sign the user out of the web portal
+            if (isRemembered) {
+                // Keep activity warning hidden; do not log out
+                setShowWarning(false);
+                return;
             }
 
             if (remainingMs <= WARNING_THRESHOLD_SECONDS * 1000 && remainingMs > 0) {
@@ -147,7 +154,13 @@ export function useIdleTimeout() {
                     }
                 }
 
-                // Log out user
+                // Record diagnostic and log out user
+                recordLogoutDiagnostic({
+                    reason: 'idle_hook_timeout',
+                    endpoint: '/attendance/auto-clock-out',
+                    status: 200,
+                    details: { timeoutMinutes, idleSeconds: Math.floor(idleMs / 1000) }
+                });
                 logout();
             }
         }, 1000);

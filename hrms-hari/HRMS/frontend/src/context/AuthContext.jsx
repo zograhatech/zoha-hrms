@@ -1,6 +1,7 @@
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import API from '../api/axios';
+import { recordLogoutDiagnostic } from '../utils/authDiagnostics';
 
 const AuthContext = createContext(null);
 
@@ -23,6 +24,7 @@ export const AuthProvider = ({ children }) => {
             localStorage.setItem('hrms_token', data.token);
             localStorage.setItem('hrms_refresh_token', data.refreshToken);
             localStorage.setItem('hrms_user', JSON.stringify(data.user));
+            localStorage.setItem('hrms_remember_me', rememberMe ? 'true' : 'false');
             setToken(data.token);
             setUser(data.user);
             return data.user;
@@ -34,6 +36,9 @@ export const AuthProvider = ({ children }) => {
         localStorage.setItem('hrms_token', data.token);
         localStorage.setItem('hrms_refresh_token', data.refreshToken);
         localStorage.setItem('hrms_user', JSON.stringify(data.user));
+        if (data.rememberMe !== undefined) {
+            localStorage.setItem('hrms_remember_me', data.rememberMe ? 'true' : 'false');
+        }
         setToken(data.token);
         setUser(data.user);
         return data.user;
@@ -86,6 +91,7 @@ export const AuthProvider = ({ children }) => {
     }, [token, refreshUser]);
 
     const logout = async () => {
+        recordLogoutDiagnostic({ reason: 'explicit_logout' });
         const refreshToken = localStorage.getItem('hrms_refresh_token');
         try {
             if (refreshToken) {
@@ -97,6 +103,7 @@ export const AuthProvider = ({ children }) => {
             localStorage.removeItem('hrms_token');
             localStorage.removeItem('hrms_refresh_token');
             localStorage.removeItem('hrms_user');
+            localStorage.removeItem('hrms_remember_me');
             setToken(null);
             setUser(null);
             if (typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined') {

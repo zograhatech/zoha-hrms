@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { recordLogoutDiagnostic } from '../utils/authDiagnostics';
 
 // Base URL configuration: reads from VITE_API_BASE_URL env var, defaulting to production backend fallback
 const rawApiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'https://zoha-hrms.vercel.app';
@@ -81,9 +82,11 @@ if (authChannel) {
             localStorage.setItem('hrms_token', token);
             localStorage.setItem('hrms_refresh_token', refreshToken);
         } else if (type === 'LOGOUT') {
+            recordLogoutDiagnostic({ reason: 'auth_channel_broadcast' });
             localStorage.removeItem('hrms_token');
             localStorage.removeItem('hrms_refresh_token');
             localStorage.removeItem('hrms_user');
+            localStorage.removeItem('hrms_remember_me');
             if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
                 window.location.href = '/login';
             }
@@ -156,31 +159,43 @@ async function performCrossTabRefresh(failedToken) {
             throw err;
         }
 
-        try {
-            const { data } = await axios.post(`${API.defaults.baseURL}/auth/refresh`, { refreshToken });
-            if (data?.token && data?.refreshToken) {
-                localStorage.setItem('hrms_token', data.token);
-                localStorage.setItem('hrms_refresh_token', data.refreshToken);
-                authChannel?.postMessage({
-                    type: 'TOKEN_REFRESHED',
-                    token: data.token,
-                    refreshToken: data.refreshToken
-                });
-                return data.token;
+        // Retry loop for cold-start serverless / DB timeouts (up to 3 attempts)
+        let lastErr = null;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                const { data } = await axios.post(`${API.defaults.baseURL}/auth/refresh`, { refreshToken });
+                if (data?.token && data?.refreshToken) {
+                    localStorage.setItem('hrms_token', data.token);
+                    localStorage.setItem('hrms_refresh_token', data.refreshToken);
+                    authChannel?.postMessage({
+                        type: 'TOKEN_REFRESHED',
+                        token: data.token,
+                        refreshToken: data.refreshToken
+                    });
+                    return data.token;
+                }
+                const formatErr = new Error('Malformed refresh response');
+                formatErr.isAuthError = true;
+                throw formatErr;
+            } catch (err) {
+                lastErr = err;
+                const status = err.response?.status;
+                if (status === 401 || status === 403) {
+                    // Truly revoked or invalid refresh token: do not retry
+                    err.isAuthError = true;
+                    throw err;
+                }
+                // Network error, 5xx server error, or cold-start DB timeout: retry if attempts remain
+                if (attempt < 3) {
+                    await new Promise(r => setTimeout(r, attempt * 500));
+                }
             }
-            const formatErr = new Error('Malformed refresh response');
-            formatErr.isAuthError = true;
-            throw formatErr;
-        } catch (err) {
-            const status = err.response?.status;
-            if (status === 401 || status === 403) {
-                // Refresh token is genuinely invalid, revoked, or expired
-                err.isAuthError = true;
-            } else {
-                // Network error, 5xx server error, or timeout: keep tokens intact
-                err.isAuthError = false;
-            }
-            throw err;
+        }
+
+        if (lastErr) {
+            // Cold start or network failure after retries: NEVER clear credentials
+            lastErr.isAuthError = false;
+            throw lastErr;
         }
     });
 }
@@ -197,6 +212,12 @@ API.interceptors.response.use(
                 return Promise.reject(err);
             }
 
+            // Unessential background pings should NEVER trigger a forced logout if they fail
+            const isBackgroundPing = originalRequest.url?.includes('/attendance/heartbeat') ||
+                originalRequest.url?.includes('/attendance/idle-policy') ||
+                originalRequest.url?.includes('/settings/branding') ||
+                originalRequest.url?.includes('/health');
+
             originalRequest._retry = true;
             const failedToken = (originalRequest.headers?.Authorization || '').replace(/^Bearer\s+/i, '');
 
@@ -211,17 +232,24 @@ API.interceptors.response.use(
                 originalRequest.headers.Authorization = `Bearer ${newToken}`;
                 return API(originalRequest);
             } catch (refreshErr) {
-                if (refreshErr?.isAuthError) {
-                    // Truly unauthenticated: clear credentials and redirect to login
+                if (refreshErr?.isAuthError && !isBackgroundPing) {
+                    // Truly unauthenticated: record diagnostic, clear credentials and redirect to login
+                    recordLogoutDiagnostic({
+                        reason: refreshErr.message?.includes('No refresh token') ? 'refresh_token_missing' : 'refresh_401_403',
+                        endpoint: originalRequest.url,
+                        status: refreshErr.response?.status || 401,
+                        details: refreshErr.response?.data?.message || refreshErr.message
+                    });
                     localStorage.removeItem('hrms_token');
                     localStorage.removeItem('hrms_refresh_token');
                     localStorage.removeItem('hrms_user');
+                    localStorage.removeItem('hrms_remember_me');
                     authChannel?.postMessage({ type: 'LOGOUT' });
                     if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
                         window.location.href = '/login';
                     }
                 }
-                // On network/server errors, do NOT clear tokens or redirect
+                // On network/server/cold-start errors or background pings, do NOT clear tokens or redirect
                 return Promise.reject(refreshErr);
             }
         }
