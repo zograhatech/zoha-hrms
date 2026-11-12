@@ -418,15 +418,26 @@ export default function Messages() {
     useEffect(() => {
         if (!socket || !activeConv) return;
 
-        socket.subscribe?.(`chat-${activeConv._id}`);
+        socket.subscribe?.(`private-chat-${activeConv._id}`);
 
-        const handleReceive = (msg) => {
-            const msgConvId = msg.conversationId?._id || msg.conversationId;
+        const handleReceive = async (data) => {
+            const msgConvId = data?.conversationId?._id || data?.conversationId;
             if (msgConvId === activeConv._id) {
-                setMessages(prev => {
-                    const existing = prev.find(m => (m.clientMessageId && m.clientMessageId === msg.clientMessageId) || m._id === msg._id);
-                    return existing ? prev : [...prev, msg];
-                });
+                if (data?._id && data?.createdAt) {
+                    // Full message object
+                    setMessages(prev => {
+                        const existing = prev.find(m => (m.clientMessageId && m.clientMessageId === data.clientMessageId) || m._id === data._id);
+                        return existing ? prev : [...prev, data];
+                    });
+                } else {
+                    // Secure ID-only payload (Pusher) -> fetch fresh messages over authenticated HTTPS
+                    try {
+                        const { data: resData } = await API.get(`/messages/${activeConv._id}?limit=50`);
+                        if (resData?.messages) {
+                            setMessages(resData.messages);
+                        }
+                    } catch (_) {}
+                }
                 if (document.visibilityState === 'visible') {
                     triggerMarkSeen(activeConv._id);
                     scrollToBottom('smooth');
@@ -559,6 +570,69 @@ export default function Messages() {
                     fileType: file.type,
                     fileSize: file.size
                 });
+
+                if (sigData.provider === 'r2') {
+                    // Cloudflare R2 / S3 chunked multipart upload for large files (up to 2GB+)
+                    const { uploadId, key, partSize = 10 * 1024 * 1024 } = sigData;
+                    const totalParts = Math.ceil(file.size / partSize);
+                    const uploadedParts = [];
+
+                    for (let partNumber = 1; partNumber <= totalParts; partNumber++) {
+                        if (item.abortController.signal.aborted) {
+                            await API.post('/messages/upload/r2-abort', { key, uploadId }).catch(() => {});
+                            return null;
+                        }
+
+                        const start = (partNumber - 1) * partSize;
+                        const end = Math.min(start + partSize, file.size);
+                        const chunk = file.slice(start, end);
+
+                        const { data: partData } = await API.post('/messages/upload/r2-part-url', {
+                            key,
+                            uploadId,
+                            partNumber
+                        });
+
+                        const putRes = await fetch(partData.presignedUrl, {
+                            method: 'PUT',
+                            body: chunk,
+                            signal: item.abortController.signal
+                        });
+
+                        if (!putRes.ok) {
+                            throw new Error(`Failed to upload part ${partNumber} (HTTP ${putRes.status})`);
+                        }
+
+                        const etag = putRes.headers.get('ETag');
+                        uploadedParts.push({ partNumber, etag: etag || `"${partNumber}"` });
+
+                        const percent = Math.round((end * 100) / file.size);
+                        setPendingFiles(prev => prev.map(p => p.id === item.id ? { ...p, progress: percent } : p));
+                    }
+
+                    // Complete multipart upload
+                    const { data: completeData } = await API.post('/messages/upload/r2-complete', {
+                        key,
+                        uploadId,
+                        parts: uploadedParts
+                    });
+
+                    const fileUrl = completeData.fileUrl;
+
+                    const { data: msgData } = await API.post('/messages', {
+                        conversationId: activeConv._id,
+                        clientMessageId,
+                        text: textToSend,
+                        fileUrl,
+                        fileName: file.name,
+                        fileSize: file.size,
+                        fileType: file.type.startsWith('image/') ? 'image' : (file.type.startsWith('video/') ? 'video' : (file.type.startsWith('audio/') ? 'audio' : 'file')),
+                        mimeType: file.type
+                    });
+
+                    setPendingFiles(prev => prev.filter(p => p.id !== item.id));
+                    return msgData?.message;
+                }
 
                 if (sigData.provider === 'cloudinary' && sigData.uploadUrl) {
                     const uploadForm = new FormData();

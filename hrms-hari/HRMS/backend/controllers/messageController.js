@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 const Message = require('../models/Message');
 const Conversation = require('../models/Conversation');
 const Employee = require('../models/Employee');
@@ -6,6 +7,7 @@ const AuditLog = require('../models/AuditLog');
 const Notification = require('../models/Notification');
 const { uploadFromBuffer } = require('../utils/cloudinary');
 const { normalizeRole } = require('../utils/visibilityHelper');
+const r2Storage = require('../utils/r2Storage');
 const PDFDocument = require('pdfkit');
 
 // Helper to resolve MongoDB ObjectId for user
@@ -242,14 +244,18 @@ exports.sendMessage = async (req, res) => {
             }
         } catch (_) {}
 
-        // Trigger hosted realtime (Pusher) if configured
+        // Trigger hosted realtime (Pusher) on PRIVATE channels with IDs ONLY (never message text)
         try {
             const { triggerRealtime } = require('../utils/realtimeService');
-            triggerRealtime(`chat-${conversationId}`, 'receive_message', populatedMessage);
+            triggerRealtime(`private-chat-${conversationId}`, 'receive_message', {
+                conversationId: conversationId.toString(),
+                messageId: populatedMessage._id.toString(),
+                senderId: populatedMessage.sender?._id?.toString() || populatedMessage.sender?.id || ''
+            });
             if (recipientId) {
-                triggerRealtime(`user-${recipientId}`, 'chat-notification', {
+                triggerRealtime(`private-user-${recipientId}`, 'chat-notification', {
                     conversationId: conversationId.toString(),
-                    message: populatedMessage
+                    messageId: populatedMessage._id.toString()
                 });
             }
         } catch (_) {}
@@ -302,8 +308,8 @@ exports.markDelivered = async (req, res) => {
         if (updateResult.modifiedCount > 0) {
             try {
                 const { triggerRealtime } = require('../utils/realtimeService');
-                const channels = convIds.slice(0, 10).map(id => `chat-${id}`);
-                triggerRealtime(channels, 'messages_delivered', { deliveredTo: userId, deliveredAt: now });
+                const channels = convIds.slice(0, 10).map(id => `private-chat-${id}`);
+                triggerRealtime(channels, 'messages_delivered', { deliveredTo: userId.toString(), deliveredAt: now });
             } catch (_) {}
         }
 
@@ -378,9 +384,9 @@ exports.markSeen = async (req, res) => {
         // Trigger hosted realtime (Pusher) if configured
         try {
             const { triggerRealtime } = require('../utils/realtimeService');
-            triggerRealtime(`chat-${conversationId}`, 'messages_seen', {
+            triggerRealtime(`private-chat-${conversationId}`, 'messages_seen', {
                 conversationId: conversationId.toString(),
-                seenBy: userId,
+                seenBy: userId.toString(),
                 seenAt: now
             });
         } catch (_) {}
@@ -491,15 +497,31 @@ exports.exportConversation = async (req, res) => {
 };
 
 // POST /api/messages/upload-signature
-// Generates direct-to-storage signed parameters for files > 4MB (bypassing Vercel 4.5MB limit)
+// Direct-to-storage signed parameters for Cloudinary (<10MB) or Cloudflare R2 / S3 Multipart (up to 2GB)
 exports.getUploadSignature = async (req, res) => {
     try {
         const { filename, fileType, fileSize } = req.body;
-        const maxBytes = parseInt(process.env.MAX_UPLOAD_BYTES || '104857600', 10); // 100 MB default
+        const maxBytes = parseInt(process.env.MAX_UPLOAD_BYTES || '2147483648', 10); // 2 GB default
         if (fileSize && fileSize > maxBytes) {
             return res.status(400).json({
                 success: false,
                 message: `File size exceeds the maximum limit of ${Math.round(maxBytes / (1024 * 1024))} MB.`
+            });
+        }
+
+        // If file is large (> 10MB) or Cloudflare R2 is configured, route to R2 multipart
+        if (r2Storage.isR2Configured() && (fileSize > 10 * 1024 * 1024 || !process.env.CLOUDINARY_CLOUD_NAME)) {
+            const initData = await r2Storage.initiateMultipartUpload({
+                filename: filename || 'attachment.zip',
+                fileType: fileType || 'application/octet-stream'
+            });
+            return res.json({
+                success: true,
+                provider: 'r2',
+                uploadId: initData.uploadId,
+                key: initData.key,
+                publicUrl: initData.publicUrl,
+                partSize: 10 * 1024 * 1024 // 10 MB per part
             });
         }
 
@@ -508,6 +530,15 @@ exports.getUploadSignature = async (req, res) => {
         const apiSecret = process.env.CLOUDINARY_API_SECRET;
 
         if (cloudName && apiKey && apiSecret) {
+            // Cloudinary raw archives have a hard plan limit of 10MB on free tiers
+            const isRawArchive = !fileType?.startsWith('image/') && !fileType?.startsWith('video/') && !fileType?.startsWith('audio/');
+            if (isRawArchive && fileSize > 10 * 1024 * 1024 && !r2Storage.isR2Configured()) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Raw archives > 10 MB require Cloudflare R2 credentials (R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET) for direct 1GB+ multipart upload.'
+                });
+            }
+
             const cloudinary = require('cloudinary').v2;
             cloudinary.config({ cloud_name: cloudName, api_key: apiKey, api_secret: apiSecret });
 
@@ -544,5 +575,139 @@ exports.getUploadSignature = async (req, res) => {
     } catch (err) {
         console.error('[getUploadSignature]', err);
         res.status(500).json({ success: false, message: 'Failed to generate upload signature.' });
+    }
+};
+
+// POST /api/messages/upload/r2-initiate
+exports.r2InitiateMultipart = async (req, res) => {
+    try {
+        const { filename, fileType, fileSize } = req.body;
+        const maxBytes = parseInt(process.env.MAX_UPLOAD_BYTES || '2147483648', 10);
+        if (fileSize && fileSize > maxBytes) {
+            return res.status(400).json({ success: false, message: 'File size exceeds maximum allowed limit.' });
+        }
+
+        if (!r2Storage.isR2Configured()) {
+            return res.status(400).json({
+                success: false,
+                message: 'Cloudflare R2 is not configured. Set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and R2_BUCKET.'
+            });
+        }
+
+        const result = await r2Storage.initiateMultipartUpload({ filename: filename || 'file.zip', fileType });
+        res.json({
+            success: true,
+            provider: 'r2',
+            uploadId: result.uploadId,
+            key: result.key,
+            publicUrl: result.publicUrl,
+            partSize: 10 * 1024 * 1024
+        });
+    } catch (err) {
+        console.error('[r2InitiateMultipart]', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+// POST /api/messages/upload/r2-part-url
+exports.r2GetPartUrl = async (req, res) => {
+    try {
+        const { key, uploadId, partNumber } = req.body;
+        if (!key || !uploadId || !partNumber) {
+            return res.status(400).json({ success: false, message: 'key, uploadId, and partNumber are required.' });
+        }
+
+        const presignedUrl = r2Storage.getPresignedPartUrl({
+            key,
+            uploadId,
+            partNumber: parseInt(partNumber, 10)
+        });
+        res.json({ success: true, presignedUrl, partNumber: parseInt(partNumber, 10) });
+    } catch (err) {
+        console.error('[r2GetPartUrl]', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+// POST /api/messages/upload/r2-complete
+exports.r2CompleteMultipart = async (req, res) => {
+    try {
+        const { key, uploadId, parts } = req.body;
+        if (!key || !uploadId || !Array.isArray(parts)) {
+            return res.status(400).json({ success: false, message: 'key, uploadId, and parts array are required.' });
+        }
+
+        const result = await r2Storage.completeMultipartUpload({ key, uploadId, parts });
+        res.json({ success: true, fileUrl: result.fileUrl });
+    } catch (err) {
+        console.error('[r2CompleteMultipart]', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+// POST /api/messages/upload/r2-abort
+exports.r2AbortMultipart = async (req, res) => {
+    try {
+        const { key, uploadId } = req.body;
+        if (!key || !uploadId) {
+            return res.status(400).json({ success: false, message: 'key and uploadId are required.' });
+        }
+
+        await r2Storage.abortMultipartUpload({ key, uploadId });
+        res.json({ success: true, message: 'Upload aborted.' });
+    } catch (err) {
+        console.error('[r2AbortMultipart]', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+// POST /api/messages/pusher/auth
+// Validates caller is a conversation participant before granting access to private-chat-* channels
+exports.pusherAuth = async (req, res) => {
+    try {
+        const { socket_id, channel_name } = req.body;
+        if (!socket_id || !channel_name) {
+            return res.status(400).json({ success: false, message: 'socket_id and channel_name are required.' });
+        }
+
+        const userId = await resolveUserId(req.user);
+        if (!userId) {
+            return res.status(401).json({ success: false, message: 'Unauthorized' });
+        }
+
+        // Private conversation channels: private-chat-<conversationId>
+        if (channel_name.startsWith('private-chat-')) {
+            const conversationId = channel_name.replace('private-chat-', '');
+            const conversation = await Conversation.findById(conversationId);
+            if (!conversation) {
+                return res.status(404).json({ success: false, message: 'Conversation not found.' });
+            }
+
+            const isParticipant = isUserInParticipants(conversation.participants, userId, req.user);
+            if (!isParticipant) {
+                // Strictly deny non-participants (Super Admin monitor does not eavesdrop on private channels)
+                return res.status(403).json({ success: false, message: 'Forbidden. You are not a participant in this conversation.' });
+            }
+        } else if (channel_name.startsWith('private-user-')) {
+            const targetUserId = channel_name.replace('private-user-', '');
+            const isSelf = String(userId) === String(targetUserId) || String(req.user?.id) === String(targetUserId);
+            if (!isSelf) {
+                return res.status(403).json({ success: false, message: 'Forbidden. Cannot subscribe to another user channel.' });
+            }
+        }
+
+        const secret = process.env.PUSHER_SECRET;
+        const key = process.env.PUSHER_KEY;
+        if (!secret || !key) {
+            return res.status(500).json({ success: false, message: 'Pusher is not configured on server.' });
+        }
+
+        const stringToSign = `${socket_id}:${channel_name}`;
+        const authSignature = crypto.createHmac('sha256', secret).update(stringToSign).digest('hex');
+
+        res.json({ auth: `${key}:${authSignature}` });
+    } catch (err) {
+        console.error('[pusherAuth]', err);
+        res.status(500).json({ success: false, message: 'Pusher authentication failed.' });
     }
 };

@@ -1299,7 +1299,9 @@ const heartbeat = async (req, res) => {
 // Server-side sweeper to close stale open sessions if companion dies or fails
 const sweepStaleSessions = async (req, res) => {
     try {
-        const providedSecret = req.headers['x-sweeper-secret'] || req.query.secret;
+        const authHeader = req.headers['authorization'] || '';
+        const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+        const providedSecret = req.headers['x-sweeper-secret'] || req.query.secret || bearerToken;
         const validSecret = process.env.SWEEPER_SECRET || process.env.CRON_SECRET;
 
         if (!validSecret || providedSecret !== validSecret) {

@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useRef, useCallback } from 'react';
 import { io } from 'socket.io-client';
+import API from '../api/axios';
 import { useAuth } from './AuthContext';
 import { useToast } from './ToastContext';
 
@@ -13,6 +14,7 @@ export const SocketProvider = ({ children }) => {
     const [realtimeClient, setRealtimeClient] = useState(null);
     const listenersRef = useRef(new Map()); // event -> Set of callbacks
     const wsRef = useRef(null);
+    const socketIdRef = useRef(null);
 
     // ── Unified Event Dispatcher ────────────────────────────────────
     const on = useCallback((event, callback) => {
@@ -40,8 +42,33 @@ export const SocketProvider = ({ children }) => {
         }
     }, []);
 
-    const subscribeChannel = useCallback((channelName) => {
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+    const subscribeChannel = useCallback(async (channelName) => {
+        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+
+        // If channel is private, authenticate with server first!
+        if (channelName.startsWith('private-')) {
+            try {
+                const socketId = socketIdRef.current;
+                if (!socketId) return;
+
+                const { data } = await API.post('/messages/pusher/auth', {
+                    socket_id: socketId,
+                    channel_name: channelName
+                });
+
+                if (data?.auth && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                    wsRef.current.send(JSON.stringify({
+                        event: 'pusher:subscribe',
+                        data: {
+                            channel: channelName,
+                            auth: data.auth
+                        }
+                    }));
+                }
+            } catch (err) {
+                console.warn(`[Realtime Auth Denied] Cannot join ${channelName}:`, err.response?.data?.message || err.message);
+            }
+        } else {
             wsRef.current.send(JSON.stringify({
                 event: 'pusher:subscribe',
                 data: { channel: channelName }
@@ -78,15 +105,17 @@ export const SocketProvider = ({ children }) => {
                         return;
                     }
 
-                    if (event === 'pusher:connection_established') {
-                        // Automatically subscribe to user-specific channel
-                        subscribeChannel(`user-${user.id}`);
-                        return;
-                    }
-
                     let payload = data;
                     if (typeof data === 'string') {
                         try { payload = JSON.parse(data); } catch (_) {}
+                    }
+
+                    if (event === 'pusher:connection_established') {
+                        const socketId = payload?.socket_id;
+                        socketIdRef.current = socketId;
+                        // Automatically subscribe to authenticated private user channel
+                        subscribeChannel(`private-user-${user.id}`);
+                        return;
                     }
 
                     // Forward to registered event handlers
@@ -97,10 +126,10 @@ export const SocketProvider = ({ children }) => {
 
                     // Built-in handlers for notifications and permission updates
                     if (event === 'notification' || event === 'chat-notification') {
-                        showToast(payload.message || 'New notification', 'info');
+                        showToast(payload?.message || 'New notification', 'info');
                     }
                     if (event === 'permission_update') {
-                        showToast(payload.message || 'Permissions updated', 'success');
+                        showToast(payload?.message || 'Permissions updated', 'success');
                         refreshUser();
                     }
                 } catch (err) {
@@ -124,6 +153,7 @@ export const SocketProvider = ({ children }) => {
             return () => {
                 ws.close();
                 wsRef.current = null;
+                socketIdRef.current = null;
             };
         }
 

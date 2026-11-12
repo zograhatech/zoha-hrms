@@ -4,6 +4,7 @@ const Message = require('../models/Message');
 const Employee = require('../models/Employee');
 const AuditLog = require('../models/AuditLog');
 const { normalizeRole } = require('../utils/visibilityHelper');
+const { isSuperAdminUser } = require('../utils/authHelper');
 
 // Helper to resolve MongoDB ObjectId for user
 const resolveEmployeeObjectId = async (userOrId) => {
@@ -195,8 +196,7 @@ exports.getAdminConversations = async (req, res) => {
         if (typeof res.setHeader === 'function') {
             res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
         }
-        const callerRole = normalizeRole(req.user?.role || '');
-        if (callerRole !== 'admin') {
+        if (!isSuperAdminUser(req.user)) {
             return res.status(403).json({ success: false, message: 'Forbidden. Only Super Admins can access chat oversight.' });
         }
 
@@ -304,8 +304,7 @@ exports.getAdminConversationMessages = async (req, res) => {
         if (typeof res.setHeader === 'function') {
             res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
         }
-        const callerRole = normalizeRole(req.user?.role || '');
-        if (callerRole !== 'admin') {
+        if (!isSuperAdminUser(req.user)) {
             return res.status(403).json({ success: false, message: 'Forbidden. Only Super Admins can access chat oversight.' });
         }
 

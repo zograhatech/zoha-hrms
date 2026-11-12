@@ -5,9 +5,9 @@ const auth = require('../middleware/auth');
 const multer = require('multer');
 const path = require('path');
 
-// Multer setup for memory storage - allows all file types with configurable max size
+// Multer setup for memory storage - allows all file types with configurable max size (2 GB default)
 const storage = multer.memoryStorage();
-const MAX_UPLOAD_BYTES = parseInt(process.env.MAX_UPLOAD_BYTES || '104857600', 10); // 100 MB default
+const MAX_UPLOAD_BYTES = parseInt(process.env.MAX_UPLOAD_BYTES || '2147483648', 10); // 2 GB default
 
 const upload = multer({
     storage,
@@ -31,8 +31,15 @@ const handleChatUpload = (req, res, next) => {
 
 router.use(auth());
 
-// Direct-to-storage signed upload endpoint
+// Pusher private channel auth endpoint (checks participant authorization)
+router.post('/pusher/auth', messageController.pusherAuth);
+
+// Direct-to-storage signed upload endpoints (Cloudinary + Cloudflare R2 / S3 Multipart)
 router.post('/upload-signature', messageController.getUploadSignature);
+router.post('/upload/r2-initiate', messageController.r2InitiateMultipart);
+router.post('/upload/r2-part-url', messageController.r2GetPartUrl);
+router.post('/upload/r2-complete', messageController.r2CompleteMultipart);
+router.post('/upload/r2-abort', messageController.r2AbortMultipart);
 
 // Global unread count across all user's chats (for floating chat badge)
 router.get('/unread-count', messageController.getUnreadCount);
