@@ -24,6 +24,10 @@ const messageController = require('../controllers/messageController');
 async function run() {
     console.log('=== Starting Test Suite for Bug A (hrms_dev) ===');
     await connectDB();
+    console.log(`Connected to database: ${mongoose.connection.name}`);
+    if (mongoose.connection.name !== 'hrms_dev') {
+        throw new Error(`ABORT: Connected database is "${mongoose.connection.name}", but must be strictly "hrms_dev"!`);
+    }
 
     const timestamp = Date.now();
     const saId = `TEST_SA_${timestamp}`;

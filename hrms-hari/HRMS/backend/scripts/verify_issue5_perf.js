@@ -23,6 +23,10 @@ async function run() {
     console.log(`Target DB: ${process.env.DB_NAME}`);
 
     await connectDB();
+    console.log(`Connected to database: ${mongoose.connection.name}`);
+    if (mongoose.connection.name !== 'hrms_dev') {
+        throw new Error(`ABORT: Connected database is "${mongoose.connection.name}", but must be strictly "hrms_dev"!`);
+    }
 
     // 1. Check autoIndex configuration in options
     console.log('[Check 1] Checking autoIndex in production/Vercel guard...');

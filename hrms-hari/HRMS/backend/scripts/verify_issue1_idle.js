@@ -28,6 +28,10 @@ async function run() {
     }
 
     await connectDB();
+    console.log(`Connected to database: ${mongoose.connection.name}`);
+    if (mongoose.connection.name !== 'hrms_dev') {
+        throw new Error(`ABORT: Connected database is "${mongoose.connection.name}", but must be strictly "hrms_dev"!`);
+    }
 
     const testEmpId = `TEST_IDLE_${Date.now()}`;
     const testEmail = `test_idle_${Date.now()}@example.com`;

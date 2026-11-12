@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 
 // Verbose logging for connection states (without logging credentials)
 mongoose.connection.on('connecting', () => console.log('... Mongoose is connecting to MongoDB Atlas'));
-mongoose.connection.on('connected', () => console.log('✅ Mongoose connected to MongoDB Atlas (hrms_db)'));
+mongoose.connection.on('connected', () => console.log(`✅ Mongoose connected to MongoDB Atlas (${mongoose.connection.name})`));
 mongoose.connection.on('open', () => console.log('🚀 Mongoose connection is open and ready'));
 mongoose.connection.on('error', (err) => console.error('❌ Mongoose connection error event:', err.message));
 mongoose.connection.on('disconnected', () => console.warn('⚠️ Mongoose disconnected from MongoDB Atlas'));

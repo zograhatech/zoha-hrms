@@ -63,6 +63,10 @@ async function run() {
     }
 
     await connectDB();
+    console.log(`Connected to database: ${mongoose.connection.name}`);
+    if (mongoose.connection.name !== 'hrms_dev') {
+        throw new Error(`ABORT: Connected database is "${mongoose.connection.name}", but must be strictly "hrms_dev"!`);
+    }
 
     const timestamp = Date.now();
     const idA = `TEST_REG_A_${timestamp}`;

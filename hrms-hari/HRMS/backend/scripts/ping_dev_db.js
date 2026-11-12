@@ -34,6 +34,10 @@ async function ping() {
 
   try {
     const conn = await mongoose.connect(uri, options);
+    console.log(`Connected to database: ${mongoose.connection.name}`);
+    if (mongoose.connection.name !== 'hrms_dev') {
+      throw new Error(`ABORT: Connected database is "${mongoose.connection.name}", but must be strictly "hrms_dev"!`);
+    }
     await conn.connection.db.admin().ping();
     console.log('connected');
   } catch (err) {
