@@ -25,16 +25,33 @@ function isBsonObjectId(val) {
 }
 
 // Safety check against production
-function assertNotProduction(dbName, uri) {
+function assertNotProduction(dbName, uri, { allowProdReadonly = false, dryRun = true } = {}) {
     const isProdEnv = process.env.NODE_ENV === 'production';
     const activeDb = (dbName || '').toLowerCase();
     const isProdDb = activeDb === 'hrms_db' || (!activeDb && uri && uri.toLowerCase().includes('/hrms_db'));
 
-    if ((isProdEnv || isProdDb) && !process.env.ALLOW_DEV_SCRIPT) {
-        throw new Error(
-            `[FATAL] Refusing to run dev normalization script on production database ('${dbName || uri}').\n` +
-            `This script is dev-only and must never be run on production.`
-        );
+    if (isProdEnv || isProdDb) {
+        if (allowProdReadonly) {
+            if (!dryRun) {
+                throw new Error(
+                    `[FATAL] --allow-prod-readonly strictly permits READ-ONLY analysis (dry-run).\n` +
+                    `Execution / DB writes are strictly forbidden against production database ('${dbName || uri}').`
+                );
+            }
+            console.warn(
+                `\n[SAFETY NOTICE] Running in READ-ONLY dry-run mode against production database ('${dbName || uri}').\n` +
+                `No database modifications will be executed.\n`
+            );
+            return;
+        }
+
+        if (!process.env.ALLOW_DEV_SCRIPT) {
+            throw new Error(
+                `[FATAL] Refusing to run dev normalization script on production database ('${dbName || uri}').\n` +
+                `This script is dev-only and must never be run on production.\n` +
+                `To inspect production safely in read-only mode, pass the explicit flag: --allow-prod-readonly`
+            );
+        }
     }
 }
 
@@ -42,11 +59,19 @@ function assertNotProduction(dbName, uri) {
  * Core normalization logic
  * @param {Object} options
  * @param {boolean} options.dryRun - Whether to perform a dry run (default true)
+ * @param {boolean} [options.allowProdReadonly] - Allow read-only dry-run against production
  * @param {mongoose.Connection} [options.connection] - Optional existing mongoose connection
  * @returns {Promise<Object>} Summary statistics
  */
 async function normalizeParticipants(options = {}) {
-    const dryRun = options.dryRun !== false;
+    const allowProdReadonly = Boolean(options.allowProdReadonly || process.argv.includes('--allow-prod-readonly'));
+    let dryRun = options.dryRun !== false;
+
+    // Hard guard: if allowProdReadonly is active, force dryRun to true (strictly zero writes)
+    if (allowProdReadonly) {
+        dryRun = true;
+    }
+
     const conn = options.connection || mongoose.connection;
     const db = conn.db;
 
@@ -54,7 +79,7 @@ async function normalizeParticipants(options = {}) {
         throw new Error('Database connection is not open.');
     }
 
-    assertNotProduction(db.databaseName, conn.client?.s?.url || process.env.MONGO_URI);
+    assertNotProduction(db.databaseName, conn.client?.s?.url || process.env.MONGO_URI, { allowProdReadonly, dryRun });
 
     const EmployeeModel = conn.model('Employee');
     const ConversationModel = conn.model('Conversation');
@@ -202,17 +227,30 @@ async function normalizeParticipants(options = {}) {
 
 async function run() {
     try {
+        const allowProdReadonly = process.argv.includes('--allow-prod-readonly');
         const isExecute = process.argv.includes('--execute') || process.argv.includes('--apply');
-        const dbName = process.env.DB_NAME || 'hrms_dev';
+
+        if (allowProdReadonly && isExecute) {
+            throw new Error('Conflicting options: --allow-prod-readonly strictly forbids --execute or --apply. Production writes are blocked.');
+        }
+
+        const isProduction = process.env.NODE_ENV === 'production' ||
+            (process.env.DB_NAME && process.env.DB_NAME.toLowerCase() === 'hrms_db');
+
+        const dbName = allowProdReadonly && isProduction ? 'hrms_db' : (process.env.DB_NAME || 'hrms_dev');
         const uri = process.env.MONGO_URI || `mongodb://localhost:27017/${dbName}`;
 
-        assertNotProduction(dbName, uri);
+        assertNotProduction(dbName, uri, { allowProdReadonly, dryRun: !isExecute });
 
-        console.log(`Connecting to dev database (${dbName})...`);
+        if (allowProdReadonly) {
+            process.env.ALLOW_PROD_READONLY = 'true';
+        }
+
+        console.log(`Connecting to database (${dbName})...`);
         const connectDB = require('../config/db');
         await connectDB();
 
-        await normalizeParticipants({ dryRun: !isExecute });
+        await normalizeParticipants({ dryRun: !isExecute, allowProdReadonly });
         process.exit(0);
     } catch (err) {
         console.error(`\n[ERROR] ${err.message}`);

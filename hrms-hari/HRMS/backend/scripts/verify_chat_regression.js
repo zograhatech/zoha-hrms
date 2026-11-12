@@ -361,6 +361,22 @@ async function run() {
             console.log('[PASS] Production guard verified: refused to run on production database.');
         }
 
+        // A2. Production Read-only Dry-Run Flag Check
+        // Should permit dry-run with warning
+        assertNotProduction('hrms_db', 'mongodb+srv://user:pass@cluster.mongodb.net/hrms_db', { allowProdReadonly: true, dryRun: true });
+        console.log('[PASS] Production guard permits read-only dry run with --allow-prod-readonly.');
+
+        // Should strictly throw if execute is attempted with allowProdReadonly
+        try {
+            assertNotProduction('hrms_db', 'mongodb+srv://user:pass@cluster.mongodb.net/hrms_db', { allowProdReadonly: true, dryRun: false });
+            throw new Error('assertNotProduction failed to block execution with allowProdReadonly');
+        } catch (guardErr) {
+            if (!guardErr.message.includes('--allow-prod-readonly strictly permits READ-ONLY analysis')) {
+                throw guardErr;
+            }
+            console.log('[PASS] Production guard strictly blocked DB writes with --allow-prod-readonly.');
+        }
+
         // B. Seed legacy string conversations in dev DB
         const legacy1 = await Conversation.collection.insertOne({
             participants: [empA._id.toString(), empB._id.toString()], // Hex strings
