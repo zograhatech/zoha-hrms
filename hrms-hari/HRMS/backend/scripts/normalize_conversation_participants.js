@@ -17,6 +17,8 @@
 require('dotenv').config({ path: require('path').resolve(__dirname, '../.env') });
 
 const mongoose = require('mongoose');
+const Employee = require('../models/Employee');
+const Conversation = require('../models/Conversation');
 
 // Helper to check if value is BSON ObjectId
 function isBsonObjectId(val) {
