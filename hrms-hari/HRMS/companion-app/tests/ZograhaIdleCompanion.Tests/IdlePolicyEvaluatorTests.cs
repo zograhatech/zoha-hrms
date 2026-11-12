@@ -140,5 +140,52 @@ public class IdlePolicyEvaluatorTests
         Assert.False(jsonNode.ContainsKey("url"));
         Assert.False(jsonNode.ContainsKey("keystrokes"));
     }
+
+    [Fact]
+    public void GracePeriod_TriggersWhenIdleExceedsThreshold_WithoutMeetingOrMedia()
+    {
+        // 10 minute threshold = 600s
+        Assert.True(IdlePolicyEvaluator.ShouldStartGracePeriod(601, 10, false, false));
+        Assert.False(IdlePolicyEvaluator.ShouldStartGracePeriod(599, 10, false, false));
+        // In meeting or media active must suppress grace period start
+        Assert.False(IdlePolicyEvaluator.ShouldStartGracePeriod(650, 10, true, false));
+        Assert.False(IdlePolicyEvaluator.ShouldStartGracePeriod(650, 10, false, true));
+    }
+
+    [Theory]
+    [InlineData(0, false, false, true)]   // User moved mouse/typed -> cancels
+    [InlineData(4, false, false, true)]   // Input < 5s -> cancels
+    [InlineData(10, true, false, true)]   // Meeting joined during grace -> cancels
+    [InlineData(10, false, true, true)]   // Media started during grace -> cancels
+    [InlineData(25, false, false, false)] // Still idle -> does not cancel
+    public void GracePeriod_Cancellation_EvaluatedCorrectly(int currentIdle, bool meeting, bool media, bool expectedCancel)
+    {
+        bool actual = IdlePolicyEvaluator.IsGracePeriodCancelled(currentIdle, meeting, media);
+        Assert.Equal(expectedCancel, actual);
+    }
+
+    [Fact]
+    public void MeetingMediaCap_ExceedingLimit_StopsCountingActivity()
+    {
+        // Under 90m (5400s): active meeting is counted
+        Assert.True(IdlePolicyEvaluator.IsMeetingMediaActive(true, false, 3600, 90));
+        // Over 90m (5401s): meeting is capped, returns false
+        Assert.False(IdlePolicyEvaluator.IsMeetingMediaActive(true, false, 5401, 90));
+        // Over 90m media is capped, returns false
+        Assert.False(IdlePolicyEvaluator.IsMeetingMediaActive(false, true, 6000, 90));
+    }
+
+    [Fact]
+    public void SleepWakeJump_DetectedWhenTimeElapsedExceedsIntervalMultiplier()
+    {
+        DateTime prev = new DateTime(2026, 11, 12, 10, 0, 0, DateTimeKind.Utc);
+        // Normal 15s interval: not a sleep/wake jump
+        DateTime normal = prev.AddSeconds(15);
+        Assert.False(IdlePolicyEvaluator.IsSleepWakeJump(prev, normal, 15));
+
+        // System slept for 30 minutes (laptop lid closed): detected as sleep/wake jump
+        DateTime wake = prev.AddMinutes(30);
+        Assert.True(IdlePolicyEvaluator.IsSleepWakeJump(prev, wake, 15));
+    }
 }
 

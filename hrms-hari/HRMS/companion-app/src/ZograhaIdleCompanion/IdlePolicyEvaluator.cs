@@ -95,5 +95,47 @@ public static class IdlePolicyEvaluator
         }
         return 0;
     }
+
+    /// <summary>
+    /// Determines whether the idle threshold is reached to initiate the grace period warning.
+    /// </summary>
+    public static bool ShouldStartGracePeriod(int idleSeconds, int timeoutMinutes, bool inMeeting, bool mediaActive)
+    {
+        int thresholdSeconds = timeoutMinutes * 60;
+        return idleSeconds >= thresholdSeconds && !inMeeting && !mediaActive;
+    }
+
+    /// <summary>
+    /// Checks whether user activity or active meeting/media cancels an active grace period.
+    /// </summary>
+    public static bool IsGracePeriodCancelled(int currentIdleSeconds, bool inMeeting, bool mediaActive)
+    {
+        return currentIdleSeconds < 5 || inMeeting || mediaActive;
+    }
+
+    /// <summary>
+    /// Evaluates if meeting/media is active, subject to the configurable inactivity cap (default 90 min).
+    /// If keyboard/mouse input has been inactive for longer than the cap, meeting/media is no longer counted.
+    /// </summary>
+    public static bool IsMeetingMediaActive(bool inMeeting, bool mediaActive, int rawIdleSeconds, int maxMeetingMediaMinutes = 90)
+    {
+        int maxSeconds = maxMeetingMediaMinutes * 60;
+        if (rawIdleSeconds > maxSeconds)
+        {
+            return false;
+        }
+        return inMeeting || mediaActive;
+    }
+
+    /// <summary>
+    /// Checks if a sudden jump in time occurred (indicating system sleep/suspend) requiring
+    /// grace period evaluation before any clock-out action.
+    /// </summary>
+    public static bool IsSleepWakeJump(DateTime previousCheckUtc, DateTime currentUtc, int expectedIntervalSeconds = 15)
+    {
+        double elapsedSeconds = (currentUtc - previousCheckUtc).TotalSeconds;
+        // If elapsed time is more than 3x the expected polling interval, system slept
+        return elapsedSeconds > (expectedIntervalSeconds * 3);
+    }
 }
 
