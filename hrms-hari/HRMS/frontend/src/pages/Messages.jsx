@@ -121,6 +121,7 @@ export default function Messages() {
     const [oversightMediaFiles, setOversightMediaFiles] = useState([]);
     const [oversightTotalMessages, setOversightTotalMessages] = useState(0);
     const [oversightLoading, setOversightLoading] = useState(false);
+    const [oversightError, setOversightError] = useState(null);
     const [oversightMsgsLoading, setOversightMsgsLoading] = useState(false);
     const [oversightSearch, setOversightSearch] = useState('');
     const [oversightStartDate, setOversightStartDate] = useState('');
@@ -201,6 +202,7 @@ export default function Messages() {
     const loadOversightConversations = useCallback(async (customOverrides = {}) => {
         if (!isAdmin) return;
         setOversightLoading(true);
+        setOversightError(null);
         try {
             const params = new URLSearchParams();
             const search = customOverrides.search !== undefined ? customOverrides.search : oversightSearch;
@@ -229,6 +231,7 @@ export default function Messages() {
             }
         } catch (err) {
             console.error('Load oversight conversations error:', err);
+            setOversightError(err.response?.data?.message || err.message || 'Failed to load conversations');
         } finally {
             setOversightLoading(false);
         }
@@ -264,6 +267,15 @@ export default function Messages() {
             loadOversightConversations();
         }
     }, [isAdmin, viewOversight, loadOversightConversations]);
+
+    // Debounced search for Chat Oversight: auto-triggers on typing without needing manual filter click
+    useEffect(() => {
+        if (!isAdmin || !viewOversight) return;
+        const timer = setTimeout(() => {
+            loadOversightConversations({ page: 1, search: oversightSearch });
+        }, 350);
+        return () => clearTimeout(timer);
+    }, [oversightSearch, isAdmin, viewOversight, loadOversightConversations]);
 
     // Oversight polling: 5s for open oversight conversation, 20s for conversation list
     useEffect(() => {
@@ -1066,6 +1078,10 @@ export default function Messages() {
                         {oversightLoading ? (
                             <div style={{ textAlign: 'center', padding: '24px 0', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
                                 Loading conversations...
+                            </div>
+                        ) : oversightError ? (
+                            <div style={{ textAlign: 'center', padding: '16px 8px', color: 'var(--accent-red, #ef4444)', fontSize: '0.85rem', background: 'rgba(239, 68, 68, 0.08)', borderRadius: '6px', margin: '8px 0' }}>
+                                ⚠️ {oversightError}
                             </div>
                         ) : oversightConvs.length === 0 ? (
                             <div style={{ textAlign: 'center', padding: '24px 0', color: 'var(--text-muted)', fontSize: '0.85rem' }}>

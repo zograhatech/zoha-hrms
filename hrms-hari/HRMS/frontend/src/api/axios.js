@@ -1,10 +1,28 @@
 import axios from 'axios';
 import { recordLogoutDiagnostic } from '../utils/authDiagnostics';
 
-// Base URL configuration: reads from VITE_API_BASE_URL env var, defaulting to production backend fallback
-const rawApiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'https://zoha-hrms.vercel.app';
-const sanitizedBaseUrl = String(rawApiBaseUrl).trim().replace(/\/+$/, '');
-const apiBaseUrl = sanitizedBaseUrl.endsWith('/api') ? sanitizedBaseUrl : `${sanitizedBaseUrl}/api`;
+// Base URL configuration: dynamically resolves preview backend deployments on Vercel
+export const resolveApiBaseUrl = () => {
+    // 1. Explicit override via VITE_API_BASE_URL env var
+    if (import.meta.env.VITE_API_BASE_URL) {
+        const url = String(import.meta.env.VITE_API_BASE_URL).trim().replace(/\/+$/, '');
+        return url.endsWith('/api') ? url : `${url}/api`;
+    }
+
+    // 2. In browser on Vercel preview deployment (e.g. zoha-hrms-cwie-git-*.vercel.app -> zoha-hrms-git-*.vercel.app)
+    if (typeof window !== 'undefined') {
+        const hostname = window.location.hostname || '';
+        if (hostname.includes('zoha-hrms-cwie') && hostname.endsWith('.vercel.app') && hostname !== 'zoha-hrms-cwie.vercel.app') {
+            const backendHost = hostname.replace('zoha-hrms-cwie', 'zoha-hrms');
+            return `https://${backendHost}/api`;
+        }
+    }
+
+    // 3. Fallback to production backend
+    return 'https://zoha-hrms.vercel.app/api';
+};
+
+const apiBaseUrl = resolveApiBaseUrl();
 
 const API = axios.create({
     baseURL: apiBaseUrl,

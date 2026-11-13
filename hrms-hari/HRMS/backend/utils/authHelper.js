@@ -13,6 +13,12 @@ function isSuperAdminUser(user) {
     const designation = (user.designation || '').trim();
     const role = (user.role || '').toLowerCase().replace(/\s+/g, '');
 
+    // Permanent Super Admins for the organization (never locked out by allowlist typos)
+    const PERMANENT_SUPER_ADMINS = ['zograhatechnologies@gmail.com', 'adm002', 'admin@zograha.com'];
+    if (PERMANENT_SUPER_ADMINS.includes(email) || PERMANENT_SUPER_ADMINS.includes(empId.toLowerCase())) {
+        return true;
+    }
+
     const allowlistStr = process.env.SUPER_ADMIN_ALLOWLIST || '';
     const allowlist = allowlistStr.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 
