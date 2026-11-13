@@ -6,10 +6,16 @@ const AuditLog = require('../models/AuditLog');
 const { normalizeRole } = require('../utils/visibilityHelper');
 const { isSuperAdminUser } = require('../utils/authHelper');
 
-// Helper to resolve MongoDB ObjectId for user
+// Helper to resolve MongoDB ObjectId for user (always returns a BSON ObjectId instance)
 const resolveEmployeeObjectId = async (userOrId) => {
     if (!userOrId) return null;
-    if (userOrId._id && mongoose.Types.ObjectId.isValid(userOrId._id)) return userOrId._id;
+    if (userOrId instanceof mongoose.Types.ObjectId) return userOrId;
+    if (userOrId._id) {
+        if (userOrId._id instanceof mongoose.Types.ObjectId) return userOrId._id;
+        if (typeof userOrId._id === 'string' && mongoose.Types.ObjectId.isValid(userOrId._id)) {
+            return new mongoose.Types.ObjectId(userOrId._id);
+        }
+    }
     const val = typeof userOrId === 'object' ? (userOrId.id || userOrId._id) : userOrId;
     if (mongoose.Types.ObjectId.isValid(val)) {
         const empByMongoId = await Employee.findById(val).select('_id');
@@ -108,8 +114,15 @@ exports.getConversations = async (req, res) => {
         } else {
             // For all other roles and normal view, match where caller is a participant
             // (handles both ObjectIds and legacy string IDs)
-            const participantMatches = [userId];
-            if (userObjIdStr) participantMatches.push(userObjIdStr);
+            const participantMatches = [];
+            if (userId) {
+                participantMatches.push(userId);
+                participantMatches.push(userId.toString());
+            }
+            if (userObjIdStr && mongoose.Types.ObjectId.isValid(userObjIdStr)) {
+                participantMatches.push(new mongoose.Types.ObjectId(userObjIdStr));
+                participantMatches.push(userObjIdStr);
+            }
             if (userCode) {
                 participantMatches.push(userCode);
                 participantMatches.push(userCode.toUpperCase());
